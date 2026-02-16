@@ -1,4 +1,4 @@
-name: CI
+name: AILink CI
 
 on:
   push:
@@ -10,20 +10,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Check
-        run: cargo check --manifest-path gateway/Cargo.toml
-      - name: Clippy
-        run: cargo clippy --manifest-path gateway/Cargo.toml -- -D warnings
-      - name: Format
-        run: cargo fmt --manifest-path gateway/Cargo.toml -- --check
-
-  test:
+  # 1. Gateway (Rust) Checks
+  gateway:
+    name: Gateway (Rust)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -43,13 +32,83 @@ jobs:
         image: redis:7-alpine
         ports:
           - 6379:6379
-    env:
-      DATABASE_URL: postgres://test:test@localhost:5432/ailink_test
-      REDIS_URL: redis://localhost:6379
-      AILINK_MASTER_KEY: test_key_32_bytes_hex_0000000000
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gateway
+      
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features postgres,native-tls
+
+      - name: Migrate Database
+        run: |
+          export DATABASE_URL=postgres://test:test@localhost:5432/ailink_test
+          cd gateway
+          sqlx migrate run
+
+      - name: Check
+        run: cargo check --manifest-path gateway/Cargo.toml
+      
+      - name: Clippy
+        run: cargo clippy --manifest-path gateway/Cargo.toml -- -D warnings
+      
+      - name: Format
+        run: cargo fmt --manifest-path gateway/Cargo.toml -- --check
+      
       - name: Test
+        env:
+          DATABASE_URL: postgres://test:test@localhost:5432/ailink_test
+          REDIS_URL: redis://localhost:6379
+          AILINK_MASTER_KEY: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
         run: cargo test --manifest-path gateway/Cargo.toml
+
+  # 2. Dashboard (Next.js) Checks
+  dashboard:
+    name: Dashboard (Next.js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
+      
+      - name: Install dependencies
+        working-directory: dashboard
+        run: npm ci
+      
+      - name: Lint
+        working-directory: dashboard
+        run: npm run lint
+      
+      - name: Build
+        working-directory: dashboard
+        run: npm run build
+
+  # 3. SDK (Python) Checks
+  sdk-python:
+    name: SDK (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' 
+      
+      - name: Install dependencies
+        working-directory: sdk/python
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev]
+          pip install ruff mypy
+      
+      - name: Lint (Ruff)
+        working-directory: sdk/python
+        run: ruff check .
+      
+      - name: Type Check (MyPy)
+        working-directory: sdk/python
+        run: mypy ailink
