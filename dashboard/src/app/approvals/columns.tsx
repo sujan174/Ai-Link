@@ -2,29 +2,33 @@
 
 import { ColumnDef } from "@tanstack/react-table"
 import { ApprovalRequest } from "@/lib/api"
-import { ArrowUpDown, CheckCircle, XCircle, Clock } from "lucide-react"
+import { ArrowUpDown, CheckCircle, XCircle, Clock, MoreHorizontal, Eye, ShieldCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { formatDistanceToNow } from "date-fns"
-import { decideApproval } from "@/lib/api"
-import { toast } from "sonner"
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 
 export const columns: ColumnDef<ApprovalRequest>[] = [
     {
         accessorKey: "created_at",
-        header: ({ column }) => {
-            return (
-                <Button
-                    variant="ghost"
-                    onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-                >
-                    Created
-                    <ArrowUpDown className="ml-2 h-4 w-4" />
-                </Button>
-            )
-        },
+        header: ({ column }) => (
+            <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2 -ml-2"
+                onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+            >
+                Created
+                <ArrowUpDown className="ml-2 h-3 w-3" />
+            </Button>
+        ),
         cell: ({ row }) => (
-            <div className="text-muted-foreground text-xs whitespace-nowrap">
+            <div className="text-muted-foreground text-xs whitespace-nowrap font-mono">
                 {formatDistanceToNow(new Date(row.getValue("created_at")), { addSuffix: true })}
             </div>
         ),
@@ -32,7 +36,11 @@ export const columns: ColumnDef<ApprovalRequest>[] = [
     {
         accessorKey: "id",
         header: "Request ID",
-        cell: ({ row }) => <div className="font-mono text-xs">{row.getValue("id")}</div>,
+        cell: ({ row }) => (
+            <div className="font-mono text-[10px] text-muted-foreground truncate max-w-[120px]" title={row.getValue("id")}>
+                {row.getValue("id")}
+            </div>
+        ),
     },
     {
         accessorKey: "status",
@@ -44,17 +52,17 @@ export const columns: ColumnDef<ApprovalRequest>[] = [
 
             if (status === "pending") {
                 variant = "warning";
-                icon = <Clock className="mr-1 h-3 w-3" />;
+                icon = <Clock className="mr-1.5 h-3 w-3" />;
             } else if (status === "approved") {
                 variant = "success";
-                icon = <CheckCircle className="mr-1 h-3 w-3" />;
+                icon = <CheckCircle className="mr-1.5 h-3 w-3" />;
             } else if (status === "rejected") {
                 variant = "destructive";
-                icon = <XCircle className="mr-1 h-3 w-3" />;
+                icon = <XCircle className="mr-1.5 h-3 w-3" />;
             }
 
             return (
-                <Badge variant={variant} className="capitalize">
+                <Badge variant={variant} className="capitalize pl-2 pr-2.5 h-6">
                     {icon}
                     {status}
                 </Badge>
@@ -63,55 +71,39 @@ export const columns: ColumnDef<ApprovalRequest>[] = [
     },
     {
         accessorKey: "request_summary",
-        header: "Summary",
-        cell: ({ row }) => (
-            <pre className="text-xs max-w-[300px] overflow-hidden truncate">
-                {JSON.stringify(row.getValue("request_summary"))}
-            </pre>
-        ),
+        header: "Request",
+        cell: ({ row }) => {
+            const summary = row.getValue("request_summary") as Record<string, unknown>;
+            const method = summary.method as string || "UNKNOWN";
+            const uri = summary.uri as string || "/";
+            return (
+                <div className="flex items-center gap-2 max-w-[300px]">
+                    <Badge variant="outline" className="font-mono text-[10px] px-1 h-5">{method}</Badge>
+                    <span className="text-xs font-mono truncate text-muted-foreground" title={uri}>{uri}</span>
+                </div>
+            )
+        },
     },
     {
         id: "actions",
-        cell: ({ row }) => {
-            const request = row.original
-
-            if (request.status !== "pending") return null;
+        cell: ({ row, table }) => {
+            const request = row.original;
+            const meta = table.options.meta as { onView?: (r: ApprovalRequest) => void } | undefined;
 
             return (
-                <div className="flex gap-2">
-                    <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 border-emerald-200"
-                        onClick={async () => {
-                            try {
-                                await decideApproval(request.id, "approved");
-                                toast.success("Request approved");
-                                window.location.reload();
-                            } catch {
-                                toast.error("Failed to approve");
-                            }
-                        }}
-                    >
-                        Approve
-                    </Button>
-                    <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-200"
-                        onClick={async () => {
-                            try {
-                                await decideApproval(request.id, "rejected");
-                                toast.success("Request rejected");
-                                window.location.reload();
-                            } catch {
-                                toast.error("Failed to reject");
-                            }
-                        }}
-                    >
-                        Reject
-                    </Button>
-                </div>
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" className="h-7 w-7">
+                            <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => meta?.onView?.(request)}>
+                            <Eye className="mr-2 h-3.5 w-3.5" />
+                            View Details
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
             )
         },
     },

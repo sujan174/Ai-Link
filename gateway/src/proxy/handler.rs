@@ -10,7 +10,9 @@ use uuid::Uuid;
 
 use crate::errors::AppError;
 use crate::middleware;
+use crate::middleware::fields::RequestContext;
 use crate::models::cost::{self, extract_model, extract_usage};
+use crate::models::policy::Action;
 use crate::proxy;
 use crate::vault::SecretStore;
 use crate::AppState;
@@ -68,8 +70,7 @@ pub async fn proxy_handler(
         return Err(AppError::TokenNotFound);
     }
 
-    // -- 3. Evaluate policies --
-    // method and uri are already available
+    // -- 3. Load policies --
     let path = uri.path().to_string();
 
     let policies = state
@@ -78,122 +79,245 @@ pub async fn proxy_handler(
         .await
         .map_err(AppError::Internal)?;
 
-    // -- 3.1 Rate Limit --
-    let mut shadow_violations =
-        match middleware::rate_limit::check_rate_limits(&token.id, &policies, &state.cache).await {
-            Ok(v) => v,
-            Err(e) => {
-                log_audit_entry(
-                    &state,
-                    request_id,
-                    token.project_id,
-                    token.id.clone(),
-                    agent_name,
-                    method.to_string(),
-                    path,
-                    token.upstream_url.clone(),
-                    &policies,
-                    crate::models::audit::PolicyResult::Deny {
-                        policy: "RateLimit".to_string(),
-                        reason: e.to_string(),
-                    },
-                    false,
-                    None,
-                    None,
-                    None,
-                    start.elapsed().as_millis() as u64,
-                    None,
-                    None,
-                    None, // Cost
-                );
-                return Err(e);
-            }
-        };
-
-    let middleware::policy::EvaluationResult {
-        decision,
-        shadow_violations: policy_violations,
-    } = match middleware::policy::evaluate_rules(&policies, &method, &path) {
-        Ok(res) => res,
-        Err(e) => {
-            let reason = match &e {
-                AppError::PolicyDenied { policy, reason } => {
-                    crate::models::audit::PolicyResult::Deny {
-                        policy: policy.clone(),
-                        reason: reason.clone(),
-                    }
-                }
-                _ => crate::models::audit::PolicyResult::Deny {
-                    policy: "unknown".to_string(),
-                    reason: e.to_string(),
-                },
-            };
-            log_audit_entry(
-                &state,
-                request_id,
-                token.project_id,
-                token.id.clone(),
-                agent_name,
-                method.to_string(),
-                path,
-                token.upstream_url.clone(),
-                &policies,
-                reason,
-                false,
-                None,
-                None,
-                None,
-                start.elapsed().as_millis() as u64,
-                None,
-                if shadow_violations.is_empty() {
-                    None
-                } else {
-                    Some(shadow_violations)
-                },
-                None,
-            );
-            return Err(e);
-        }
+    // -- 3.1 Parse request body as JSON (for body inspection) --
+    let mut parsed_body: Option<serde_json::Value> = if !body.is_empty() {
+        serde_json::from_slice(&body).ok()
+    } else {
+        None
     };
 
-    shadow_violations.extend(policy_violations);
+    // -- 3.2 Evaluate PRE-FLIGHT policies --
+    // Load usage counters from Redis for condition evaluation
+    let usage_counters = {
+        let mut counters = std::collections::HashMap::new();
+        let mut conn = state.cache.redis();
+        let now = chrono::Utc::now();
+        let daily_key = format!("spend:{}:daily:{}", token.id, now.format("%Y-%m-%d"));
+        let monthly_key = format!("spend:{}:monthly:{}", token.id, now.format("%Y-%m"));
 
-    // -- 3.2 Check Spend Cap --
-    // We check this after rate limits but before HITL/Upstream
+        if let Ok(v) = redis::AsyncCommands::get::<_, f64>(&mut conn, &daily_key).await {
+            counters.insert("spend_today_usd".to_string(), v);
+        }
+        if let Ok(v) = redis::AsyncCommands::get::<_, f64>(&mut conn, &monthly_key).await {
+            counters.insert("spend_month_usd".to_string(), v);
+        }
+        counters
+    };
+
+    // Extract client IP from X-Forwarded-For or X-Real-IP
+    let client_ip_str = headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+
+    // Scope the RequestContext borrow so we can mutate parsed_body after evaluation
+    let (outcome_actions, shadow_violations) = {
+        let ctx = RequestContext {
+            method: &method,
+            path: &path,
+            uri: &uri,
+            headers: &headers,
+            body: parsed_body.as_ref(),
+            body_size: body.len(),
+            agent_name: agent_name.as_deref(),
+            token_id: &token.id,
+            token_name: &token.name,
+            project_id: &token.project_id.to_string(),
+            client_ip: client_ip_str.as_deref(),
+            response_status: None,
+            response_body: None,
+            response_headers: None,
+            usage: usage_counters.clone(),
+        };
+
+        let outcome = middleware::policy::evaluate_pre_flight(&policies, &ctx);
+        (outcome.actions, outcome.shadow_violations)
+    };
+    // ctx is now dropped — parsed_body can be mutated
+
+    let mut shadow_violations = shadow_violations;
+
+    // -- 3.3 Execute enforced actions --
+    let mut hitl_required = false;
+    let mut hitl_decision = None;
+    let mut hitl_latency_ms = None;
+    let mut header_mutations = middleware::redact::HeaderMutations::default();
+    let mut redacted_by_policy: Vec<String> = Vec::new();
+
+    for triggered in &outcome_actions {
+        match &triggered.action {
+            // ── Deny ──
+            Action::Deny { status: _, message } => {
+                log_audit_entry(
+                    &state, request_id, token.project_id, token.id.clone(),
+                    agent_name, method.to_string(), path, token.upstream_url.clone(),
+                    &policies,
+                    crate::models::audit::PolicyResult::Deny {
+                        policy: triggered.policy_name.clone(),
+                        reason: message.clone(),
+                    },
+                    false, None, None, None,
+                    start.elapsed().as_millis() as u64,
+                    None, if shadow_violations.is_empty() { None } else { Some(shadow_violations) }, None,
+                );
+                return Err(AppError::PolicyDenied {
+                    policy: triggered.policy_name.clone(),
+                    reason: message.clone(),
+                });
+            }
+
+            // ── Rate Limit ──
+            Action::RateLimit { window, max_requests, key } => {
+                let rl_key = match key {
+                    crate::models::policy::RateLimitKey::PerToken => format!("rl:tok:{}", token.id),
+                    crate::models::policy::RateLimitKey::PerAgent => format!("rl:agent:{}", agent_name.as_deref().unwrap_or("unknown")),
+                    crate::models::policy::RateLimitKey::PerIp => "rl:ip:unknown".to_string(), // TODO
+                    crate::models::policy::RateLimitKey::PerUser => format!("rl:user:{}", token.id),
+                    crate::models::policy::RateLimitKey::Global => "rl:global".to_string(),
+                };
+                let window_secs = middleware::policy::parse_window_secs(window).unwrap_or(60);
+                let count = state.cache.increment(&rl_key, window_secs).await
+                    .map_err(AppError::Internal)?;
+
+                if count > *max_requests {
+                    log_audit_entry(
+                        &state, request_id, token.project_id, token.id.clone(),
+                        agent_name, method.to_string(), path, token.upstream_url.clone(),
+                        &policies,
+                        crate::models::audit::PolicyResult::Deny {
+                            policy: triggered.policy_name.clone(),
+                            reason: "rate limit exceeded".to_string(),
+                        },
+                        false, None, None, None,
+                        start.elapsed().as_millis() as u64,
+                        None, if shadow_violations.is_empty() { None } else { Some(shadow_violations) }, None,
+                    );
+                    return Err(AppError::RateLimitExceeded);
+                }
+            }
+
+            // ── Override (body mutation) ──
+            Action::Override { set_body_fields } => {
+                if let Some(ref mut body_val) = parsed_body {
+                    if let Some(obj) = body_val.as_object_mut() {
+                        for (k, v) in set_body_fields {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                        tracing::info!(
+                            policy = %triggered.policy_name,
+                            fields = ?set_body_fields.keys().collect::<Vec<_>>(),
+                            "applied body overrides"
+                        );
+                    }
+                }
+            }
+
+            // ── Throttle ──
+            Action::Throttle { delay_ms } => {
+                tracing::info!(delay_ms = delay_ms, policy = %triggered.policy_name, "throttling request");
+                tokio::time::sleep(Duration::from_millis(*delay_ms)).await;
+            }
+
+            // ── HITL (handled below after all other pre-flight checks) ──
+            Action::RequireApproval { .. } => {
+                hitl_required = true;
+                // Processed after the action loop
+            }
+
+            // ── Log ──
+            Action::Log { level, tags } => {
+                match level.as_str() {
+                    "error" => tracing::error!(policy = %triggered.policy_name, tags = ?tags, "policy log"),
+                    "warn" => tracing::warn!(policy = %triggered.policy_name, tags = ?tags, "policy log"),
+                    _ => tracing::info!(policy = %triggered.policy_name, tags = ?tags, "policy log"),
+                }
+            }
+
+            // ── Tag (stored in audit) ──
+            Action::Tag { key, value } => {
+                tracing::info!(
+                    policy = %triggered.policy_name,
+                    tag_key = %key, tag_value = %value,
+                    "policy tag"
+                );
+            }
+
+            // ── Webhook (fire & forget for now) ──
+            Action::Webhook { url, timeout_ms, .. } => {
+                let url = url.clone();
+                let timeout_ms = *timeout_ms;
+                let summary = serde_json::json!({
+                    "policy": triggered.policy_name,
+                    "method": method.to_string(),
+                    "path": path,
+                    "agent": agent_name,
+                    "token_id": token.id,
+                });
+                tokio::spawn(async move {
+                    let client = reqwest::Client::new();
+                    let _ = client.post(&url)
+                        .timeout(Duration::from_millis(timeout_ms))
+                        .json(&summary)
+                        .send()
+                        .await;
+                });
+            }
+
+            // ── Redact (pre-flight, request-side) ──
+            Action::Redact { .. } => {
+                if let Some(ref mut body_val) = parsed_body {
+                    let matched = middleware::redact::apply_redact(body_val, &triggered.action, true);
+                    if !matched.is_empty() {
+                        tracing::info!(
+                            policy = %triggered.policy_name,
+                            patterns = ?matched,
+                            "applied request-side redaction"
+                        );
+                        redacted_by_policy.extend(matched);
+                    }
+                }
+            }
+
+            // ── Transform ──
+            Action::Transform { operations } => {
+                for op in operations {
+                    if let Some(ref mut body_val) = parsed_body {
+                        middleware::redact::apply_transform(body_val, &mut header_mutations, op);
+                    } else {
+                        // No body, but we can still do header transforms
+                        let mut empty = serde_json::Value::Null;
+                        middleware::redact::apply_transform(&mut empty, &mut header_mutations, op);
+                    }
+                }
+                tracing::info!(
+                    policy = %triggered.policy_name,
+                    ops = operations.len(),
+                    "applied transform operations"
+                );
+            }
+        }
+    }
+
+    // -- 3.5 Check Spend Cap (legacy, still uses old middleware) --
     if let Err(e) = middleware::spend::check_spend_cap(&state.cache, &token.id, &policies).await {
         log_audit_entry(
-            &state,
-            request_id,
-            token.project_id,
-            token.id.clone(),
-            agent_name,
-            method.to_string(),
-            path,
-            token.upstream_url.clone(),
+            &state, request_id, token.project_id, token.id.clone(),
+            agent_name, method.to_string(), path, token.upstream_url.clone(),
             &policies,
             crate::models::audit::PolicyResult::Deny {
                 policy: "SpendCap".to_string(),
                 reason: e.to_string(),
             },
-            false,
-            None,
-            None,
-            None,
+            false, None, None, None,
             start.elapsed().as_millis() as u64,
-            None,
-            None,
-            None,
+            None, None, None,
         );
         return Err(AppError::SpendCapReached);
     }
 
-    // -- 3.5 Handle HITL --
-    let mut hitl_decision = None;
-    let mut hitl_latency_ms = None;
-    let mut hitl_required = false;
-
-    if let middleware::policy::PolicyDecision::HitlRequired = decision {
-        hitl_required = true;
+    // -- 3.6 Handle HITL --
+    if hitl_required {
         let hitl_start = Instant::now();
 
         // Create approval request
@@ -202,9 +326,13 @@ pub async fn proxy_handler(
             "path": path,
             "agent": agent_name,
             "upstream": token.upstream_url,
+            "body_preview": parsed_body.as_ref().map(|b| {
+                let s = b.to_string();
+                if s.len() > 500 { format!("{}...", &s[..500]) } else { s }
+            }),
         });
 
-        // Expiry: 10 minutes
+        // Expiry: 10 minutes (can be overridden by policy timeout later)
         let expires_at = chrono::Utc::now() + chrono::Duration::minutes(10);
 
         let approval_id = state
@@ -213,7 +341,7 @@ pub async fn proxy_handler(
                 &token.id,
                 token.project_id,
                 idempotency_key.clone(),
-                summary.clone(), // Clone summary for notification
+                summary.clone(),
                 expires_at,
             )
             .await
@@ -234,7 +362,6 @@ pub async fn proxy_handler(
         });
 
         // Poll for status (max 30s)
-        // TODO: Use Redis pub/sub or long-polling for better efficiency
         let mut approved = false;
         for _ in 0..30 {
             let status = state
@@ -252,61 +379,30 @@ pub async fn proxy_handler(
                 "rejected" => {
                     hitl_decision = Some("rejected".to_string());
                     log_audit_entry(
-                        &state,
-                        request_id,
-                        token.project_id,
-                        token.id.clone(),
-                        agent_name,
-                        method.to_string(),
-                        path,
-                        token.upstream_url.clone(),
-                        &policies,
-                        crate::models::audit::PolicyResult::HitlRejected,
-                        true,
-                        hitl_decision.clone(),
-                        Some(hitl_start.elapsed().as_millis() as i32),
-                        None,
+                        &state, request_id, token.project_id, token.id.clone(),
+                        agent_name, method.to_string(), path, token.upstream_url.clone(),
+                        &policies, crate::models::audit::PolicyResult::HitlRejected,
+                        true, hitl_decision.clone(),
+                        Some(hitl_start.elapsed().as_millis() as i32), None,
                         start.elapsed().as_millis() as u64,
-                        None,
-                        if shadow_violations.is_empty() {
-                            None
-                        } else {
-                            Some(shadow_violations.clone())
-                        },
-                        None,
+                        None, if shadow_violations.is_empty() { None } else { Some(shadow_violations.clone()) }, None,
                     );
                     return Err(AppError::ApprovalRejected);
                 }
                 "expired" => {
                     hitl_decision = Some("expired".to_string());
                     log_audit_entry(
-                        &state,
-                        request_id,
-                        token.project_id,
-                        token.id.clone(),
-                        agent_name,
-                        method.to_string(),
-                        path,
-                        token.upstream_url.clone(),
-                        &policies,
-                        crate::models::audit::PolicyResult::HitlTimeout,
-                        true,
-                        hitl_decision.clone(),
-                        Some(hitl_start.elapsed().as_millis() as i32),
-                        None,
+                        &state, request_id, token.project_id, token.id.clone(),
+                        agent_name, method.to_string(), path, token.upstream_url.clone(),
+                        &policies, crate::models::audit::PolicyResult::HitlTimeout,
+                        true, hitl_decision.clone(),
+                        Some(hitl_start.elapsed().as_millis() as i32), None,
                         start.elapsed().as_millis() as u64,
-                        None,
-                        if shadow_violations.is_empty() {
-                            None
-                        } else {
-                            Some(shadow_violations.clone())
-                        },
-                        None,
+                        None, if shadow_violations.is_empty() { None } else { Some(shadow_violations.clone()) }, None,
                     );
                     return Err(AppError::ApprovalTimeout);
                 }
                 _ => {
-                    // Pending, wait 1s
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
@@ -315,28 +411,13 @@ pub async fn proxy_handler(
         if !approved {
             hitl_decision = Some("timeout".to_string());
             log_audit_entry(
-                &state,
-                request_id,
-                token.project_id,
-                token.id.clone(),
-                agent_name,
-                method.to_string(),
-                path,
-                token.upstream_url.clone(),
-                &policies,
-                crate::models::audit::PolicyResult::HitlTimeout,
-                true,
-                hitl_decision.clone(),
-                Some(hitl_start.elapsed().as_millis() as i32),
-                None,
+                &state, request_id, token.project_id, token.id.clone(),
+                agent_name, method.to_string(), path, token.upstream_url.clone(),
+                &policies, crate::models::audit::PolicyResult::HitlTimeout,
+                true, hitl_decision.clone(),
+                Some(hitl_start.elapsed().as_millis() as i32), None,
                 start.elapsed().as_millis() as u64,
-                None,
-                if shadow_violations.is_empty() {
-                    None
-                } else {
-                    Some(shadow_violations.clone())
-                },
-                None,
+                None, if shadow_violations.is_empty() { None } else { Some(shadow_violations.clone()) }, None,
             );
             return Err(AppError::ApprovalTimeout);
         }
@@ -354,9 +435,13 @@ pub async fn proxy_handler(
     // -- 5. Build upstream request --
     let upstream_url = proxy::transform::rewrite_url(&token.upstream_url, &path);
 
-    // Collect the request body
-    // body is already extracted as Bytes
-    let body_bytes = body;
+    // Use modified body if overrides were applied, otherwise original
+    let final_body = if let Some(ref modified) = parsed_body {
+        // Check if body was modified by Override action
+        serde_json::to_vec(modified).unwrap_or_else(|_| body.to_vec())
+    } else {
+        body.to_vec()
+    };
 
     // Build upstream headers: strip Authorization, inject real key based on injection_mode
     let mut upstream_headers = reqwest::header::HeaderMap::new();
@@ -370,7 +455,6 @@ pub async fn proxy_handler(
 
     match injection_mode.as_str() {
         "basic" => {
-            // Auto base64-encode the secret (e.g., "user@co.com:api_token" → base64)
             use base64::Engine;
             let encoded = base64::engine::general_purpose::STANDARD.encode(&real_key);
             upstream_headers.insert(
@@ -380,7 +464,6 @@ pub async fn proxy_handler(
             );
         }
         "header" => {
-            // Raw value into custom header (e.g., X-API-Key: AKIA...)
             upstream_headers.insert(
                 header_name,
                 reqwest::header::HeaderValue::from_str(&real_key)
@@ -391,7 +474,6 @@ pub async fn proxy_handler(
             // Don't inject a header — we'll append to the URL below
         }
         _ => {
-            // Default: Bearer token (OpenAI, Stripe, GitHub, Slack, etc.)
             upstream_headers.insert(
                 header_name,
                 reqwest::header::HeaderValue::from_str(&format!("Bearer {}", real_key))
@@ -406,6 +488,21 @@ pub async fn proxy_handler(
             reqwest::header::HeaderValue::from_static("application/json"),
         ),
     );
+
+    // Apply transform header mutations (SetHeader / RemoveHeader)
+    for name in &header_mutations.removals {
+        if let Ok(header_name) = name.parse::<reqwest::header::HeaderName>() {
+            upstream_headers.remove(header_name);
+        }
+    }
+    for (name, value) in &header_mutations.inserts {
+        if let (Ok(header_name), Ok(header_value)) = (
+            name.parse::<reqwest::header::HeaderName>(),
+            reqwest::header::HeaderValue::from_str(value),
+        ) {
+            upstream_headers.insert(header_name, header_value);
+        }
+    }
 
     // Convert method Axum -> Reqwest
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
@@ -425,8 +522,7 @@ pub async fn proxy_handler(
         upstream_url.clone()
     };
 
-    // Zero the decrypted key from memory using `zeroize` crate
-    // This uses volatile writes that the compiler CANNOT optimize away
+    // Zero the decrypted key from memory
     {
         use zeroize::Zeroize;
         real_key.zeroize();
@@ -439,7 +535,7 @@ pub async fn proxy_handler(
             reqwest_method,
             &final_upstream_url,
             upstream_headers,
-            body_bytes.to_vec(),
+            final_body,
         ),
     )
     .await
@@ -448,65 +544,28 @@ pub async fn proxy_handler(
         Ok(Err(e)) => {
             tracing::error!("Upstream request failed: {}", e);
             log_audit_entry(
-                &state,
-                request_id,
-                token.project_id,
-                token.id.clone(),
-                agent_name,
-                method.to_string(),
-                path,
-                upstream_url,
+                &state, request_id, token.project_id, token.id.clone(),
+                agent_name, method.to_string(), path, upstream_url,
                 &policies,
-                if hitl_required {
-                    crate::models::audit::PolicyResult::HitlApproved
-                } else {
-                    crate::models::audit::PolicyResult::Allow
-                },
-                hitl_required,
-                hitl_decision,
-                hitl_latency_ms,
-                Some(502),
+                if hitl_required { crate::models::audit::PolicyResult::HitlApproved }
+                else { crate::models::audit::PolicyResult::Allow },
+                hitl_required, hitl_decision, hitl_latency_ms, Some(502),
                 start.elapsed().as_millis() as u64,
-                None,
-                if shadow_violations.is_empty() {
-                    None
-                } else {
-                    Some(shadow_violations)
-                },
-                None,
+                None, if shadow_violations.is_empty() { None } else { Some(shadow_violations) }, None,
             );
             return Err(e);
         }
         Err(_) => {
             tracing::error!("Upstream request timed out (safety net)");
-            // Log timeout
             log_audit_entry(
-                &state,
-                request_id,
-                token.project_id,
-                token.id.clone(),
-                agent_name,
-                method.to_string(),
-                path,
-                upstream_url,
+                &state, request_id, token.project_id, token.id.clone(),
+                agent_name, method.to_string(), path, upstream_url,
                 &policies,
-                if hitl_required {
-                    crate::models::audit::PolicyResult::HitlApproved
-                } else {
-                    crate::models::audit::PolicyResult::Allow
-                },
-                hitl_required,
-                hitl_decision,
-                hitl_latency_ms,
-                Some(504),
+                if hitl_required { crate::models::audit::PolicyResult::HitlApproved }
+                else { crate::models::audit::PolicyResult::Allow },
+                hitl_required, hitl_decision, hitl_latency_ms, Some(504),
                 start.elapsed().as_millis() as u64,
-                None,
-                if shadow_violations.is_empty() {
-                    None
-                } else {
-                    Some(shadow_violations)
-                },
-                None,
+                None, if shadow_violations.is_empty() { None } else { Some(shadow_violations) }, None,
             );
             return Err(AppError::Upstream("Upstream request timed out".to_string()));
         }
@@ -519,12 +578,130 @@ pub async fn proxy_handler(
         .await
         .map_err(|e| AppError::Upstream(format!("upstream body read failed: {}", e)))?;
 
+    // -- 5.5 Post-flight policy evaluation --
+    let mut resp_body_vec = resp_body.to_vec();
+    let parsed_resp_body: Option<serde_json::Value> = serde_json::from_slice(&resp_body_vec).ok();
+
+    // Convert reqwest headers to axum headers for RequestContext
+    let axum_resp_headers = {
+        let mut h = HeaderMap::new();
+        for (key, value) in resp_headers.iter() {
+            if let Ok(name) = axum::http::HeaderName::from_bytes(key.as_str().as_bytes()) {
+                if let Ok(val) = axum::http::HeaderValue::from_bytes(value.as_bytes()) {
+                    h.insert(name, val);
+                }
+            }
+        }
+        h
+    };
+
+    {
+        let project_id_str = token.project_id.to_string();
+        let post_ctx = RequestContext {
+            method: &method,
+            path: &path,
+            uri: &uri,
+            headers: &headers,
+            body: parsed_body.as_ref(),
+            body_size: body.len(),
+            agent_name: agent_name.as_deref(),
+            token_id: &token.id,
+            token_name: &token.name,
+            project_id: &project_id_str,
+            client_ip: client_ip_str.as_deref(),
+            response_status: Some(status.as_u16()),
+            response_body: parsed_resp_body.as_ref(),
+            response_headers: Some(&axum_resp_headers),
+            usage: usage_counters,
+        };
+
+        let post_outcome = middleware::policy::evaluate_post_flight(&policies, &post_ctx);
+
+        // Execute post-flight actions
+        for triggered in &post_outcome.actions {
+            match &triggered.action {
+                Action::Deny { message, .. } => {
+                    tracing::warn!(
+                        policy = %triggered.policy_name,
+                        "post-flight deny: suppressing unsafe response"
+                    );
+                    return Err(AppError::PolicyDenied {
+                        policy: triggered.policy_name.clone(),
+                        reason: message.clone(),
+                    });
+                }
+                Action::Redact { .. } => {
+                    if let Some(mut resp_json) = parsed_resp_body.clone() {
+                        let matched = middleware::redact::apply_redact(
+                            &mut resp_json, &triggered.action, false,
+                        );
+                        if !matched.is_empty() {
+                            tracing::info!(
+                                policy = %triggered.policy_name,
+                                patterns = ?matched,
+                                "applied response-side redaction"
+                            );
+                            redacted_by_policy.extend(matched);
+                            // Reserialize the redacted response body
+                            if let Ok(new_body) = serde_json::to_vec(&resp_json) {
+                                resp_body_vec = new_body;
+                            }
+                        }
+                    }
+                }
+                Action::Log { level, tags } => {
+                    match level.as_str() {
+                        "error" => tracing::error!(policy = %triggered.policy_name, tags = ?tags, "post-flight policy log"),
+                        "warn" => tracing::warn!(policy = %triggered.policy_name, tags = ?tags, "post-flight policy log"),
+                        _ => tracing::info!(policy = %triggered.policy_name, tags = ?tags, "post-flight policy log"),
+                    }
+                }
+                Action::Tag { key, value } => {
+                    tracing::info!(
+                        policy = %triggered.policy_name,
+                        tag_key = %key, tag_value = %value,
+                        "post-flight policy tag"
+                    );
+                }
+                Action::Webhook { url, timeout_ms, .. } => {
+                    let url = url.clone();
+                    let timeout_ms = *timeout_ms;
+                    let summary = serde_json::json!({
+                        "phase": "post",
+                        "policy": triggered.policy_name,
+                        "response_status": status.as_u16(),
+                    });
+                    tokio::spawn(async move {
+                        let client = reqwest::Client::new();
+                        let _ = client.post(&url)
+                            .timeout(Duration::from_millis(timeout_ms))
+                            .json(&summary)
+                            .send()
+                            .await;
+                    });
+                }
+                _ => {
+                    tracing::debug!(
+                        policy = %triggered.policy_name,
+                        action = ?triggered.action,
+                        "post-flight action not applicable"
+                    );
+                }
+            }
+        }
+
+        // Collect post-flight shadow violations
+        if !post_outcome.shadow_violations.is_empty() {
+            shadow_violations.extend(post_outcome.shadow_violations);
+        }
+    }
+
     // -- 6. Sanitize response --
     let content_type = resp_headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream");
-    let sanitization_result = middleware::sanitize::sanitize_response(&resp_body, content_type);
+    let sanitization_result = middleware::sanitize::sanitize_response(&resp_body_vec, content_type);
     let sanitized_body = sanitization_result.body;
 
     // -- 6.1 Calculate Cost & Update Spend --
@@ -547,11 +724,7 @@ pub async fn proxy_handler(
     if estimated_cost_usd.is_none() {
         match extract_usage(&token.upstream_url, &sanitized_body) {
             Ok(Some((input, output))) => {
-                // Heuristic: guess model from response or request?
-                // Ideally we parse "model" field from response body.
                 let model = extract_model(&sanitized_body).unwrap_or("unknown".to_string());
-
-                // Deduce provider from URL
                 let provider = if token.upstream_url.contains("anthropic") {
                     "anthropic"
                 } else {
@@ -561,8 +734,6 @@ pub async fn proxy_handler(
 
                 if !final_cost.is_zero() {
                     estimated_cost_usd = Some(final_cost);
-                    // Spawn tracking to avoid blocking response?
-                    // Or await it? It updates Redis (fast).
                     if let Err(e) = middleware::spend::track_spend(
                         &state.cache,
                         state.db.pool(),
@@ -577,43 +748,25 @@ pub async fn proxy_handler(
                     }
                 }
             }
-            Ok(None) => {} // No usage found
+            Ok(None) => {}
             Err(e) => tracing::warn!("Failed to extract usage: {}", e),
         }
     }
 
     // -- 7. Emit audit log --
-    // -- 7. Emit audit log --
     log_audit_entry(
-        &state,
-        request_id,
-        token.project_id,
-        token.id.clone(),
-        agent_name,
-        method.to_string(),
-        path,
-        upstream_url,
+        &state, request_id, token.project_id, token.id.clone(),
+        agent_name, method.to_string(), path, upstream_url,
         &policies,
-        if hitl_required {
-            crate::models::audit::PolicyResult::HitlApproved
-        } else {
-            crate::models::audit::PolicyResult::Allow
-        },
-        hitl_required,
-        hitl_decision,
-        hitl_latency_ms,
+        if hitl_required { crate::models::audit::PolicyResult::HitlApproved }
+        else { crate::models::audit::PolicyResult::Allow },
+        hitl_required, hitl_decision, hitl_latency_ms,
         Some(status.as_u16()),
         start.elapsed().as_millis() as u64,
-        if sanitization_result.redacted_types.is_empty() {
-            None
-        } else {
-            Some(sanitization_result.redacted_types)
-        },
-        if shadow_violations.is_empty() {
-            None
-        } else {
-            Some(shadow_violations)
-        },
+        if sanitization_result.redacted_types.is_empty() { None }
+        else { Some(sanitization_result.redacted_types) },
+        if shadow_violations.is_empty() { None }
+        else { Some(shadow_violations) },
         estimated_cost_usd,
     );
 

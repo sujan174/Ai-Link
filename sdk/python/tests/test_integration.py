@@ -155,7 +155,10 @@ class TestPolicies:
         return admin_client.policies.create(
             name=f"integ-policy-{uuid.uuid4().hex[:8]}",
             mode="shadow",
-            rules=[{"type": "rate_limit", "window": "1m", "max_requests": 1000}],
+            rules=[{
+                "when": {"always": True},
+                "then": {"action": "rate_limit", "window": "1m", "max_requests": 1000}
+            }],
         )
 
     def test_create_returns_dict_with_id(self, policy):
@@ -173,7 +176,16 @@ class TestPolicies:
         )
         assert our_policy is not None
         assert our_policy.mode == "shadow"
-        assert our_policy.rules[0]["type"] == "rate_limit"
+        # New structure: rules -> then (list) -> action object
+        # Assuming dict access driven by the test setup
+        rule = our_policy.rules[0]
+        # Actions might be deserialized as a list or single object depending on SDK implementation consistency
+        # But our input was 'then': {...} which might be normalized to list.
+        # Let's check safely.
+        action = rule.get("then")
+        if isinstance(action, list):
+            action = action[0]
+        assert action["action"] == "rate_limit"
 
     def test_update_mode(self, admin_client, policy):
         """policies.update() switches mode from shadow to enforce."""
@@ -313,7 +325,10 @@ class TestHITLApprove:
     @pytest.fixture(scope="class")
     def hitl_token(self, admin_client, project_id):
         """Create a token governed by a HITL policy."""
-        rules = [{"type": "human_approval", "timeout": "10m", "fallback": "deny"}]
+        rules = [{
+            "when": {"always": True},
+            "then": {"action": "require_approval", "timeout": "10m", "fallback": "deny"}
+        }]
         policy = admin_client.policies.create(
             name=f"hitl-approve-{uuid.uuid4().hex[:8]}",
             mode="enforce",
@@ -342,8 +357,9 @@ class TestHITLApprove:
             try:
                 resp = agent.get("/anything/hitl-approve")
                 result["status"] = resp.status_code
+                result["body"] = resp.text[:500]
             except Exception as e:
-                result["error"] = e
+                result["error"] = str(e)
 
         t = threading.Thread(target=make_request)
         t.start()
@@ -358,7 +374,8 @@ class TestHITLApprove:
                 approval_id = req.id
                 break
 
-        assert approval_id, "Did not find pending approval for /anything/hitl-approve"
+        diag = f"thread_result={result}, pending_count={len(pending)}, pending_paths={[r.request_summary.path for r in pending]}"
+        assert approval_id, f"Did not find pending approval for /anything/hitl-approve. Diagnostics: {diag}"
 
         # Approve it
         decision = admin_client.approvals.approve(str(approval_id))
@@ -379,7 +396,10 @@ class TestHITLReject:
     @pytest.fixture(scope="class")
     def hitl_token(self, admin_client, project_id):
         """Create a separate token governed by a HITL policy for rejection tests."""
-        rules = [{"type": "human_approval", "timeout": "10m", "fallback": "deny"}]
+        rules = [{
+            "when": {"always": True},
+            "then": {"action": "require_approval", "timeout": "10m", "fallback": "deny"}
+        }]
         policy = admin_client.policies.create(
             name=f"hitl-reject-{uuid.uuid4().hex[:8]}",
             mode="enforce",
@@ -408,8 +428,9 @@ class TestHITLReject:
             try:
                 resp = agent.get("/anything/hitl-reject")
                 result["status"] = resp.status_code
+                result["body"] = resp.text[:500]
             except Exception as e:
-                result["error"] = e
+                result["error"] = str(e)
 
         t = threading.Thread(target=make_request)
         t.start()
@@ -424,7 +445,8 @@ class TestHITLReject:
                 approval_id = req.id
                 break
 
-        assert approval_id, "Did not find pending approval for /anything/hitl-reject"
+        diag = f"thread_result={result}, pending_count={len(pending)}, pending_paths={[r.request_summary.path for r in pending]}"
+        assert approval_id, f"Did not find pending approval for /anything/hitl-reject. Diagnostics: {diag}"
 
         # Reject it
         decision = admin_client.approvals.reject(str(approval_id))

@@ -159,6 +159,7 @@ impl PgStore {
             policies.push(crate::models::policy::Policy {
                 id: row.id,
                 name: row.name,
+                phase: crate::models::policy::Phase::Pre, // default, can be overridden via rules JSON
                 mode,
                 rules,
             });

@@ -1,15 +1,17 @@
-/// HITL approval via Redis Streams.
-/// When a policy triggers human_approval, the request is paused:
-/// 1. Publish approval request to stream:approvals
-/// 2. Fire Slack webhook with approve/reject buttons
-/// 3. Block on stream:approval_responses with timeout
-/// 4. Resume or reject based on response
-#[allow(dead_code)]
-pub async fn request_approval(
-    _request_id: &str,
-    _token_id: &str,
-    _timeout_secs: u64,
-) -> Result<bool, crate::errors::AppError> {
-    // TODO: implement Redis Streams pub/sub + Slack webhook
-    Ok(true) // stub: auto-approve
-}
+//! Human-In-The-Loop (HITL) approval workflow.
+//!
+//! The HITL approval logic is implemented directly in [`crate::proxy::handler::proxy_handler`]:
+//!
+//! 1. Pre-flight policy evaluation detects `Action::RequireApproval`
+//! 2. An `approval_request` row is inserted into Postgres
+//! 3. The handler polls `get_approval_status` with a configurable timeout
+//! 4. Admin users approve/reject via `POST /api/v1/approvals/:id/decision`
+//!
+//! ## Future: Redis Streams + Slack webhook
+//!
+//! For real-time notifications, this module will integrate:
+//! - Redis Streams pub/sub for instant approval delivery
+//! - Slack webhook with approve/reject action buttons
+//!
+//! Currently, the polling approach (500ms intervals) works well for low-volume
+//! use cases. The Redis Streams upgrade will be needed for <1s latency at scale.

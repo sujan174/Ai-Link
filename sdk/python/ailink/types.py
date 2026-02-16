@@ -2,7 +2,7 @@
 
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AIlinkModel(BaseModel):
@@ -67,8 +67,8 @@ class AuditLog(AIlinkModel):
     hitl_required: bool = False
     hitl_decision: Optional[str] = None
     hitl_latency_ms: Optional[int] = None
-    fields_redacted: Optional[List[str]] = []
-    shadow_violations: Optional[List[str]] = []
+    fields_redacted: Optional[List[str]] = Field(default_factory=list)
+    shadow_violations: Optional[List[str]] = Field(default_factory=list)
 
     def __repr__(self) -> str:
         return f"AuditLog(id={self.id!r}, method={self.method!r}, path={self.path!r}, status={self.upstream_status})"

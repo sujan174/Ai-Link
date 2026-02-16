@@ -32,7 +32,8 @@ class PoliciesResource:
 
         Args:
             name: Policy display name
-            rules: List of rule dicts (e.g. ``{"type": "rate_limit", "window": "1m", "max_requests": 100}``)
+            rules: List of rule dicts using when/then syntax, e.g.
+                ``{"when": {"field": "usage.request_count", "operator": "gt", "value": 100}, "then": {"action": "deny", "status": 429, "message": "Rate limit exceeded"}}``
             mode: "enforce" (block violations) or "shadow" (log only)
             project_id: Optional project scope
         """

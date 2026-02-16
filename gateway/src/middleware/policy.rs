@@ -1,205 +1,150 @@
-use axum::http::Method;
+//! Policy evaluation facade.
+//!
+//! This module bridges the legacy handler interface with the new condition→action
+//! engine. The proxy handler calls `evaluate_pre_flight()` and `evaluate_post_flight()`
+//! and executes the returned actions.
 
+use crate::cache::TieredCache;
+use crate::models::policy::{Action, EvalOutcome, Phase, Policy, RateLimitKey, TriggeredAction};
 use crate::errors::AppError;
-use crate::middleware::shadow;
-use crate::models::policy::{Policy, PolicyMode, Rule};
 
-pub enum PolicyDecision {
-    Allow,
-    HitlRequired,
+use super::engine;
+use super::fields::RequestContext;
+
+// ── Pre-flight evaluation (before upstream) ──────────────────
+
+/// Evaluate all pre-flight policies and return the outcome.
+///
+/// This replaces the old `evaluate_rules()` function. The caller must
+/// iterate over `outcome.actions` and execute each one.
+pub fn evaluate_pre_flight(policies: &[Policy], ctx: &RequestContext<'_>) -> EvalOutcome {
+    engine::evaluate_policies(policies, ctx, &Phase::Pre)
 }
 
-pub struct EvaluationResult {
-    pub decision: PolicyDecision,
-    pub shadow_violations: Vec<String>,
+// ── Post-flight evaluation (after upstream response) ─────────
+
+/// Evaluate all post-flight policies against the response.
+pub fn evaluate_post_flight(policies: &[Policy], ctx: &RequestContext<'_>) -> EvalOutcome {
+    engine::evaluate_policies(policies, ctx, &Phase::Post)
 }
 
-/// Evaluate all policy rules against the incoming request.
-/// Returns EvaluationResult with decision and any shadow violations.
-/// Returns Err(AppError) if an Enforce policy blocks the request.
-#[tracing::instrument(skip(policies))]
-pub fn evaluate_rules(
-    policies: &[Policy],
-    method: &Method,
-    path: &str,
-) -> Result<EvaluationResult, AppError> {
-    let mut hitl_required = false;
-    let mut shadow_violations = Vec::new();
+// ── Action Execution Helpers ─────────────────────────────────
 
-    for policy in policies {
-        for rule in &policy.rules {
-            // Check for HITL rule first
-            if let Rule::HumanApproval { .. } = rule {
-                // If HITL is enabled, we mark it.
-                // We continue to check other rules (whitelists/denylists)
-                hitl_required = true;
-                continue;
+/// Parse a duration string like "1m", "30s", "1h" into seconds.
+pub fn parse_window_secs(window: &str) -> Option<u64> {
+    let window = window.trim();
+    if window.is_empty() {
+        return None;
+    }
+
+    let (num_str, unit) = window.split_at(window.len() - 1);
+    let num: u64 = num_str.parse().ok()?;
+
+    match unit {
+        "s" => Some(num),
+        "m" => Some(num * 60),
+        "h" => Some(num * 3600),
+        "d" => Some(num * 86400),
+        _ => None,
+    }
+}
+
+/// Build the rate-limit Redis key for a given action + context.
+pub fn rate_limit_key(action: &Action, ctx: &RequestContext<'_>) -> String {
+    if let Action::RateLimit { key, .. } = action {
+        match key {
+            RateLimitKey::PerToken => format!("rl:tok:{}", ctx.token_id),
+            RateLimitKey::PerAgent => format!(
+                "rl:agent:{}",
+                ctx.agent_name.unwrap_or("unknown")
+            ),
+            RateLimitKey::PerIp => format!(
+                "rl:ip:{}",
+                ctx.client_ip.unwrap_or("unknown")
+            ),
+            RateLimitKey::PerUser => format!("rl:user:{}", ctx.token_id), // TODO: JWT sub
+            RateLimitKey::Global => "rl:global".to_string(),
+        }
+    } else {
+        format!("rl:tok:{}", ctx.token_id) // fallback
+    }
+}
+
+/// Execute a rate limit action using the cache.
+pub async fn execute_rate_limit(
+    action: &Action,
+    ctx: &RequestContext<'_>,
+    cache: &TieredCache,
+) -> Result<(), AppError> {
+    if let Action::RateLimit {
+        window,
+        max_requests,
+        ..
+    } = action
+    {
+        let window_secs = parse_window_secs(window).unwrap_or(60);
+        let key = rate_limit_key(action, ctx);
+
+        let count = cache
+            .increment(&key, window_secs)
+            .await
+            .map_err(AppError::Internal)?;
+
+        if count > *max_requests {
+            tracing::warn!(
+                key = %key,
+                count = count,
+                limit = max_requests,
+                "rate limit exceeded"
+            );
+            return Err(AppError::RateLimitExceeded);
+        }
+    }
+    Ok(())
+}
+
+/// Apply body field overrides (e.g., force model downgrade).
+pub fn apply_override(body: &mut serde_json::Value, action: &Action) {
+    if let Action::Override { set_body_fields } = action {
+        if let Some(obj) = body.as_object_mut() {
+            for (key, value) in set_body_fields {
+                obj.insert(key.clone(), value.clone());
             }
-
-            if let Some(reason) = check_rule(rule, method, path) {
-                match policy.mode {
-                    PolicyMode::Shadow => {
-                        shadow::log_shadow_violation(&policy.name, rule.rule_type(), &reason);
-                        shadow_violations.push(format!("policy '{}': {}", policy.name, reason));
-                        // Shadow: don't block, continue
-                    }
-                    PolicyMode::Enforce => {
-                        return Err(AppError::PolicyDenied {
-                            policy: policy.name.clone(),
-                            reason,
-                        });
-                    }
-                }
-            }
+            tracing::info!(
+                fields = ?set_body_fields.keys().collect::<Vec<_>>(),
+                "applied body overrides"
+            );
         }
     }
-
-    Ok(EvaluationResult {
-        decision: if hitl_required {
-            PolicyDecision::HitlRequired
-        } else {
-            PolicyDecision::Allow
-        },
-        shadow_violations,
-    })
 }
 
-/// Returns Some(reason) if the rule would deny this request, None if it passes.
-fn check_rule(rule: &Rule, method: &Method, path: &str) -> Option<String> {
-    match rule {
-        Rule::MethodWhitelist { methods } => {
-            let method_str = method.as_str();
-            if !methods.iter().any(|m| m.eq_ignore_ascii_case(method_str)) {
-                return Some(format!(
-                    "method {} not in whitelist {:?}",
-                    method_str, methods
-                ));
-            }
-        }
-        Rule::PathWhitelist { patterns } => {
-            let matched = patterns.iter().any(|p| path_matches(p, path));
-            if !matched {
-                return Some(format!("path {} not in whitelist", path));
-            }
-        }
-        Rule::RateLimit { .. } => {}
-        Rule::SpendCap { .. } => {}
-        Rule::HumanApproval { .. } => {
-            // Handled in evaluate_rules explicitly
-        }
-        Rule::TimeWindow { .. } => {
-            // TODO: check current time against allowed windows
-        }
-        Rule::IpAllowlist { .. } => {
-            // TODO: check source IP against CIDR list
-        }
-    }
-    None
+/// Check if any triggered action requires HITL approval.
+pub fn requires_approval(outcome: &EvalOutcome) -> Option<&TriggeredAction> {
+    outcome
+        .actions
+        .iter()
+        .find(|a| matches!(a.action, Action::RequireApproval { .. }))
 }
 
-/// Simple glob-style path matching.
-/// Supports trailing `*` wildcard only (e.g. "/v1/charges/*" matches "/v1/charges/ch_123").
-fn path_matches(pattern: &str, path: &str) -> bool {
-    if pattern == "*" || pattern == "/*" {
-        return true;
-    }
-    if let Some(prefix) = pattern.strip_suffix("/*") {
-        return path.starts_with(prefix);
-    }
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        return path.starts_with(prefix);
-    }
-    pattern == path
-}
-
-impl Rule {
-    pub fn rule_type(&self) -> &'static str {
-        match self {
-            Rule::MethodWhitelist { .. } => "method_whitelist",
-            Rule::PathWhitelist { .. } => "path_whitelist",
-            Rule::RateLimit { .. } => "rate_limit",
-            Rule::SpendCap { .. } => "spend_cap",
-            Rule::HumanApproval { .. } => "human_approval",
-            Rule::TimeWindow { .. } => "time_window",
-            Rule::IpAllowlist { .. } => "ip_allowlist",
-        }
-    }
+/// Check if any triggered action is a deny.
+pub fn first_deny(outcome: &EvalOutcome) -> Option<&TriggeredAction> {
+    outcome
+        .actions
+        .iter()
+        .find(|a| matches!(a.action, Action::Deny { .. }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
-
-    fn make_policy(rules: Vec<Rule>) -> Policy {
-        Policy {
-            id: Uuid::new_v4(),
-            name: "test".to_string(),
-            mode: PolicyMode::Enforce,
-            rules,
-        }
-    }
 
     #[test]
-    fn test_method_whitelist() {
-        let policy = make_policy(vec![Rule::MethodWhitelist {
-            methods: vec!["GET".to_string(), "POST".to_string()],
-        }]);
-
-        let res = evaluate_rules(&[policy], &Method::GET, "/").unwrap();
-        assert!(matches!(res.decision, PolicyDecision::Allow));
-
-        let policy2 = make_policy(vec![Rule::MethodWhitelist {
-            methods: vec!["GET".to_string(), "POST".to_string()],
-        }]);
-        assert!(evaluate_rules(&[policy2], &Method::DELETE, "/").is_err());
-    }
-
-    #[test]
-    fn test_path_whitelist_glob() {
-        let policy = make_policy(vec![Rule::PathWhitelist {
-            patterns: vec!["/v1/*".to_string(), "/health".to_string()],
-        }]);
-
-        let p_ref = std::slice::from_ref(&policy);
-
-        // Exact match
-        let res = evaluate_rules(p_ref, &Method::GET, "/health").unwrap();
-        assert!(matches!(res.decision, PolicyDecision::Allow));
-
-        // Glob match
-        let res2 = evaluate_rules(p_ref, &Method::GET, "/v1/chat").unwrap();
-        assert!(matches!(res2.decision, PolicyDecision::Allow));
-
-        // Mismatch
-        assert!(evaluate_rules(p_ref, &Method::GET, "/admin").is_err());
-    }
-
-    #[test]
-    fn test_hitl_flag() {
-        let policy = make_policy(vec![Rule::HumanApproval {
-            timeout: "10m".to_string(),
-            fallback: "deny".to_string(),
-        }]);
-
-        let result = evaluate_rules(&[policy], &Method::POST, "/charge").unwrap();
-        assert!(matches!(result.decision, PolicyDecision::HitlRequired));
-    }
-
-    #[test]
-    fn test_explicit_deny_beats_hitl() {
-        // If method is forbidden, HITL shouldn't even trigger (fail fast)
-        let policy = make_policy(vec![
-            Rule::MethodWhitelist {
-                methods: vec!["GET".to_string()],
-            },
-            Rule::HumanApproval {
-                timeout: "10m".to_string(),
-                fallback: "deny".to_string(),
-            },
-        ]);
-
-        let result = evaluate_rules(&[policy], &Method::POST, "/charge");
-        assert!(result.is_err()); // Should be PolicyDenied
+    fn test_parse_window_secs() {
+        assert_eq!(parse_window_secs("1s"), Some(1));
+        assert_eq!(parse_window_secs("5m"), Some(300));
+        assert_eq!(parse_window_secs("2h"), Some(7200));
+        assert_eq!(parse_window_secs("1d"), Some(86400));
+        assert_eq!(parse_window_secs(""), None);
+        assert_eq!(parse_window_secs("abc"), None);
     }
 }

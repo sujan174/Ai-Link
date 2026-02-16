@@ -103,22 +103,33 @@ def setup_resources(admin: AIlinkClient):
 
     # 2. Create policies
     # High budget — allows lots of traffic
+    # Rule 1: Allow request if spend < 100
+    # Or simplified: Check usage > 100 -> Deny
     p1 = admin.policies.create(
-        name="High Budget Policy",
+        name="High Budget ($100)",
         mode="enforce",
-        rules=[{"type": "spend_cap", "window": "daily", "max_usd": 100.0}],
+        rules=[{
+            "when": {"field": "usage.spend_today_usd", "op": "gt", "value": 100.0},
+            "then": {"action": "deny", "status": 402, "message": "Daily spend limit reached ($100)"}
+        }]
     )
-    # Low budget — will trigger spend cap after ~3 requests
+    # Low budget — will trigger spend cap quickly
     p2 = admin.policies.create(
-        name="Low Budget Policy",
+        name="Low Budget ($0.01)",
         mode="enforce",
-        rules=[{"type": "spend_cap", "window": "daily", "max_usd": 0.01}],
+        rules=[{
+            "when": {"field": "usage.spend_today_usd", "op": "gt", "value": 0.01},
+            "then": {"action": "deny", "status": 402, "message": "Low budget limit reached ($0.01)"}
+        }]
     )
     # HITL — requires human approval for every request
     p3 = admin.policies.create(
         name="Manager Approval Required",
         mode="enforce",
-        rules=[{"type": "human_approval", "timeout": "60m", "fallback": "deny"}],
+        rules=[{
+            "when": {"always": True},
+            "then": {"action": "require_approval", "timeout": "1h", "fallback": "deny"}
+        }]
     )
     logger.info(f"  Created 3 policies")
 
