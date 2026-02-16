@@ -1,0 +1,38 @@
+# Rust
+gateway/target/
+**/*.rs.bk
+
+# Node/JS
+node_modules/
+.next/
+.npm/
+dashboard/.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+
+# Environment Variables
+.env
+*.env
+
+# System
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+
+# Logs and Debug
+*.log
+debug_*.txt
+debug_test_output.txt
+tmp/
+coverage/
+
+# Docker
+docker-compose.override.yml

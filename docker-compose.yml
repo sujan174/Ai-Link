@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    image: ailink/dashboard:latest
+    ports:
+      - "3000:3000"
+    environment:
+      # Browser-side access to Gateway (must be public URL)
+      NEXT_PUBLIC_API_URL: "http://localhost:8443/api/v1"
+      # Server-side access to Gateway (docker internal)
+      API_URL: "http://gateway:8443/api/v1"
+    depends_on:
+      - gateway
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    image: ailink/gateway:latest
+    ports:
+      - "8443:8443"
+    environment:
+      # Database and Redis
+      - DATABASE_URL=postgres://postgres:password@postgres/ailink
+      - REDIS_URL=redis://redis:6379
+      # Monitoring
+      - RUST_LOG=gateway=info,tower_http=info
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - OTEL_SERVICE_NAME=ailink-gateway
+      # Security (Example key; change in production!)
+      - AILINK_MASTER_KEY=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+      - AILINK_ADMIN_KEY=ailink-admin-test
+      # Notifications (Set real value here if needed)
+      # - AILINK_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ailink
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli ping | grep PONG" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.50
+    ports:
+      - "16686:16686" # UI
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
+  mock-upstream:
+    image: kennethreitz/httpbin
+    ports:
+      - "8080:80"
+
+volumes:
+  pgdata:

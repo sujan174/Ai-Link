@@ -1,0 +1,566 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use anyhow::Context;
+use axum::routing::any;
+use clap::Parser;
+use tower_http::cors::CorsLayer;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+mod api;
+mod cache;
+mod cli;
+mod config;
+mod errors;
+mod middleware;
+mod models;
+mod notification;
+mod proxy;
+mod store;
+mod vault;
+
+use cache::TieredCache;
+use store::postgres::PgStore;
+use vault::builtin::BuiltinStore;
+
+/// Shared application state passed to handlers and middleware.
+pub struct AppState {
+    pub db: PgStore,
+    pub vault: BuiltinStore,
+    pub cache: TieredCache,
+    pub upstream_client: proxy::upstream::UpstreamClient,
+    pub notifier: notification::slack::SlackNotifier,
+    pub config: config::Config,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Configure OpenTelemetry (OTLP) -> Jaeger
+    // We try to connect to OTELL_EXPORTER_OTLP_ENDPOINT or default localhost:4317
+    // If it fails, we fallback to just logging to stdout?
+    // Actually, init_tracer usually logs error if fails but doesn't panic main app unless unwrapped.
+
+    use opentelemetry::KeyValue;
+    use opentelemetry_otlp::WithExportConfig;
+    use opentelemetry_sdk::{trace as sdktrace, Resource};
+
+    let tracer =
+        opentelemetry_otlp::new_pipeline()
+            .tracing()
+            .with_exporter(opentelemetry_otlp::new_exporter().tonic())
+            .with_trace_config(sdktrace::config().with_resource(Resource::new(vec![
+                KeyValue::new("service.name", "ailink-gateway"),
+            ])))
+            .install_batch(opentelemetry_sdk::runtime::Tokio)
+            .expect("failed to install OpenTelemetry tracer");
+
+    let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "gateway=debug,tower_http=debug".into()),
+        ))
+        .with(tracing_subscriber::fmt::layer())
+        .with(telemetry_layer)
+        .init();
+
+    let cfg = config::load()?;
+    let args = cli::Cli::parse();
+
+    match args.command {
+        Some(cli::Commands::Serve { port }) => {
+            run_server(cfg, port).await?;
+        }
+        Some(cli::Commands::Token { command }) => {
+            // CLI commands that need DB also need state now?
+            // Actually handle_token_command now takes &Arc<AppState> or we can refactor it to take DB + Config?
+            // The implementation used State.db.insert_token.
+            // We should init the state for CLI commands too or pass DB.
+            // Let's create a minimal state for CLI.
+
+            let db = PgStore::connect(&cfg.database_url).await?;
+            let vault = BuiltinStore::new(&cfg.master_key, db.pool().clone())?;
+            // Dummy values for CLI
+            let redis_client = redis::Client::open(cfg.redis_url.as_str())?;
+            let redis_conn = redis::aio::ConnectionManager::new(redis_client).await?;
+            let cache = TieredCache::new(redis_conn);
+            let upstream_client = proxy::upstream::UpstreamClient::new();
+            let notifier = notification::slack::SlackNotifier::new(cfg.slack_webhook_url.clone());
+
+            let state = Arc::new(AppState {
+                db,
+                vault,
+                cache,
+                upstream_client,
+                notifier,
+                config: cfg,
+            });
+
+            handle_token_command(command, &state).await?;
+        }
+        Some(cli::Commands::Credential { command }) => {
+            let db = PgStore::connect(&cfg.database_url).await?;
+            handle_credential_command(&db, &cfg, command).await?;
+        }
+        Some(cli::Commands::Approval { command }) => {
+            let db = PgStore::connect(&cfg.database_url).await?;
+            handle_approval_command(&db, command).await?;
+        }
+        Some(cli::Commands::Policy { command }) => {
+            // Need state for policy command
+            let db = PgStore::connect(&cfg.database_url).await?;
+            // We can construct a minimal state or refactor handle_policy_command to just take DB.
+            // But handle_policy_command might need more in future?
+            // Currently it only uses db.
+            // Let's construct minimal state to match signature
+            let vault = BuiltinStore::new(&cfg.master_key, db.pool().clone())?;
+            // For CLI we might not need Redis if we don't assume we need it.
+            // But AppState requires it.
+            // Let's just pass DB to handle_policy_command instead of AppState to simplify.
+            // Ah I already implemented handle_policy_command taking AppState.
+            // Let's initialize full state.
+            let redis_client = redis::Client::open(cfg.redis_url.as_str())?;
+            let redis_conn = redis::aio::ConnectionManager::new(redis_client).await?;
+            let cache = TieredCache::new(redis_conn);
+            let upstream_client = proxy::upstream::UpstreamClient::new();
+            let notifier = notification::slack::SlackNotifier::new(cfg.slack_webhook_url.clone());
+
+            let state = Arc::new(AppState {
+                db,
+                vault,
+                cache,
+                upstream_client,
+                notifier,
+                config: cfg,
+            });
+
+            handle_policy_command(command, &state).await?;
+        }
+        None => {
+            run_server(cfg, 8443).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
+    tracing::info!("Connecting to database...");
+    let db = PgStore::connect(&cfg.database_url).await?;
+
+    tracing::info!("Running migrations...");
+    db.migrate().await?;
+
+    tracing::info!("Initializing vault...");
+    let vault = BuiltinStore::new(&cfg.master_key, db.pool().clone())?;
+
+    tracing::info!("Connecting to Redis...");
+    let redis_client = redis::Client::open(cfg.redis_url.as_str())?;
+    // Use tokio::spawn to create connection manager properly in async context if needed,
+    // but ConnectionManager::new is async.
+    let redis_conn = redis::aio::ConnectionManager::new(redis_client).await?;
+    let cache = TieredCache::new(redis_conn);
+
+    let upstream_client = proxy::upstream::UpstreamClient::new();
+    let notifier = notification::slack::SlackNotifier::new(cfg.slack_webhook_url.clone());
+
+    let state = Arc::new(AppState {
+        db,
+        vault,
+        cache,
+        upstream_client,
+        notifier,
+        config: cfg,
+    });
+
+    let app = axum::Router::new()
+        // Health endpoints (no auth)
+        .route("/healthz", axum::routing::get(|| async { "ok" }))
+        .route("/readyz", axum::routing::get(readiness_check))
+        // Management API — nested under /api/v1 (preserves middleware + fallback)
+        .nest("/api/v1", api::api_router())
+        // Proxy: catch everything else
+        .fallback(any(proxy::handler::proxy_handler))
+        .with_state(state)
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(CorsLayer::permissive())
+        .layer(axum::middleware::from_fn(security_headers_middleware));
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("AIlink gateway listening on {}", addr);
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+async fn readiness_check() -> &'static str {
+    "ok"
+}
+
+/// Middleware: injects security headers into every response.
+/// These protect against XSS, clickjacking, MIME sniffing, and info leakage.
+async fn security_headers_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+
+    // Prevent MIME-type sniffing (e.g., interpreting a .txt as HTML)
+    headers.insert("X-Content-Type-Options", "nosniff".parse().unwrap());
+
+    // Prevent clickjacking by disallowing iframe embedding
+    headers.insert("X-Frame-Options", "DENY".parse().unwrap());
+
+    // Enable browser XSS filter (legacy but still useful)
+    headers.insert("X-XSS-Protection", "1; mode=block".parse().unwrap());
+
+    // Prevent the browser from caching sensitive API responses
+    headers.insert("Cache-Control", "no-store".parse().unwrap());
+
+    // Strip Referrer to avoid leaking tokens in URLs
+    headers.insert("Referrer-Policy", "no-referrer".parse().unwrap());
+
+    // Restrict permissions (camera, mic, geolocation, etc.)
+    headers.insert(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=()".parse().unwrap(),
+    );
+
+    // Remove server identity header
+    headers.remove("Server");
+
+    resp
+}
+
+async fn handle_policy_command(
+    cmd: cli::PolicyCommands,
+    state: &Arc<AppState>,
+) -> anyhow::Result<()> {
+    match cmd {
+        cli::PolicyCommands::Create {
+            name,
+            mode,
+            project_id,
+            rate_limit,
+            hitl_timeout,
+            hitl_fallback,
+        } => {
+            let pid =
+                project_id.unwrap_or_else(|| "00000000-0000-0000-0000-000000000001".to_string());
+            let pid = uuid::Uuid::parse_str(&pid).context("Invalid project_id")?;
+
+            let mut rules = Vec::new();
+
+            if let Some(rl) = rate_limit {
+                // Format: "10/min" -> { "type": "rate_limit", "window": "min", "max_requests": 10 }
+                let parts: Vec<&str> = rl.split('/').collect();
+                if parts.len() != 2 {
+                    anyhow::bail!("Invalid rate_limit format. Expected 'MAX/WINDOW' (e.g. 10/min)");
+                }
+                let count: u64 = parts[0].parse().context("Invalid rate limit count")?;
+                let window = parts[1].to_string();
+                rules.push(serde_json::json!({
+                    "type": "rate_limit",
+                    "window": window,
+                    "max_requests": count
+                }));
+            }
+
+            if let Some(timeout) = hitl_timeout {
+                let fallback = hitl_fallback.unwrap_or_else(|| "reject".to_string());
+                rules.push(serde_json::json!({
+                    "type": "human_approval",
+                    "timeout": timeout,
+                    "fallback": fallback
+                }));
+            }
+
+            let rules_json = serde_json::to_value(rules)?;
+            let id = state
+                .db
+                .insert_policy(pid, &name, &mode, rules_json)
+                .await?;
+            println!(
+                "Policy created:\n  Name:     {}\n  ID:       {}\n  Mode:     {}",
+                name, id, mode
+            );
+        }
+        cli::PolicyCommands::List { project_id } => {
+            let pid = uuid::Uuid::parse_str(&project_id).context("Invalid project_id")?;
+            let policies = state.db.list_policies(pid).await?;
+            if policies.is_empty() {
+                println!("No policies found.");
+            } else {
+                println!(
+                    "{:<38} {:<20} {:<10} {:<10}",
+                    "ID", "NAME", "MODE", "ACTIVE"
+                );
+                for p in policies {
+                    println!(
+                        "{:<38} {:<20} {:<10} {:<10}",
+                        p.id, p.name, p.mode, p.is_active
+                    );
+                }
+            }
+        }
+        cli::PolicyCommands::Delete { id } => {
+            // For now assume default project
+            let pid = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+            let pid_uuid = pid;
+            let pol_uuid = uuid::Uuid::parse_str(&id).context("Invalid policy ID")?;
+            let deleted = state.db.delete_policy(pol_uuid, pid_uuid).await?;
+            if deleted {
+                println!("Policy deleted.");
+            } else {
+                println!("Policy not found or already deleted.");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_token_command(
+    cmd: cli::TokenCommands,
+    state: &Arc<AppState>,
+) -> anyhow::Result<()> {
+    match cmd {
+        cli::TokenCommands::Create {
+            name,
+            credential,
+            upstream,
+            project_id,
+            policy_ids,
+        } => {
+            let pid =
+                project_id.unwrap_or_else(|| "00000000-0000-0000-0000-000000000001".to_string());
+            let pid = uuid::Uuid::parse_str(&pid).context("Invalid project_id")?;
+
+            // Resolve credential ID (could be name or UUID)
+            // Ideally we should lookup by name if not UUID, but for now let's try UUID first
+            let cred_id = if let Ok(uuid) = uuid::Uuid::parse_str(&credential) {
+                uuid
+            } else {
+                // Lookup by name
+                // We don't have a get_credential_by_name yet, so we list and find
+                let creds = state.db.list_credentials(pid).await?;
+                creds
+                    .into_iter()
+                    .find(|c| c.name == credential)
+                    .map(|c| c.id)
+                    .ok_or_else(|| anyhow::anyhow!("Credential not found: {}", credential))?
+            };
+
+            // Parse policy IDs
+            let mut p_ids = Vec::new();
+            if let Some(ids) = policy_ids {
+                for id_str in ids {
+                    p_ids.push(
+                        uuid::Uuid::parse_str(&id_str)
+                            .context(format!("Invalid policy ID: {}", id_str))?,
+                    );
+                }
+            }
+
+            let token_id = format!("ailink_v1_{}", uuid::Uuid::new_v4().simple());
+
+            let new_token = crate::store::postgres::NewToken {
+                id: token_id.clone(),
+                project_id: pid,
+                name,
+                credential_id: cred_id,
+                upstream_url: upstream,
+                scopes: serde_json::json!([]),
+                policy_ids: p_ids,
+            };
+
+            state.db.insert_token(&new_token).await?;
+            println!(
+                "Token created:\n  ID: {}\n  Use:   Authorization: Bearer {}",
+                new_token.id, new_token.id
+            );
+        }
+        cli::TokenCommands::List { project_id } => {
+            let pid = uuid::Uuid::parse_str(&project_id).context("Invalid project_id")?;
+            let tokens = state.db.list_tokens(pid).await?;
+            if tokens.is_empty() {
+                println!("No tokens found.");
+            } else {
+                println!("{:<38} {:<20} {:<10}", "ID", "NAME", "ACTIVE");
+                for t in tokens {
+                    println!("{:<38} {:<20} {:<10}", t.id, t.name, t.is_active);
+                }
+            }
+        }
+        cli::TokenCommands::Revoke { token_id } => {
+            let revoked = state.db.revoke_token(&token_id).await?;
+            if revoked {
+                println!("Token revoked.");
+            } else {
+                println!("Token not found.");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_credential_command(
+    db: &PgStore,
+    cfg: &config::Config,
+    cmd: cli::CredentialCommands,
+) -> anyhow::Result<()> {
+    match cmd {
+        cli::CredentialCommands::Add {
+            name,
+            provider,
+            key,
+            project_id,
+            mode,
+            header,
+        } => {
+            let project = parse_project_id(project_id)?;
+
+            // Validate injection configuration (H1)
+            let valid_modes = ["bearer", "basic", "header", "query"];
+            if !valid_modes.contains(&mode.as_str()) {
+                anyhow::bail!("invalid mode: {}. Must be one of {:?}", mode, valid_modes);
+            }
+
+            // Block dangerous headers
+            let dangerous_headers = [
+                "host",
+                "content-length",
+                "transfer-encoding",
+                "connection",
+                "upgrade",
+            ];
+            if dangerous_headers.contains(&header.to_lowercase().as_str()) {
+                anyhow::bail!(
+                    "header '{}' is reserved and cannot be used for injection",
+                    header
+                );
+            }
+
+            let (encrypted_dek, dek_nonce, encrypted_secret, secret_nonce) =
+                encrypt_credential(&cfg.master_key, &key)?;
+
+            let cred = store::postgres::NewCredential {
+                project_id: project,
+                name: name.clone(),
+                provider: provider.clone(),
+                encrypted_dek,
+                dek_nonce,
+                encrypted_secret,
+                secret_nonce,
+                injection_mode: mode.clone(),
+                injection_header: header.clone(),
+            };
+
+            let id = db.insert_credential(&cred).await?;
+            println!("Credential stored:");
+            println!("  Name:     {}", name);
+            println!("  Provider: {}", provider);
+            println!("  Mode:     {}", mode);
+            println!("  Header:   {}", header);
+            println!("  ID:       {}", id);
+        }
+
+        cli::CredentialCommands::List { project_id } => {
+            let project = parse_project_id(Some(project_id))?;
+            let creds = db.list_credentials(project).await?;
+
+            if creds.is_empty() {
+                println!("No credentials found.");
+                return Ok(());
+            }
+
+            println!(
+                "{:<38} {:<20} {:<12} {:<8} {}",
+                "ID", "NAME", "PROVIDER", "ACTIVE", "CREATED"
+            );
+            for c in creds {
+                println!(
+                    "{:<38} {:<20} {:<12} {:<8} {}",
+                    c.id,
+                    c.name,
+                    c.provider,
+                    c.is_active,
+                    c.created_at.format("%Y-%m-%d")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_approval_command(db: &PgStore, cmd: cli::ApprovalCommands) -> anyhow::Result<()> {
+    match cmd {
+        cli::ApprovalCommands::List { project_id } => {
+            let project = parse_project_id(project_id)?;
+            let approvals = db.list_pending_approvals(project).await?;
+
+            if approvals.is_empty() {
+                println!("No pending approvals.");
+                return Ok(());
+            }
+
+            println!("{:<38} {:<30} {}", "ID", "SUMMARY", "EXPIRES");
+            for r in approvals {
+                // Truncate summary for display
+                let summary = r.request_summary.to_string();
+                let summary_display = if summary.len() > 30 {
+                    format!("{}...", &summary[..27])
+                } else {
+                    summary
+                };
+                println!("{:<38} {:<30} {}", r.id, summary_display, r.expires_at);
+            }
+        }
+        cli::ApprovalCommands::Approve { request_id } => {
+            let id = uuid::Uuid::parse_str(&request_id)?;
+            // TODO: In a real CLI, we'd need the project_id from args or config context
+            // For now, we'll assume the default project ID for local dev call
+            let project_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+
+            let ok = db
+                .update_approval_status(id, project_id, models::approval::ApprovalStatus::Approved)
+                .await?;
+            if ok {
+                println!("Request {} approved.", id);
+            } else {
+                println!("Request {} not found or not pending.", id);
+            }
+        }
+        cli::ApprovalCommands::Reject { request_id } => {
+            let id = uuid::Uuid::parse_str(&request_id)?;
+            // TODO: In a real CLI, we'd need the project_id from args or config context
+            // For now, we'll assume the default project ID for local dev call
+            let project_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+
+            let ok = db
+                .update_approval_status(id, project_id, models::approval::ApprovalStatus::Rejected)
+                .await?;
+            if ok {
+                println!("Request {} rejected.", id);
+            } else {
+                println!("Request {} not found or not pending.", id);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn encrypt_credential(
+    master_key_hex: &str,
+    plaintext: &str,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let crypto = vault::builtin::VaultCrypto::new(master_key_hex)?;
+    crypto.encrypt_string(plaintext)
+}
+
+fn parse_project_id(id: Option<String>) -> anyhow::Result<uuid::Uuid> {
+    let raw = id.unwrap_or_else(|| "00000000-0000-0000-0000-000000000001".into());
+    raw.parse()
+        .map_err(|_| anyhow::anyhow!("invalid project ID: {}", raw))
+}
