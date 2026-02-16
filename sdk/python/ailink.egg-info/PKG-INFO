@@ -7,6 +7,7 @@ License: MIT
 Requires-Python: >=3.8
 Description-Content-Type: text/markdown
 Requires-Dist: httpx>=0.24.0
+Requires-Dist: pydantic>=2.0
 Provides-Extra: openai
 Requires-Dist: openai>=1.0.0; extra == "openai"
 Provides-Extra: anthropic

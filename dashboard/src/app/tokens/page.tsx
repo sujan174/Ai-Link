@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { listTokens, createToken, Token, CreateTokenRequest } from "@/lib/api";
 import { Plus, RefreshCw, Key, Shield, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table";
 import { columns } from "./columns";
 import {
@@ -31,7 +31,7 @@ export default function TokensPage() {
       setLoading(true);
       const data = await listTokens();
       setTokens(data);
-    } catch (e) {
+    } catch {
       toast.error("Failed to load tokens");
     } finally {
       setLoading(false);

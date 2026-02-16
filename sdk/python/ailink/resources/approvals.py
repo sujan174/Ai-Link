@@ -1,7 +1,13 @@
-from typing import List, Dict, Any, Optional
+"""Resource for managing HITL approval requests."""
+
+from typing import List, Optional
 from ..types import ApprovalRequest, ApprovalDecision
+from ..exceptions import raise_for_status
+
 
 class ApprovalsResource:
+    """Management API resource for HITL approval requests."""
+
     def __init__(self, client):
         self._client = client
 
@@ -11,7 +17,7 @@ class ApprovalsResource:
         if project_id:
             params["project_id"] = project_id
         resp = self._client._http.get("/api/v1/approvals", params=params)
-        resp.raise_for_status()
+        raise_for_status(resp)
         return [ApprovalRequest(**item) for item in resp.json()]
 
     def approve(self, approval_id: str) -> ApprovalDecision:
@@ -20,7 +26,7 @@ class ApprovalsResource:
             f"/api/v1/approvals/{approval_id}/decision",
             json={"decision": "approved"},
         )
-        resp.raise_for_status()
+        raise_for_status(resp)
         return ApprovalDecision(**resp.json())
 
     def reject(self, approval_id: str) -> ApprovalDecision:
@@ -29,11 +35,13 @@ class ApprovalsResource:
             f"/api/v1/approvals/{approval_id}/decision",
             json={"decision": "rejected"},
         )
-        resp.raise_for_status()
+        raise_for_status(resp)
         return ApprovalDecision(**resp.json())
 
 
 class AsyncApprovalsResource:
+    """Async Management API resource for HITL approval requests."""
+
     def __init__(self, client):
         self._client = client
 
@@ -43,7 +51,7 @@ class AsyncApprovalsResource:
         if project_id:
             params["project_id"] = project_id
         resp = await self._client._http.get("/api/v1/approvals", params=params)
-        resp.raise_for_status()
+        raise_for_status(resp)
         return [ApprovalRequest(**item) for item in resp.json()]
 
     async def approve(self, approval_id: str) -> ApprovalDecision:
@@ -52,7 +60,7 @@ class AsyncApprovalsResource:
             f"/api/v1/approvals/{approval_id}/decision",
             json={"decision": "approved"},
         )
-        resp.raise_for_status()
+        raise_for_status(resp)
         return ApprovalDecision(**resp.json())
 
     async def reject(self, approval_id: str) -> ApprovalDecision:
@@ -61,5 +69,5 @@ class AsyncApprovalsResource:
             f"/api/v1/approvals/{approval_id}/decision",
             json={"decision": "rejected"},
         )
-        resp.raise_for_status()
+        raise_for_status(resp)
         return ApprovalDecision(**resp.json())

@@ -28,7 +28,7 @@ pub async fn check_rate_limits(
                 let count = cache
                     .increment(&key, window_secs)
                     .await
-                    .map_err(|e| AppError::Internal(e))?;
+                    .map_err(AppError::Internal)?;
 
                 if count > *max_requests {
                     match policy.mode {

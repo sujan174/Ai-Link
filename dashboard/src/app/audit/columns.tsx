@@ -2,10 +2,10 @@
 
 import { ColumnDef } from "@tanstack/react-table"
 import { AuditLog } from "@/lib/api"
-import { ArrowUpDown, Activity } from "lucide-react"
+import { ArrowUpDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { formatDistanceToNow } from "date-fns"
+
 
 export const columns: ColumnDef<AuditLog>[] = [
     {
@@ -32,10 +32,10 @@ export const columns: ColumnDef<AuditLog>[] = [
         header: "Method",
         cell: ({ row }) => {
             const method = row.getValue("method") as string
-            let variant: "default" | "secondary" | "outline" = "outline";
+            let variant: "default" | "secondary" | "outline" | "destructive" = "outline";
             if (method === "GET") variant = "secondary";
             if (method === "POST") variant = "default";
-            if (method === "DELETE") variant = "destructive" as any; // hacking type for Badge
+            if (method === "DELETE") variant = "destructive";
 
             return <Badge variant={variant}>{method}</Badge>
         },

@@ -31,7 +31,7 @@ export default function PoliciesPage() {
             setLoading(true);
             const data = await listPolicies();
             setPolicies(data);
-        } catch (e) {
+        } catch {
             toast.error("Failed to load policies");
         } finally {
             setLoading(false);
@@ -133,7 +133,7 @@ function CreatePolicyForm({ onSuccess }: { onSuccess: () => void }) {
         e.preventDefault();
         try {
             setLoading(true);
-            let rules: any[] = [];
+            let rules: unknown[] = [];
             if (formData.type === "spend_cap") {
                 rules = [{ type: "spend_cap", max_usd: Number(formData.max_usd), window: formData.window }];
             } else if (formData.type === "rate_limit") {
@@ -144,8 +144,8 @@ function CreatePolicyForm({ onSuccess }: { onSuccess: () => void }) {
             await createPolicy({ name: formData.name, mode: formData.mode, project_id: "default", rules });
             toast.success("Policy created");
             onSuccess();
-        } catch (e) {
-            toast.error(e instanceof Error ? "Invalid Configuration" : "Failed to create policy");
+        } catch {
+            toast.error("Failed to create policy");
         } finally {
             setLoading(false);
         }

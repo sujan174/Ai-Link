@@ -185,6 +185,7 @@ Upstream API (real key, never exposed)
 ailink/
 ├── gateway/                # Rust gateway (the core product)
 │   ├── Cargo.toml
+│   ├── Dockerfile
 │   └── src/
 │       ├── main.rs
 │       ├── config.rs
@@ -198,12 +199,12 @@ ailink/
 │       ├── store/          # Data store backends
 │       └── models/         # Shared data types
 ├── sdk/
-│   ├── python/             # Python SDK (pip install ailink)
-│   └── typescript/         # TypeScript SDK (@ailink/sdk)
-├── dashboard/              # Next.js admin UI (Phase 2)
+│   └── python/             # Python SDK (pip install ailink)
+├── dashboard/              # Next.js admin UI
+│   └── Dockerfile
+├── examples/               # Demo scripts
 ├── docs/                   # Documentation
 ├── docker-compose.yml
-├── Dockerfile
 └── README.md
 ```
 

@@ -24,7 +24,7 @@ export default function ApprovalsPage() {
                 return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
             });
             setApprovals(sorted);
-        } catch (e) {
+        } catch {
             toast.error("Failed to load approvals");
         } finally {
             setLoading(false);

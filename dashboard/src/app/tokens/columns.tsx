@@ -86,7 +86,7 @@ export const columns: ColumnDef<Token>[] = [
                                     // Note: List refresh happens at page level; might need context or query invalidation 
                                     // But for now, we rely on the page to refresh or user to reload
                                     window.location.reload();
-                                } catch (e) {
+                                } catch {
                                     toast.error("Failed to revoke token");
                                 }
                             }}

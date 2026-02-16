@@ -261,7 +261,7 @@ pub async fn list_audit_logs(
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Vec<AuditLogRow>>, StatusCode> {
     let project_id = params.project_id.unwrap_or_else(default_project_id);
-    let limit = params.limit.unwrap_or(50).max(1).min(200); // 1 <= limit <= 200
+    let limit = params.limit.unwrap_or(50).clamp(1, 200); // 1 <= limit <= 200
     let offset = params.offset.unwrap_or(0).max(0); // non-negative
 
     let logs = state

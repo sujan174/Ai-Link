@@ -1,5 +1,9 @@
+"""Resource for managing encrypted credentials."""
+
 from typing import List, Dict, Any, Optional
 from ..types import Credential
+from ..exceptions import raise_for_status
+
 
 class CredentialsResource:
     """Management API resource for credentials (metadata only — no secrets exposed)."""
@@ -13,7 +17,7 @@ class CredentialsResource:
         if project_id:
             params["project_id"] = project_id
         resp = self._client._http.get("/api/v1/credentials", params=params)
-        resp.raise_for_status()
+        raise_for_status(resp)
         return [Credential(**item) for item in resp.json()]
 
     def create(
@@ -25,7 +29,12 @@ class CredentialsResource:
         injection_mode: Optional[str] = None,
         injection_header: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create a new encrypted credential."""
+        """
+        Create a new encrypted credential.
+
+        Returns a dict with the credential ``id`` and metadata.
+        The secret is encrypted at rest and never returned.
+        """
         payload: Dict[str, Any] = {
             "name": name,
             "provider": provider,
@@ -38,7 +47,7 @@ class CredentialsResource:
         if injection_header:
             payload["injection_header"] = injection_header
         resp = self._client._http.post("/api/v1/credentials", json=payload)
-        resp.raise_for_status()
+        raise_for_status(resp)
         return resp.json()
 
 
@@ -54,7 +63,7 @@ class AsyncCredentialsResource:
         if project_id:
             params["project_id"] = project_id
         resp = await self._client._http.get("/api/v1/credentials", params=params)
-        resp.raise_for_status()
+        raise_for_status(resp)
         return [Credential(**item) for item in resp.json()]
 
     async def create(
@@ -79,5 +88,5 @@ class AsyncCredentialsResource:
         if injection_header:
             payload["injection_header"] = injection_header
         resp = await self._client._http.post("/api/v1/credentials", json=payload)
-        resp.raise_for_status()
+        raise_for_status(resp)
         return resp.json()

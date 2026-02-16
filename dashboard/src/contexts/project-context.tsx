@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { listProjects, createProject as apiCreateProject, Project } from "@/lib/api";
 import { toast } from "sonner";
-import { useRouter } from "next/navigation";
+
 
 interface ProjectContextType {
     projects: Project[];
@@ -20,7 +20,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     const [projects, setProjects] = useState<Project[]>([]);
     const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(true);
-    const router = useRouter();
+
 
     const refreshProjects = useCallback(async () => {
         try {
@@ -37,7 +37,7 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
                 setSelectedProjectId(defaultProj);
                 localStorage.setItem("ailink_project_id", defaultProj);
             }
-        } catch (e) {
+        } catch {
             toast.error("Failed to load projects");
         } finally {
             setIsLoading(false);

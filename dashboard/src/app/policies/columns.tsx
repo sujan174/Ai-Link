@@ -2,7 +2,7 @@
 
 import { ColumnDef } from "@tanstack/react-table"
 import { Policy } from "@/lib/api"
-import { ArrowUpDown, ShieldAlert, Trash2 } from "lucide-react"
+import { ArrowUpDown, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { formatDistanceToNow } from "date-fns"
@@ -89,7 +89,7 @@ export const columns: ColumnDef<Policy>[] = [
                                         await deletePolicy(policy.id);
                                         toast.success("Policy deleted");
                                         window.location.reload();
-                                    } catch (e) {
+                                    } catch {
                                         toast.error("Failed to delete policy");
                                     }
                                 }}

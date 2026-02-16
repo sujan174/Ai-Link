@@ -61,7 +61,7 @@ pub async fn proxy_handler(
         .db
         .get_token(&token_str)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or(AppError::TokenNotFound)?;
 
     if !token.is_active {
@@ -76,7 +76,7 @@ pub async fn proxy_handler(
         .db
         .get_policies_for_token(&token.policy_ids)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     // -- 3.1 Rate Limit --
     let mut shadow_violations =
@@ -217,7 +217,7 @@ pub async fn proxy_handler(
                 expires_at,
             )
             .await
-            .map_err(|e| AppError::Internal(e))?;
+            .map_err(AppError::Internal)?;
 
         // Send Slack notification (async)
         let notifier = state.notifier.clone();
@@ -241,7 +241,7 @@ pub async fn proxy_handler(
                 .db
                 .get_approval_status(approval_id)
                 .await
-                .map_err(|e| AppError::Internal(e))?;
+                .map_err(AppError::Internal)?;
 
             match status.as_str() {
                 "approved" => {
@@ -349,7 +349,7 @@ pub async fn proxy_handler(
         .vault
         .retrieve(&token.credential_id.to_string())
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     // -- 5. Build upstream request --
     let upstream_url = proxy::transform::rewrite_url(&token.upstream_url, &path);
@@ -535,7 +535,7 @@ pub async fn proxy_handler(
         estimated_cost_usd = Some(cost_val);
         let _ = middleware::spend::track_spend(
             &state.cache,
-            &state.db.pool(),
+            state.db.pool(),
             &token.id,
             token.project_id,
             cost_val,
@@ -565,7 +565,7 @@ pub async fn proxy_handler(
                     // Or await it? It updates Redis (fast).
                     if let Err(e) = middleware::spend::track_spend(
                         &state.cache,
-                        &state.db.pool(),
+                        state.db.pool(),
                         &token.id,
                         token.project_id,
                         final_cost,
@@ -640,11 +640,12 @@ pub async fn proxy_handler(
         }
     }
 
-    Ok(response
+    response
         .body(Body::from(sanitized_body))
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("response build failed: {}", e)))?)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("response build failed: {}", e)))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn log_audit_entry(
     state: &AppState,
     req_id: Uuid,

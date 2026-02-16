@@ -6,6 +6,8 @@ use async_trait::async_trait;
 use rand::RngCore;
 use sqlx::PgPool;
 
+pub type EncryptedBlob = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+
 /// Built-in vault using AES-256-GCM envelope encryption in PostgreSQL.
 pub struct BuiltinStore {
     crypto: VaultCrypto,
@@ -18,11 +20,13 @@ impl BuiltinStore {
         Ok(Self { crypto, pool })
     }
 
+
+
     /// Delegate to VaultCrypto for API handler use.
     pub fn encrypt_string(
         &self,
         plaintext: &str,
-    ) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
+    ) -> anyhow::Result<EncryptedBlob> {
         self.crypto.encrypt_string(plaintext)
     }
 }
@@ -42,7 +46,7 @@ impl VaultCrypto {
     pub fn encrypt_string(
         &self,
         plaintext: &str,
-    ) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
+    ) -> anyhow::Result<EncryptedBlob> {
         // 1. Generate a random DEK
         let mut dek = [0u8; 32];
         OsRng.fill_bytes(&mut dek);

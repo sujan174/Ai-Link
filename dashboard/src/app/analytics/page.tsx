@@ -39,7 +39,7 @@ export default function AnalyticsPage() {
             setLoading(true);
             const data = await listAuditLogs(500, 0);
             setLogs(data);
-        } catch (e) {
+        } catch {
             toast.error("Failed to load analytics data");
         } finally {
             setLoading(false);

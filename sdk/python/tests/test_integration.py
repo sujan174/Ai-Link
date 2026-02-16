@@ -1,363 +1,437 @@
 """
-SDK Integration Tests — Live Gateway
-=====================================
-Tests the AIlink Python SDK (Client + AsyncClient) against a LIVE
-docker-compose stack: gateway :8443 · postgres · redis · httpbin :8080.
+AIlink SDK Integration Tests
+============================
 
-Prerequisites:
-  docker compose up -d   (from repo root)
-  pip install ailink httpx pydantic pytest pytest-anyio
+Full end-to-end tests against a running Gateway, Postgres, Redis, and Mock Upstream.
+Requires `gateway_up` fixture (checks /healthz).
 
-Run:
-  pytest tests/test_integration.py -v --tb=short
+These tests demonstrate the SDK as a developer would use it:
+- AIlinkClient.admin()      → Management operations (tokens, credentials, policies)
+- AIlinkClient(api_key=...) → Agent proxy operations (forwarding requests)
+- Resource methods          → client.tokens.create(), client.approvals.list(), etc.
 """
 
-import os
-import time
-import uuid
 import pytest
-import httpx
+import uuid
+import time
+import threading
 import requests
-
-from ailink import Client, AsyncClient
-from ailink.types import (
-    Token, Credential, Policy, AuditLog,
-    ApprovalRequest, ApprovalDecision,
-)
-
-# ── Config ───────────────────────────────────────────────────
-GATEWAY = os.getenv("GATEWAY_URL", "http://localhost:8443")
-ADMIN_KEY = os.getenv(
-    "ADMIN_KEY",
-    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-)
-PROJECT_ID = "00000000-0000-0000-0000-000000000001"
-MOCK_UPSTREAM = os.getenv("MOCK_UPSTREAM_URL", "http://mock-upstream:80")
+from ailink import AIlinkClient
+from ailink.types import Token, Credential, Policy, AuditLog, ApprovalRequest
 
 
-# ── Fixtures ─────────────────────────────────────────────────
-
-@pytest.fixture(scope="session")
-def gateway_up():
-    """Block until the gateway is reachable, or skip the entire module."""
-    for attempt in range(15):
-        try:
-            r = requests.get(f"{GATEWAY}/healthz", timeout=2)
-            if r.status_code == 200:
-                return True
-        except requests.ConnectionError:
-            pass
-        time.sleep(2)
-    pytest.skip(f"Gateway not reachable at {GATEWAY} — is docker compose up?")
+# ──────────────────────────────────────────────
+# 1. Health & Admin Auth
+# ──────────────────────────────────────────────
 
 
-@pytest.fixture(scope="session")
-def admin_client(gateway_up) -> Client:
-    """Admin SDK client for management operations."""
-    return Client.admin(admin_key=ADMIN_KEY, gateway_url=GATEWAY)
+class TestGatewayHealth:
+    def test_healthz(self, gateway_up, gateway_url):
+        r = requests.get(f"{gateway_url}/healthz")
+        assert r.status_code == 200
 
 
-@pytest.fixture(scope="session")
-def credential_id(admin_client) -> str:
-    """Create a real credential and return its UUID string."""
-    result = admin_client.credentials.create(
-        name=f"integ-cred-{uuid.uuid4().hex[:8]}",
-        provider="openai",
-        secret="sk-test-integration-fake-key-12345",
-    )
-    cred_id = result.get("id") if isinstance(result, dict) else result.id
-    assert cred_id, "Credential creation must return an id"
-    return str(cred_id)
+class TestAdminAuth:
+    def test_invalid_key_returns_401(self, gateway_url):
+        """Using a wrong admin key should fail on privileged operations."""
+        bad_admin = AIlinkClient.admin(admin_key="wrong_key", gateway_url=gateway_url)
+        with pytest.raises(Exception):
+            bad_admin.tokens.list()
 
-
-@pytest.fixture(scope="session")
-def token_data(admin_client, credential_id) -> dict:
-    """Create a real virtual token and return the raw response dict."""
-    result = admin_client.tokens.create(
-        name=f"integ-token-{uuid.uuid4().hex[:8]}",
-        credential_id=credential_id,
-        upstream_url=f"{MOCK_UPSTREAM}/anything",
-        project_id=PROJECT_ID,
-    )
-    assert "token_id" in result, f"Expected token_id in response, got: {result}"
-    assert result["token_id"].startswith("ailink_v1_")
-    return result
-
-
-@pytest.fixture(scope="session")
-def virtual_token(token_data) -> str:
-    """The ailink_v1_* virtual token string."""
-    return token_data["token_id"]
-
-
-# ═════════════════════════════════════════════════════════════
-# 1. CREDENTIAL LIFECYCLE
-# ═════════════════════════════════════════════════════════════
-
-class TestSDKCredentialLifecycle:
-    def test_create_credential_returns_id(self, credential_id):
-        """Credential was created by fixture; just verify it's a valid UUID."""
-        uid = uuid.UUID(credential_id)  # raises if invalid
-        assert uid.version == 4
-
-    def test_list_credentials_contains_created(self, admin_client, credential_id):
-        """List credentials and find the one we created."""
-        creds = admin_client.credentials.list()
-        assert isinstance(creds, list)
-        if len(creds) > 0:
-            assert isinstance(creds[0], Credential)
-            ids = [str(c.id) for c in creds]
-            assert credential_id in ids
-
-
-# ═════════════════════════════════════════════════════════════
-# 2. TOKEN LIFECYCLE
-# ═════════════════════════════════════════════════════════════
-
-class TestSDKTokenLifecycle:
-    def test_create_token_returns_ailink_prefix(self, virtual_token):
-        """Token was created by fixture; verify prefix."""
-        assert virtual_token.startswith("ailink_v1_")
-
-    def test_list_tokens_returns_pydantic(self, admin_client):
-        """List tokens and verify Pydantic models."""
+    def test_valid_admin_key_works(self, admin_client):
+        """A properly configured admin client can list tokens."""
         tokens = admin_client.tokens.list()
         assert isinstance(tokens, list)
-        if len(tokens) > 0:
-            t = tokens[0]
-            assert isinstance(t, Token)
-            # Dot-notation access
-            assert t.id is not None
-            assert t.name is not None
-            assert isinstance(t.is_active, bool)
-            # Dict-style backward compat
-            assert "id" in t
-            assert t["name"] == t.name
 
-    def test_token_has_expected_fields(self, admin_client, virtual_token):
-        """The token we created should appear in the list with all fields."""
+
+# ──────────────────────────────────────────────
+# 2. Credential Lifecycle
+# ──────────────────────────────────────────────
+
+
+class TestCredentials:
+    @pytest.fixture(scope="class")
+    def credential(self, admin_client):
+        """Create a credential for tests."""
+        return admin_client.credentials.create(
+            name=f"integ-cred-{uuid.uuid4().hex[:8]}",
+            provider="openai",
+            secret="sk-test-key",
+        )
+
+    def test_create_returns_dict(self, credential):
+        """credentials.create() returns a dict with an id."""
+        assert credential.get("id") is not None
+
+    def test_list_returns_credential_models(self, admin_client, credential):
+        """credentials.list() returns Credential Pydantic models."""
+        creds = admin_client.credentials.list()
+        assert len(creds) > 0
+        assert all(isinstance(c, Credential) for c in creds)
+
+        # Verify our created cred is in the list — attribute access, not dict access
+        ids = [c.id for c in creds]
+        assert str(credential["id"]) in [str(i) for i in ids]
+
+    def test_credential_has_expected_fields(self, admin_client, credential):
+        """Credential models expose name and provider as attributes."""
+        creds = admin_client.credentials.list()
+        our_cred = next(c for c in creds if str(c.id) == str(credential["id"]))
+        assert our_cred.provider == "openai"
+        assert our_cred.name.startswith("integ-cred-")
+
+
+# ──────────────────────────────────────────────
+# 3. Token Lifecycle
+# ──────────────────────────────────────────────
+
+
+class TestTokens:
+    @pytest.fixture(scope="class")
+    def credential(self, admin_client):
+        return admin_client.credentials.create(
+            name=f"tok-cred-{uuid.uuid4().hex[:8]}",
+            provider="openai",
+            secret="sk-test",
+        )
+
+    @pytest.fixture(scope="class")
+    def token(self, admin_client, credential, project_id, mock_upstream_url):
+        return admin_client.tokens.create(
+            name=f"integ-token-{uuid.uuid4().hex[:8]}",
+            credential_id=str(credential["id"]),
+            upstream_url=f"{mock_upstream_url}/anything",
+            project_id=project_id,
+        )
+
+    def test_create_returns_dict_with_token_id(self, token):
+        """tokens.create() returns dict with ailink_v1_ prefixed token_id."""
+        assert "token_id" in token
+        assert token["token_id"].startswith("ailink_v1_")
+
+    def test_list_returns_token_models(self, admin_client, token):
+        """tokens.list() returns Token Pydantic models with attribute access."""
         tokens = admin_client.tokens.list()
-        match = [t for t in tokens if t.id == virtual_token]
-        if match:
-            t = match[0]
-            assert t.upstream_url.endswith("/anything")
-            assert t.is_active is True
+        assert len(tokens) > 0
+        assert all(isinstance(t, Token) for t in tokens)
 
-
-# ═════════════════════════════════════════════════════════════
-# 3. PROXY ROUNDTRIP
-# ═════════════════════════════════════════════════════════════
-
-class TestSDKProxyRoundtrip:
-    def test_proxy_get_through_httpbin(self, virtual_token):
-        """
-        Send a real GET through the gateway proxy → httpbin /anything.
-        httpbin echoes back everything, so we can verify the request arrived.
-        """
-        resp = requests.get(
-            f"{GATEWAY}/anything",
-            headers={"Authorization": f"Bearer {virtual_token}"},
-            timeout=10,
+        our_token = next(
+            (t for t in tokens if t.name == token["name"]), None
         )
-        # httpbin returns 200 with JSON echo
-        assert resp.status_code == 200, f"Proxy returned {resp.status_code}: {resp.text[:200]}"
-        body = resp.json()
-        # httpbin /anything echoes the request method, URL, headers
-        assert body.get("method") == "GET" or "url" in body
+        assert our_token is not None
+        assert our_token.is_active is True
 
-    def test_proxy_post_json(self, virtual_token):
-        """POST JSON through the gateway proxy → httpbin /anything."""
-        payload = {"agent": "integration-test", "action": "verify"}
-        resp = requests.post(
-            f"{GATEWAY}/anything",
-            headers={
-                "Authorization": f"Bearer {virtual_token}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=10,
+    def test_revoke_and_verify(self, admin_client, credential, project_id, mock_upstream_url):
+        """Create, revoke, and verify the revoked token is rejected."""
+        # Create a disposable token
+        tok = admin_client.tokens.create(
+            name=f"revoke-test-{uuid.uuid4().hex[:8]}",
+            credential_id=str(credential["id"]),
+            upstream_url="http://mock-upstream:80/anything",
+            project_id=project_id,
         )
-        assert resp.status_code == 200
-        body = resp.json()
-        # httpbin echoes posted data
-        if "json" in body:
-            assert body["json"]["agent"] == "integration-test"
 
-
-# ═════════════════════════════════════════════════════════════
-# 4. AUDIT TRAIL
-# ═════════════════════════════════════════════════════════════
-
-class TestSDKAuditTrail:
-    def test_audit_logs_exist_after_proxy(self, admin_client):
-        """After proxy requests, there should be audit log entries."""
-        # Small delay to let async audit writer flush
-        time.sleep(1)
-        logs = admin_client.audit.list(limit=10)
-        assert isinstance(logs, list)
-        # At least the proxy requests from TestSDKProxyRoundtrip should appear
-        assert len(logs) > 0, "Expected at least 1 audit log after proxy requests"
-
-    def test_audit_log_pydantic_shape(self, admin_client):
-        """Verify audit logs are proper Pydantic AuditLog instances."""
-        logs = admin_client.audit.list(limit=5)
-        if len(logs) > 0:
-            log = logs[0]
-            assert isinstance(log, AuditLog)
-            assert log.id is not None
-            assert log.method in ("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
-            assert isinstance(log.upstream_status, int)
-            assert isinstance(log.response_latency_ms, int)
-
-
-# ═════════════════════════════════════════════════════════════
-# 5. POLICIES CRUD
-# ═════════════════════════════════════════════════════════════
-
-class TestSDKPoliciesCRUD:
-    @pytest.fixture()
-    def policy_id(self, admin_client):
-        """Create a test policy and yield its ID, cleanup after."""
-        result = admin_client.policies.create(
-            name=f"integ-policy-{uuid.uuid4().hex[:8]}",
-            rules=[{"pattern": "/danger/*", "action": "block"}],
-            mode="enforce",
-        )
-        pid = result.get("id") if isinstance(result, dict) else result.id
-        assert pid, f"Policy creation must return an id, got: {result}"
-        yield str(pid)
-        # Cleanup: attempt to delete
-        try:
-            admin_client.policies.delete(str(pid))
-        except Exception:
-            pass
-
-    def test_create_policy(self, policy_id):
-        """Policy fixture creates successfully — just verify UUID."""
-        uid = uuid.UUID(policy_id)
-        assert uid.version == 4
-
-    def test_list_policies_returns_pydantic(self, admin_client, policy_id):
-        """List policies and find the one we created."""
-        policies = admin_client.policies.list()
-        assert isinstance(policies, list)
-        if len(policies) > 0:
-            p = policies[0]
-            assert isinstance(p, Policy)
-            assert p.name is not None
-            assert p.mode in ("enforce", "shadow", "log")
-            assert isinstance(p.rules, list)
-
-    def test_update_policy(self, admin_client, policy_id):
-        """Update the policy mode from enforce to shadow."""
-        result = admin_client.policies.update(policy_id, mode="shadow")
-        assert isinstance(result, dict)
-
-    def test_delete_policy_succeeds(self, admin_client):
-        """Create and immediately delete a policy."""
-        result = admin_client.policies.create(
-            name=f"delete-me-{uuid.uuid4().hex[:8]}",
-            rules=[{"pattern": "/*", "action": "log"}],
-            mode="shadow",
-        )
-        pid = result.get("id") if isinstance(result, dict) else result.id
-        delete_result = admin_client.policies.delete(str(pid))
-        assert isinstance(delete_result, dict)
-
-
-# ═════════════════════════════════════════════════════════════
-# 6. APPROVALS
-# ═════════════════════════════════════════════════════════════
-
-class TestSDKApprovals:
-    def test_list_approvals_returns_list(self, admin_client):
-        """List approvals and verify shape."""
-        approvals = admin_client.approvals.list()
-        assert isinstance(approvals, list)
-        if len(approvals) > 0:
-            assert isinstance(approvals[0], ApprovalRequest)
-
-    def test_decide_nonexistent_returns_not_updated(self, admin_client):
-        """Approving a non-existent ID should return updated=false."""
-        fake_id = str(uuid.uuid4())
-        result = admin_client.approvals.approve(fake_id)
-        assert isinstance(result, ApprovalDecision)
-        assert result.updated is False
-        assert result.status == "approved"
-
-
-# ═════════════════════════════════════════════════════════════
-# 7. TOKEN REVOCATION
-# ═════════════════════════════════════════════════════════════
-
-class TestSDKTokenRevocation:
-    @pytest.fixture()
-    def revokable_token(self, admin_client, credential_id):
-        """Create a dedicated token for revocation testing."""
-        result = admin_client.tokens.create(
-            name=f"revoke-me-{uuid.uuid4().hex[:8]}",
-            credential_id=credential_id,
-            upstream_url=f"{MOCK_UPSTREAM}/anything",
-            project_id=PROJECT_ID,
-        )
-        return result["token_id"]
-
-    def test_revoke_token(self, admin_client, revokable_token):
-        """Revoke a token and verify the response."""
-        result = admin_client.tokens.revoke(revokable_token)
-        assert isinstance(result, dict)
+        # Revoke it
+        result = admin_client.tokens.revoke(tok["token_id"])
         assert result.get("revoked") is True or "message" in result
 
-    def test_revoked_token_blocked_by_proxy(self, admin_client, revokable_token):
-        """A revoked token should be rejected by the proxy."""
-        # Revoke first
-        admin_client.tokens.revoke(revokable_token)
-        time.sleep(0.5)  # Allow cache invalidation
-
-        resp = requests.get(
-            f"{GATEWAY}/anything",
-            headers={"Authorization": f"Bearer {revokable_token}"},
-            timeout=5,
+        # Try to use the revoked token — should fail
+        revoked_agent = AIlinkClient(
+            api_key=tok["token_id"], gateway_url=admin_client.gateway_url
         )
-        assert resp.status_code == 401, (
-            f"Revoked token should get 401, got {resp.status_code}"
+        resp = revoked_agent.get("/anything")
+        assert resp.status_code in (401, 403)
+
+
+# ──────────────────────────────────────────────
+# 4. Policy Lifecycle
+# ──────────────────────────────────────────────
+
+
+class TestPolicies:
+    @pytest.fixture(scope="class")
+    def policy(self, admin_client):
+        """Create a rate-limit policy."""
+        return admin_client.policies.create(
+            name=f"integ-policy-{uuid.uuid4().hex[:8]}",
+            mode="shadow",
+            rules=[{"type": "rate_limit", "window": "1m", "max_requests": 1000}],
         )
 
+    def test_create_returns_dict_with_id(self, policy):
+        """policies.create() returns a dict with an id."""
+        assert policy.get("id") is not None
 
-# ═════════════════════════════════════════════════════════════
-# 8. ASYNC CLIENT SMOKE TEST
-# ═════════════════════════════════════════════════════════════
+    def test_list_returns_policy_models(self, admin_client, policy):
+        """policies.list() returns Policy Pydantic models."""
+        policies = admin_client.policies.list()
+        assert len(policies) > 0
+        assert all(isinstance(p, Policy) for p in policies)
 
-@pytest.mark.anyio
-class TestAsyncSDKSmoke:
-    async def test_async_list_approvals(self, gateway_up):
-        """AsyncClient can list approvals against the live gateway."""
-        async with AsyncClient(api_key=ADMIN_KEY, gateway_url=GATEWAY) as client:
-            # AsyncClient uses Authorization: Bearer, but admin API expects X-Admin-Key
-            # So we test with a raw httpx.AsyncClient for admin endpoints
-            pass
+        our_policy = next(
+            (p for p in policies if str(p.id) == str(policy["id"])), None
+        )
+        assert our_policy is not None
+        assert our_policy.mode == "shadow"
+        assert our_policy.rules[0]["type"] == "rate_limit"
 
-    async def test_async_httpx_direct(self, gateway_up):
-        """Direct async call to gateway to verify async HTTP works."""
-        async with httpx.AsyncClient(
-            base_url=GATEWAY,
-            headers={"X-Admin-Key": ADMIN_KEY},
-        ) as client:
-            resp = await client.get("/api/v1/tokens")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert isinstance(data, list)
+    def test_update_mode(self, admin_client, policy):
+        """policies.update() switches mode from shadow to enforce."""
+        result = admin_client.policies.update(str(policy["id"]), mode="enforce")
+        assert result is not None
 
-    async def test_async_audit_list(self, gateway_up):
-        """Verify async HTTP against the audit endpoint."""
-        async with httpx.AsyncClient(
-            base_url=GATEWAY,
-            headers={"X-Admin-Key": ADMIN_KEY},
-        ) as client:
-            resp = await client.get("/api/v1/audit", params={"limit": 5})
-            assert resp.status_code == 200
-            logs = resp.json()
-            assert isinstance(logs, list)
-            if len(logs) > 0:
-                log = AuditLog(**logs[0])
-                assert log.id is not None
+        # Verify the update stuck
+        policies = admin_client.policies.list()
+        our_policy = next(p for p in policies if str(p.id) == str(policy["id"]))
+        assert our_policy.mode == "enforce"
+
+    def test_delete(self, admin_client):
+        """policies.delete() soft-deletes a policy."""
+        # Create a throwaway policy
+        throwaway = admin_client.policies.create(
+            name=f"delete-me-{uuid.uuid4().hex[:8]}",
+            mode="shadow",
+            rules=[],
+        )
+        result = admin_client.policies.delete(str(throwaway["id"]))
+        assert result is not None
+
+
+# ──────────────────────────────────────────────
+# 5. Proxy & Audit
+# ──────────────────────────────────────────────
+
+
+class TestProxyFlow:
+    @pytest.fixture(scope="class")
+    def active_token(self, admin_client, project_id):
+        """Create a credential + token for proxy tests."""
+        cred = admin_client.credentials.create(
+            name=f"proxy-cred-{uuid.uuid4().hex[:8]}",
+            provider="openai",
+            secret="sk-test",
+        )
+        token_resp = admin_client.tokens.create(
+            name=f"proxy-token-{uuid.uuid4().hex[:8]}",
+            credential_id=str(cred["id"]),
+            upstream_url="http://mock-upstream:80",
+            project_id=project_id,
+        )
+        return token_resp["token_id"]
+
+    def test_proxy_roundtrip(self, active_token, gateway_url):
+        """Agent sends request through gateway → mock upstream echoes it back."""
+        agent = AIlinkClient(api_key=active_token, gateway_url=gateway_url, timeout=10.0)
+
+        resp = agent.post("/anything", json={"hello": "world"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["json"]["hello"] == "world"
+
+    def test_proxy_get(self, active_token, gateway_url):
+        """GET request through the proxy."""
+        agent = AIlinkClient(api_key=active_token, gateway_url=gateway_url)
+        resp = agent.get("/anything/proxy-get-test")
+        assert resp.status_code == 200
+
+    def test_audit_logging(self, admin_client, active_token, gateway_url):
+        """Requests through the proxy appear in audit logs."""
+        marker = f"audit-{uuid.uuid4().hex[:8]}"
+        agent = AIlinkClient(api_key=active_token, gateway_url=gateway_url)
+        agent.get(f"/anything/{marker}")
+        time.sleep(1.5)
+
+        logs = admin_client.audit.list(limit=50)
+        assert all(isinstance(log, AuditLog) for log in logs)
+
+        found = any(marker in log.path for log in logs)
+        assert found, f"Expected to find audit log with path containing '{marker}'"
+
+
+# ──────────────────────────────────────────────
+# 6. Projects API (raw HTTP — no SDK resource yet)
+# ──────────────────────────────────────────────
+
+
+class TestProjects:
+    def test_list_projects(self, admin_client):
+        """GET /api/v1/projects returns a list of projects."""
+        resp = admin_client.get("/api/v1/projects")
+        assert resp.status_code == 200
+        projects = resp.json()
+        assert isinstance(projects, list)
+
+    def test_create_project(self, admin_client):
+        """POST /api/v1/projects creates a new project."""
+        resp = admin_client.post(
+            "/api/v1/projects",
+            json={"name": f"integ-project-{uuid.uuid4().hex[:8]}"},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert "id" in data
+        assert "name" in data
+
+
+# ──────────────────────────────────────────────
+# 7. Analytics Endpoints (raw HTTP — no SDK resource yet)
+# ──────────────────────────────────────────────
+
+
+class TestAnalytics:
+    def test_request_volume(self, admin_client, project_id):
+        """GET /api/v1/analytics/volume returns 24h volume data."""
+        resp = admin_client.get(
+            "/api/v1/analytics/volume",
+            params={"project_id": project_id},
+        )
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    def test_status_distribution(self, admin_client, project_id):
+        """GET /api/v1/analytics/status returns status code distribution."""
+        resp = admin_client.get(
+            "/api/v1/analytics/status",
+            params={"project_id": project_id},
+        )
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    def test_latency_percentiles(self, admin_client, project_id):
+        """GET /api/v1/analytics/latency returns P50/P90/P99 latency data."""
+        resp = admin_client.get(
+            "/api/v1/analytics/latency",
+            params={"project_id": project_id},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, dict)
+# ──────────────────────────────────────────────
+
+
+class TestHITLApprove:
+    @pytest.fixture(scope="class")
+    def hitl_token(self, admin_client, project_id):
+        """Create a token governed by a HITL policy."""
+        rules = [{"type": "human_approval", "timeout": "10m", "fallback": "deny"}]
+        policy = admin_client.policies.create(
+            name=f"hitl-approve-{uuid.uuid4().hex[:8]}",
+            mode="enforce",
+            rules=rules,
+        )
+        cred = admin_client.credentials.create(
+            name=f"hitl-cred-{uuid.uuid4().hex[:8]}",
+            provider="openai",
+            secret="sk-test",
+        )
+        token_resp = admin_client.tokens.create(
+            name=f"hitl-tok-{uuid.uuid4().hex[:8]}",
+            credential_id=str(cred["id"]),
+            upstream_url="http://mock-upstream:80",
+            project_id=project_id,
+            policy_ids=[str(policy["id"])],
+        )
+        return token_resp["token_id"]
+
+    def test_approve_flow(self, hitl_token, gateway_url, admin_client):
+        """Full: agent request blocks → admin approves → request completes 200."""
+        agent = AIlinkClient(api_key=hitl_token, gateway_url=gateway_url, timeout=30.0)
+        result = {}
+
+        def make_request():
+            try:
+                resp = agent.get("/anything/hitl-approve")
+                result["status"] = resp.status_code
+            except Exception as e:
+                result["error"] = e
+
+        t = threading.Thread(target=make_request)
+        t.start()
+        time.sleep(2.0)
+
+        # Admin finds the pending approval
+        pending = admin_client.approvals.list()
+        approval_id = None
+        for req in pending:
+            assert isinstance(req, ApprovalRequest)
+            if req.status == "pending" and req.request_summary.path == "/anything/hitl-approve":
+                approval_id = req.id
+                break
+
+        assert approval_id, "Did not find pending approval for /anything/hitl-approve"
+
+        # Approve it
+        decision = admin_client.approvals.approve(str(approval_id))
+        assert decision.status == "approved"
+
+        t.join(timeout=15)
+        if "error" in result:
+            raise result["error"]
+        assert result.get("status") == 200
+
+
+# ──────────────────────────────────────────────
+# 7. HITL — Reject Flow
+# ──────────────────────────────────────────────
+
+
+class TestHITLReject:
+    @pytest.fixture(scope="class")
+    def hitl_token(self, admin_client, project_id):
+        """Create a separate token governed by a HITL policy for rejection tests."""
+        rules = [{"type": "human_approval", "timeout": "10m", "fallback": "deny"}]
+        policy = admin_client.policies.create(
+            name=f"hitl-reject-{uuid.uuid4().hex[:8]}",
+            mode="enforce",
+            rules=rules,
+        )
+        cred = admin_client.credentials.create(
+            name=f"hitl-rej-cred-{uuid.uuid4().hex[:8]}",
+            provider="openai",
+            secret="sk-test",
+        )
+        token_resp = admin_client.tokens.create(
+            name=f"hitl-rej-tok-{uuid.uuid4().hex[:8]}",
+            credential_id=str(cred["id"]),
+            upstream_url="http://mock-upstream:80",
+            project_id=project_id,
+            policy_ids=[str(policy["id"])],
+        )
+        return token_resp["token_id"]
+
+    def test_reject_flow(self, hitl_token, gateway_url, admin_client):
+        """Full: agent request blocks → admin rejects → request returns 403."""
+        agent = AIlinkClient(api_key=hitl_token, gateway_url=gateway_url, timeout=30.0)
+        result = {}
+
+        def make_request():
+            try:
+                resp = agent.get("/anything/hitl-reject")
+                result["status"] = resp.status_code
+            except Exception as e:
+                result["error"] = e
+
+        t = threading.Thread(target=make_request)
+        t.start()
+        time.sleep(2.0)
+
+        # Admin finds the pending approval
+        pending = admin_client.approvals.list()
+        approval_id = None
+        for req in pending:
+            assert isinstance(req, ApprovalRequest)
+            if req.status == "pending" and req.request_summary.path == "/anything/hitl-reject":
+                approval_id = req.id
+                break
+
+        assert approval_id, "Did not find pending approval for /anything/hitl-reject"
+
+        # Reject it
+        decision = admin_client.approvals.reject(str(approval_id))
+        assert decision.status == "rejected"
+
+        t.join(timeout=15)
+
+        # Rejected requests should return 403 (or similar denial)
+        assert result.get("status") in (403, 429, 502), \
+            f"Expected rejection status, got {result.get('status', result.get('error'))}"

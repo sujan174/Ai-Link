@@ -7,6 +7,7 @@ node_modules/
 .next/
 .npm/
 dashboard/.env.local
+*.tsbuildinfo
 
 # Python
 __pycache__/
@@ -14,6 +15,9 @@ __pycache__/
 .pytest_cache/
 venv/
 .venv/
+*.egg-info/
+build/
+dist/
 
 # Environment Variables
 .env

@@ -64,7 +64,14 @@ async fn admin_auth(req: Request, next: Next) -> Result<Response, StatusCode> {
     let provided_key = req
         .headers()
         .get("x-admin-key")
-        .and_then(|v| v.to_str().ok());
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| {
+            req.headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(|t| t.trim())
+        });
 
     let expected = std::env::var("AILINK_ADMIN_KEY")
         .or_else(|_| std::env::var("AILINK_MASTER_KEY"))

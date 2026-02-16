@@ -88,7 +88,7 @@ export const columns: ColumnDef<ApprovalRequest>[] = [
                                 await decideApproval(request.id, "approved");
                                 toast.success("Request approved");
                                 window.location.reload();
-                            } catch (e) {
+                            } catch {
                                 toast.error("Failed to approve");
                             }
                         }}
@@ -104,7 +104,7 @@ export const columns: ColumnDef<ApprovalRequest>[] = [
                                 await decideApproval(request.id, "rejected");
                                 toast.success("Request rejected");
                                 window.location.reload();
-                            } catch (e) {
+                            } catch {
                                 toast.error("Failed to reject");
                             }
                         }}

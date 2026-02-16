@@ -23,9 +23,13 @@ type SidebarProps = React.HTMLAttributes<HTMLDivElement>;
 export function Sidebar({ className }: SidebarProps) {
     const pathname = usePathname();
     const { theme, setTheme } = useTheme();
+
+
     const [mounted, setMounted] = useState(false);
 
-    useEffect(() => setMounted(true), []);
+    useEffect(() => {
+        setMounted(true);
+    }, []);
 
     const routes = [
         {

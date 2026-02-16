@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     // Actually, init_tracer usually logs error if fails but doesn't panic main app unless unwrapped.
 
     use opentelemetry::KeyValue;
-    use opentelemetry_otlp::WithExportConfig;
+
     use opentelemetry_sdk::{trace as sdktrace, Resource};
 
     let tracer =
@@ -476,8 +476,8 @@ async fn handle_credential_command(
             }
 
             println!(
-                "{:<38} {:<20} {:<12} {:<8} {}",
-                "ID", "NAME", "PROVIDER", "ACTIVE", "CREATED"
+                "{:<38} {:<20} {:<12} {:<8} CREATED",
+                "ID", "NAME", "PROVIDER", "ACTIVE"
             );
             for c in creds {
                 println!(
@@ -505,7 +505,7 @@ async fn handle_approval_command(db: &PgStore, cmd: cli::ApprovalCommands) -> an
                 return Ok(());
             }
 
-            println!("{:<38} {:<30} {}", "ID", "SUMMARY", "EXPIRES");
+            println!("{:<38} {:<30} EXPIRES", "ID", "SUMMARY");
             for r in approvals {
                 // Truncate summary for display
                 let summary = r.request_summary.to_string();
@@ -554,7 +554,7 @@ async fn handle_approval_command(db: &PgStore, cmd: cli::ApprovalCommands) -> an
 fn encrypt_credential(
     master_key_hex: &str,
     plaintext: &str,
-) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
+) -> anyhow::Result<crate::vault::builtin::EncryptedBlob> {
     let crypto = vault::builtin::VaultCrypto::new(master_key_hex)?;
     crypto.encrypt_string(plaintext)
 }

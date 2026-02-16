@@ -31,11 +31,9 @@ impl TieredCache {
 
         // tier 2: redis
         let mut conn = self.redis.clone();
-        if let Ok(val) = conn.get::<_, Option<String>>(key).await {
-            if let Some(v) = val {
-                self.local.insert(key.to_string(), v.clone());
-                return serde_json::from_str(&v).ok();
-            }
+        if let Ok(Some(v)) = conn.get::<_, Option<String>>(key).await {
+            self.local.insert(key.to_string(), v.clone());
+            return serde_json::from_str(&v).ok();
         }
 
         None
