@@ -1,6 +1,6 @@
 # Self-Hosting AILink 🚀
 
-This guide will help you run the entire AILink platform (Gateway + Dashboard + Database) on your local machine or server in just a few minutes.
+Run the full AILink stack (Gateway + Dashboard + Database) on your machine or a server in a few minutes.
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@ This guide will help you run the entire AILink platform (Gateway + Dashboard + D
 
 1.  **Clone the repository**
     ```bash
-    git clone https://github.com/yourusername/ailink.git
+    git clone https://github.com/sujan174/ailink.git
     cd ailink
     ```
 
@@ -49,7 +49,7 @@ You can customize the setup by editing `docker-compose.yml`:
 ## Troubleshooting
 
 **"Connection Refused"**
-Ensure Docker is running. Checked `docker ps` to see if containers are healthy.
+Ensure Docker is running. Check `docker ps` to see if containers are healthy.
 
 **"Gateway container keeps restarting"**
 Check logs: `docker logs ailink-gateway-1`. Usually due to database connection issues.

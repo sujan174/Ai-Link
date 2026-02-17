@@ -8,7 +8,7 @@
 
 **Agents do not access real API keys.**
 
-All agent credentials are virtual tokens (`ailink_v1_...`) valid only when used with the AIlink gateway. Real API keys are encrypted at rest, decrypted in memory only during request processing, and immediately discarded.
+All agent credentials are virtual tokens (`ailink_v1_...`) that only work through the AIlink gateway. Real API keys are encrypted at rest, decrypted in memory only during request forwarding, and zeroed immediately after.
 
 ---
 
@@ -84,17 +84,25 @@ AIlink implements envelope encryption, following the pattern used by AWS KMS and
 | Real API keys | PostgreSQL | AES-256-GCM (envelope encrypted) |
 | Virtual tokens | PostgreSQL | Plaintext (they are not secrets — useless without the gateway) |
 | Policies | PostgreSQL | Plaintext (not sensitive) |
-| Audit logs | PostgreSQL (partitioned) | Plaintext, but: request bodies are **hashed** (SHA-256), PII is **redacted** |
+| Audit logs | PostgreSQL (partitioned) | Plaintext metadata. Bodies stored only at Level 1+ (PII-scrubbed) or Level 2 (full debug, auto-expires after 24h) |
 
-### What AIlink Does NOT Store
+### What AIlink Does NOT Store (at Level 0)
 
-- Request bodies (only SHA-256 hashes)
-- Response bodies
+- Request/response bodies (only metadata: method, path, status, latency, cost)
 - Real API keys in plaintext anywhere
+
+### Privacy-Gated Body Capture (Phase 4)
+
+| Log Level | Bodies | Headers | PII | Auto-Expiry |
+|---|---|---|---|---|
+| **0** (default) | ❌ Not stored | ❌ Not stored | N/A | — |
+| **1** (scrubbed) | ✅ PII-redacted | ❌ Not stored | SSN, email, CC, phone, API keys scrubbed | — |
+| **2** (full debug) | ✅ Raw bodies | ✅ Full headers | No redaction | **24 hours** (auto-downgraded to Level 0) |
 
 ### Data Retention
 
 - Audit logs: 90-day retention (configurable). Old monthly partitions are dropped automatically.
+- Level 2 debug bodies: Auto-expired by background cleanup job (runs hourly).
 - Credentials: Retained until explicitly deleted. Old rotated versions deleted after grace period.
 
 ---
@@ -112,10 +120,11 @@ AIlink implements envelope encryption, following the pattern used by AWS KMS and
 
 Tokens can optionally specify allowed source IPs:
 
-```yaml
-rules:
-  - type: ip_allowlist
-    cidrs: ["10.0.0.0/8", "192.168.1.100/32"]
+```json
+{
+  "when": { "field": "source_ip", "op": "not_in", "value": ["10.0.0.0/8", "192.168.1.100/32"] },
+  "then": { "action": "deny" }
+}
 ```
 
 ---
@@ -131,7 +140,7 @@ rules:
 5. Upstream request sent
 6. **Credential zeroed from memory immediately after injection**
 
-The real credential exists in application memory for the minimum possible duration — typically microseconds.
+The real credential exists in memory for the shortest possible time — typically microseconds.
 
 ### Process Isolation
 

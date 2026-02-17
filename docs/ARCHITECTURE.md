@@ -71,7 +71,7 @@ Token format: `ailink_v1_proj_{project_id}_tok_{token_id}`
 
 ### 3. Policy Engine
 
-Policies are declarative YAML/JSON documents evaluated in a fixed order:
+Policies are JSON documents evaluated in a fixed order:
 
 1. Token Validity → 2. IP Allowlist → 3. Time Window → 4. Method + Path → 5. Rate Limit → 6. Spend Cap → 7. HITL → 8. Pass
 
@@ -94,8 +94,8 @@ A `SecretStore` trait with three backends:
 | Backend | Use Case |
 |---|---|
 | `BuiltinStore` | Envelope encryption in PostgreSQL (AES-256-GCM, per-secret DEKs) |
-| `VaultStore` | HashiCorp Vault transit engine (Phase 2+) |
-| `KmsStore` | AWS KMS + Secrets Manager (Phase 2+) |
+| `VaultStore` | HashiCorp Vault transit engine (planned) |
+| `KmsStore` | AWS KMS + Secrets Manager (planned) |
 
 Envelope encryption: Master Key (env/file) → encrypts Data Encryption Keys (DEKs) → DEKs encrypt individual secrets. Each encryption uses a unique 96-bit nonce.
 
@@ -146,42 +146,53 @@ Migration path: When audit volume exceeds ~50GB/month, migrate to ClickHouse wit
 
 ```
 gateway/src/
-├── main.rs              # Axum bootstrap, middleware stack composition
+├── main.rs              # Axum bootstrap, middleware stack composition, security headers
 ├── config.rs            # Env vars + optional TOML config
 ├── cache.rs             # DashMap + Redis two-tier cache
 ├── cli.rs               # CLI commands (token, credential, policy management)
 ├── errors.rs            # Unified error types and HTTP error responses
 ├── rotation.rs          # Automatic key rotation scheduler
 │
+├── api/
+│   ├── mod.rs            # Management API router + admin auth middleware
+│   ├── handlers.rs       # CRUD handlers for tokens, policies, credentials, approvals, audit
+│   └── analytics.rs      # Volume, status, latency analytics endpoints
+│
 ├── middleware/
-│   ├── auth.rs           # Token extraction and validation
-│   ├── policy.rs         # Policy evaluation engine
-│   ├── shadow.rs         # Shadow mode logging
-│   ├── rate_limit.rs     # Redis-backed sliding window rate limiter
-│   ├── hitl.rs           # HITL pause/resume via Redis Streams
-│   ├── idempotency.rs    # Idempotency key deduplication for HITL
-│   ├── key_inject.rs     # Vault decrypt + header injection
-│   ├── sanitize.rs       # Streaming-aware response sanitization
-│   └── audit.rs          # Async audit log writer
+│   ├── engine.rs         # Condition→action policy evaluation engine
+│   ├── fields.rs         # RequestContext field extraction for conditions
+│   ├── policy.rs         # Pre/post-flight policy evaluation facade
+│   ├── redact.rs         # Policy-driven PII redaction (patterns + fields)
+│   ├── sanitize.rs       # Response sanitization (PII scrubbing)
+│   ├── spend.rs          # Spend tracking and cap enforcement
+│   ├── hitl.rs           # HITL approval workflow documentation
+│   └── audit.rs          # Async two-phase audit log writer
 │
 ├── proxy/
-│   ├── upstream.rs       # Hyper client with connection pooling
+│   ├── handler.rs        # Main proxy handler (auth → policy → key inject → forward → audit)
+│   ├── upstream.rs       # Reqwest client with retries, backoff, and connection pooling
 │   └── transform.rs      # URL rewriting, header mutation
 │
 ├── vault/
 │   ├── mod.rs            # SecretStore trait definition
-│   ├── builtin.rs        # AES-256-GCM envelope encryption (PG-backed)
-│   ├── hashicorp.rs      # HashiCorp Vault backend
-│   └── aws_kms.rs        # AWS KMS backend
+│   └── builtin.rs        # AES-256-GCM envelope encryption (PG-backed)
 │
 ├── store/
 │   ├── mod.rs            # DataStore trait definition
 │   └── postgres.rs       # PostgreSQL implementation (sqlx)
 │
+├── jobs/
+│   └── cleanup.rs        # Background job: auto-expire Level 2 debug logs (hourly)
+│
+├── notification/
+│   └── slack.rs          # Slack webhook notifier for HITL approvals
+│
 └── models/
     ├── token.rs           # Token types and serialization
-    ├── policy.rs          # Policy rules and evaluation types
-    └── audit.rs           # Audit log entry schema
+    ├── policy.rs          # Policy rules, conditions, actions, and evaluation types
+    ├── audit.rs           # Audit log entry schema
+    ├── approval.rs        # HITL approval request types
+    └── cost.rs            # Token usage extraction and cost calculation
 ```
 
 ---

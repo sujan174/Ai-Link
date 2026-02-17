@@ -3,13 +3,15 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
+    response::IntoResponse,
     Json,
 };
+use serde_json::json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::models::approval::ApprovalStatus;
-use crate::store::postgres::{AuditLogRow, CredentialMeta, PolicyRow, TokenRow};
+use crate::store::postgres::{AuditLogDetailRow, AuditLogRow, CredentialMeta, PolicyRow, TokenRow};
 use crate::AppState;
 
 // ── Request / Response DTOs ──────────────────────────────────
@@ -276,13 +278,37 @@ pub async fn list_audit_logs(
     Ok(Json(logs))
 }
 
+/// GET /api/v1/audit/:id — single audit log detail with bodies
+pub async fn get_audit_log(
+    State(state): State<Arc<AppState>>,
+    Path(id_str): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<AuditLogDetailRow>, StatusCode> {
+    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    let log_id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let log = state
+        .db
+        .get_audit_log_detail(log_id, project_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("get_audit_log_detail failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(log))
+}
+
 // ── Policy DTOs ──────────────────────────────────────────────
 
 #[derive(Deserialize)]
 pub struct CreatePolicyRequest {
     pub name: String,
     pub mode: Option<String>, // "enforce" | "shadow", defaults to "enforce"
+    pub phase: Option<String>, // "pre" | "post", defaults to "pre"
     pub rules: serde_json::Value,
+    pub retry: Option<serde_json::Value>,
     pub project_id: Option<Uuid>,
 }
 
@@ -290,7 +316,9 @@ pub struct CreatePolicyRequest {
 pub struct UpdatePolicyRequest {
     pub name: Option<String>,
     pub mode: Option<String>,
+    pub phase: Option<String>,
     pub rules: Option<serde_json::Value>,
+    pub retry: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -354,33 +382,51 @@ pub async fn list_policies(
 pub async fn create_policy(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CreatePolicyRequest>,
-) -> Result<(StatusCode, Json<PolicyResponse>), StatusCode> {
+) -> impl IntoResponse {
     let project_id = payload.project_id.unwrap_or_else(default_project_id);
     let mode = payload.mode.unwrap_or_else(|| "enforce".to_string());
+    let phase = payload.phase.unwrap_or_else(|| "pre".to_string());
 
     // Validate mode
     if mode != "enforce" && mode != "shadow" {
         tracing::warn!("create_policy: invalid mode: {}", mode);
-        return Err(StatusCode::BAD_REQUEST);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("invalid mode: {}", mode) })),
+        ).into_response();
     }
 
-    let id = state
-        .db
-        .insert_policy(project_id, &payload.name, &mode, payload.rules)
-        .await
-        .map_err(|e| {
-            tracing::error!("create_policy failed: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    
+    // Validate phase
+    if phase != "pre" && phase != "post" {
+        tracing::warn!("create_policy: invalid phase: {}", phase);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("invalid phase: {}", phase) })),
+        ).into_response();
+    }
 
-    Ok((
-        StatusCode::CREATED,
-        Json(PolicyResponse {
-            id,
-            name: payload.name,
-            message: "Policy created".to_string(),
-        }),
-    ))
+    match state
+        .db
+        .insert_policy(project_id, &payload.name, &mode, &phase, payload.rules, payload.retry)
+        .await
+    {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(json!(PolicyResponse {
+                id,
+                name: payload.name,
+                message: "Policy created".to_string(),
+            })),
+        ).into_response(),
+        Err(e) => {
+            tracing::error!("create_policy failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            ).into_response()
+        }
+    }
 }
 
 /// PUT /api/v1/policies/:id — update a policy
@@ -399,13 +445,22 @@ pub async fn update_policy(
         }
     }
 
+    // Validate phase if provided
+    if let Some(ref phase) = payload.phase {
+        if phase != "pre" && phase != "post" {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
     let updated = state
         .db
         .update_policy(
             id,
             project_id,
             payload.mode.as_deref(),
+            payload.phase.as_deref(),
             payload.rules,
+            payload.retry,
             payload.name.as_deref(),
         )
         .await

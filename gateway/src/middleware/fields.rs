@@ -84,15 +84,12 @@ fn resolve_request(path: &str, ctx: &RequestContext<'_>) -> Option<Value> {
 
     // request.query.<name>
     if let Some(param_name) = path.strip_prefix("query.") {
-        return ctx
-            .uri
-            .query()
-            .and_then(|qs| {
-                url_params(qs)
-                    .into_iter()
-                    .find(|(k, _)| k == param_name)
-                    .map(|(_, v)| Value::String(v))
-            });
+        return ctx.uri.query().and_then(|qs| {
+            url_params(qs)
+                .into_iter()
+                .find(|(k, _)| k == param_name)
+                .map(|(_, v)| Value::String(v))
+        });
     }
 
     None
@@ -168,8 +165,7 @@ fn resolve_context(path: &str, ctx: &RequestContext<'_>) -> Option<Value> {
 fn resolve_usage(path: &str, ctx: &RequestContext<'_>) -> Option<Value> {
     ctx.usage
         .get(path)
-        .map(|v| serde_json::Number::from_f64(*v))
-        .flatten()
+        .and_then(|v| serde_json::Number::from_f64(*v))
         .map(Value::Number)
 }
 
@@ -289,8 +285,14 @@ mod tests {
     #[test]
     fn test_extract_simple_field() {
         let json: Value = json!({"amount": 5000, "model": "gpt-4"});
-        assert_eq!(extract_json_path(&json, "amount"), Some(Value::Number(5000.into())));
-        assert_eq!(extract_json_path(&json, "model"), Some(Value::String("gpt-4".to_string())));
+        assert_eq!(
+            extract_json_path(&json, "amount"),
+            Some(Value::Number(5000.into()))
+        );
+        assert_eq!(
+            extract_json_path(&json, "model"),
+            Some(Value::String("gpt-4".to_string()))
+        );
     }
 
     #[test]
@@ -413,7 +415,10 @@ mod tests {
         let headers = HeaderMap::new();
         let ctx = make_ctx(&method, "/v1/charges", &uri, &headers, None);
 
-        assert_eq!(resolve_field("request.path", &ctx), Some(json!("/v1/charges")));
+        assert_eq!(
+            resolve_field("request.path", &ctx),
+            Some(json!("/v1/charges"))
+        );
     }
 
     #[test]
@@ -436,8 +441,14 @@ mod tests {
         let body = json!({"model": "gpt-4", "max_tokens": 1024});
         let ctx = make_ctx(&method, "/api", &uri, &headers, Some(&body));
 
-        assert_eq!(resolve_field("request.body.model", &ctx), Some(json!("gpt-4")));
-        assert_eq!(resolve_field("request.body.max_tokens", &ctx), Some(json!(1024)));
+        assert_eq!(
+            resolve_field("request.body.model", &ctx),
+            Some(json!("gpt-4"))
+        );
+        assert_eq!(
+            resolve_field("request.body.max_tokens", &ctx),
+            Some(json!(1024))
+        );
         assert_eq!(resolve_field("request.body.missing", &ctx), None);
     }
 
@@ -478,8 +489,14 @@ mod tests {
         let headers = HeaderMap::new();
         let ctx = make_ctx(&method, "/api", &uri, &headers, None);
 
-        assert_eq!(resolve_field("request.query.model", &ctx), Some(json!("gpt-4")));
-        assert_eq!(resolve_field("request.query.limit", &ctx), Some(json!("50")));
+        assert_eq!(
+            resolve_field("request.query.model", &ctx),
+            Some(json!("gpt-4"))
+        );
+        assert_eq!(
+            resolve_field("request.query.limit", &ctx),
+            Some(json!("50"))
+        );
         assert_eq!(resolve_field("request.query.missing", &ctx), None);
     }
 
@@ -526,7 +543,10 @@ mod tests {
 
         assert_eq!(resolve_field("token.id", &ctx), Some(json!("tok_abc123")));
         assert_eq!(resolve_field("token.name", &ctx), Some(json!("My Token")));
-        assert_eq!(resolve_field("token.project_id", &ctx), Some(json!("proj_xyz")));
+        assert_eq!(
+            resolve_field("token.project_id", &ctx),
+            Some(json!("proj_xyz"))
+        );
         assert_eq!(resolve_field("token.unknown", &ctx), None);
     }
 
@@ -564,7 +584,12 @@ mod tests {
         let result = resolve_field("context.time.weekday", &ctx).unwrap();
         let day = result.as_str().unwrap();
         let valid = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-        assert!(valid.contains(&day), "Weekday should be one of {:?}, got {}", valid, day);
+        assert!(
+            valid.contains(&day),
+            "Weekday should be one of {:?}, got {}",
+            valid,
+            day
+        );
     }
 
     #[test]
@@ -593,8 +618,14 @@ mod tests {
         ctx.usage.insert("spend_today_usd".to_string(), 42.5);
         ctx.usage.insert("requests_this_hour".to_string(), 150.0);
 
-        assert_eq!(resolve_field("usage.spend_today_usd", &ctx), Some(json!(42.5)));
-        assert_eq!(resolve_field("usage.requests_this_hour", &ctx), Some(json!(150.0)));
+        assert_eq!(
+            resolve_field("usage.spend_today_usd", &ctx),
+            Some(json!(42.5))
+        );
+        assert_eq!(
+            resolve_field("usage.requests_this_hour", &ctx),
+            Some(json!(150.0))
+        );
         assert_eq!(resolve_field("usage.unknown_counter", &ctx), None);
     }
 
@@ -680,4 +711,3 @@ mod tests {
         assert_eq!(resolve_field("nodotshere", &ctx), None);
     }
 }
-

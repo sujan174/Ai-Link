@@ -11,6 +11,25 @@ The Management API controls the gateway's configuration: tokens, policies, crede
 
 ---
 
+### Projects
+
+Logical groups for tokens and policies.
+
+#### List Projects
+`GET /projects`
+
+#### Create Project
+`POST /projects`
+
+```json
+{ "name": "finance-team" }
+```
+
+#### Delete Project
+`DELETE /projects/{id}`
+
+---
+
 ### Tokens
 
 Virtual tokens provided to agents.
@@ -67,16 +86,15 @@ Defined rules for what a token can do.
 {
   "project_id": "uuid",
   "name": "stripe-read-only",
-  "mode": "enforce",  // or "shadow"
+  "mode": "enforce",
   "rules": [
     {
-      "type": "method_whitelist",
-      "methods": ["GET"]
+      "when": { "field": "method", "op": "eq", "value": "GET" },
+      "then": { "action": "allow" }
     },
     {
-      "type": "rate_limit",
-      "window": "1m",
-      "max_requests": 60
+      "when": { "always": true },
+      "then": { "action": "rate_limit", "window": "1m", "max_requests": 60 }
     }
   ]
 }

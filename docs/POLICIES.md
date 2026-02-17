@@ -4,113 +4,530 @@
 
 ## Structure
 
-Policies are written in YAML or JSON. Each policy has a `mode` (Enforce or Shadow) and a list of `rules`.
+Policies are JSON documents containing a list of `rules`. Each rule has a `when` condition and a `then` action (or list of actions).
 
-```yaml
-name: "stripe-billing-worker"
-mode: "enforce"  # or "shadow" - log violations but allow request
-rules:
-  - type: method_whitelist
-    methods: ["GET", "POST"]
-  
-  - type: path_whitelist
-    patterns: 
-      - "/v1/charges/*"
-      - "/v1/customers/*"
+```json
+{
+  "name": "stripe-billing-worker",
+  "mode": "enforce", 
+  "phase": "pre",
+  "rules": [
+    {
+      "when": { "field": "path", "op": "starts_with", "value": "/v1/charges" },
+      "then": { "action": "allow" }
+    }
+  ]
+}
+```
 
-  - type: rate_limit
-    window: "1m"
-    max_requests: 100
+### Top-Level Fields
 
-  - type: spend_cap
-    window: "24h"
-    max_usd: 50.00
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | required | Human-readable policy name |
+| `mode` | `"enforce"` \| `"shadow"` | `"enforce"` | Whether to enforce or just log violations |
+| `phase` | `"pre"` \| `"post"` | `"pre"` | When to evaluate: before or after the upstream call |
+| `rules` | array | required | Ordered list of condition→action rules |
+
+---
+
+## Policy Modes
+
+### Enforce Mode (default)
+
+Rules are evaluated and **actions are executed**. A `deny` blocks the request. A `rate_limit` rejects over-limit requests.
+
+```json
+{ "mode": "enforce" }
+```
+
+### Shadow Mode
+
+Rules are evaluated and matches are **logged to the audit trail**, but **no actions are executed**. The request always proceeds normally. Use this to test policies before promoting them to enforce mode.
+
+```json
+{ "mode": "shadow" }
+```
+
+**Workflow:** Create a policy in shadow mode → review audit logs for false positives → promote to enforce mode with `PATCH /policies/{id}`.
+
+```json
+// Promote from shadow to enforce
+PATCH /policies/{policy_id}
+{ "mode": "enforce" }
+```
+
+Shadow violations appear in the audit log with `"shadow": true` so you can query for them.
+
+---
+
+## Policy Phases
+
+### Pre-Flight (`"pre"`) — default
+
+Evaluated **before** the request is forwarded to the upstream API. Use for access control, rate limiting, request redaction, and approval gates.
+
+Available fields: `request.*`, `agent.*`, `token.*`, `context.*`, `usage.*`
+
+### Post-Flight (`"post"`)
+
+Evaluated **after** the upstream response is received. Use for response redaction, logging/tagging based on response status, and conditional alerts.
+
+Available fields: everything from `pre`, plus `response.*` fields.
+
+```json
+{
+  "name": "redact-pii-from-responses",
+  "phase": "post",
+  "rules": [
+    {
+      "comment": "Redact emails from all successful responses",
+      "when": { "field": "response.status", "op": "lt", "value": 400 },
+      "then": { "action": "redact", "direction": "response", "patterns": ["email", "ssn"] }
+    }
+  ]
+}
+```
+
+```json
+{
+  "name": "alert-on-errors",
+  "phase": "post",
+  "rules": [
+    {
+      "comment": "Fire webhook on upstream 5xx errors",
+      "when": { "field": "response.status", "op": "gte", "value": 500 },
+      "then": { "action": "webhook", "url": "https://hooks.slack.com/...", "timeout_ms": 5000 }
+    }
+  ]
+}
 ```
 
 ---
 
-## Shadow Mode
+## 1. Conditions (`when`)
 
-Set `mode: "shadow"` for safe deployment.
+Conditions determine if a rule triggers.
 
-If a request violates a Shadow Mode policy, AIlink will:
-1. Log a `shadow_deny` event to the audit trail.
-2. Allow the request to proceed.
+### Direct Match
 
-This lets you verify that a policy won't break your agent before enforcing it.
+Match a specific field against a value.
+
+```json
+"when": {
+  "field": "request.method",
+  "op": "eq",
+  "value": "POST"
+}
+```
+
+### Logic Operators
+
+Combine multiple conditions.
+
+```json
+"when": {
+  "and": [
+    { "field": "request.method", "op": "eq", "value": "DELETE" },
+    { "field": "request.path", "op": "starts_with", "value": "/v1/customers" }
+  ]
+}
+```
+
+```json
+"when": {
+  "or": [
+    { "field": "request.path", "op": "eq", "value": "/health" },
+    { "field": "request.path", "op": "eq", "value": "/metrics" }
+  ]
+}
+```
+
+### Always True
+
+Useful for default rules (e.g., "Always Rate Limit").
+
+```json
+"when": { "always": true }
+```
+
+### Operators (`op`)
+
+| Operator | Description | Example |
+|---|---|---|
+| `eq` | Equals (with type coercion) | `"value": "POST"` |
+| `neq` | Not equals | `"value": "DELETE"` |
+| `gt` | Greater than (numeric) | `"value": 100` |
+| `gte` | Greater than or equal | `"value": 50.00` |
+| `lt` | Less than (numeric) | `"value": 400` |
+| `lte` | Less than or equal | `"value": 1000` |
+| `in` | Value is in array | `"value": ["GET", "HEAD"]` |
+| `contains` | Substring or array membership | `"value": "admin"` |
+| `starts_with` | String prefix | `"value": "/v1/"` |
+| `ends_with` | String suffix | `"value": ".json"` |
+| `glob` | Glob pattern (`*`, `?`) | `"value": "/v1/*/charges"` |
+| `regex` | Regular expression | `"value": "^sk_(live|test)_"` |
+| `exists` | Field exists (non-null) | (no `value` needed) |
 
 ---
 
-## Rule Types
+## 2. Field Reference
 
-### 1. Method Whitelist
-Restricts HTTP methods.
+All fields use dot-notation. Shorthand aliases (e.g. `method`) resolve to their full path (`request.method`).
 
-```yaml
-- type: method_whitelist
-  methods: ["GET"]
+### Request Fields (Pre + Post)
+
+| Field | Type | Description |
+|---|---|---|
+| `request.method` | string | HTTP method (GET, POST, etc.) |
+| `request.path` | string | URL path |
+| `request.body_size` | number | Request body size in bytes |
+| `request.body` | object | Full JSON body |
+| `request.body.<path>` | any | Dot-notation into JSON body (e.g. `request.body.model`) |
+| `request.headers.<name>` | string | Request header value |
+| `request.query.<name>` | string | Query parameter value |
+
+### Response Fields (Post-Flight Only)
+
+| Field | Type | Description |
+|---|---|---|
+| `response.status` | number | HTTP status code |
+| `response.body.<path>` | any | Dot-notation into response JSON |
+| `response.headers.<name>` | string | Response header value |
+
+### Identity Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `agent.name` | string | Agent name from `X-Agent-Name` header |
+| `token.id` | string | Virtual token ID |
+| `token.name` | string | Token display name |
+| `token.project_id` | string | Project UUID |
+| `context.ip` | string | Client IP address |
+
+### Time Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `context.time.hour` | number | Current hour (0–23 UTC) |
+| `context.time.weekday` | string | Day of the week (`monday`, etc.) |
+| `context.time.date` | string | ISO date (`2026-02-17`) |
+
+### Usage Counters
+
+Usage counters are tracked in Redis and updated in real-time.
+
+| Field | Type | Description |
+|---|---|---|
+| `usage.spend_today_usd` | number | Total spend today (USD) |
+| `usage.spend_month_usd` | number | Total spend this month (USD) |
+| `usage.requests_today` | number | Request count today |
+| `usage.requests_this_hour` | number | Request count this hour |
+
+---
+
+## 3. Actions (`then`)
+
+### `deny`
+
+Block the request with a custom status code and message.
+
+```json
+{ "action": "deny", "status": 403, "message": "Access Forbidden" }
 ```
 
-### 2. Path Whitelist
-Restricts URL paths using wildcards (`*`).
+Defaults: `status: 403`, `message: "denied by policy"`.
 
-```yaml
-- type: path_whitelist
-  patterns: ["/v1/repos/*/issues", "/user/*"]
+### `rate_limit`
+
+Limits requests per time window, scoped by key.
+
+```json
+{
+  "action": "rate_limit",
+  "window": "1m",
+  "max_requests": 60,
+  "key": "token"
+}
 ```
 
-### 3. Rate Limit
-Limits requests per time window.
+| Param | Options | Default |
+|---|---|---|
+| `window` | `"1s"`, `"1m"`, `"1h"`, `"1d"` | required |
+| `max_requests` | integer | required |
+| `key` | `"token"`, `"agent"`, `"ip"`, `"global"` | `"token"` |
 
-| Window | Example |
+### `require_approval` (HITL)
+
+Pauses the request until a human approves it via Dashboard or Slack.
+
+```json
+{
+  "action": "require_approval",
+  "timeout": "5m",
+  "fallback": "deny",
+  "notify": {
+    "channel": "slack",
+    "webhook_url": "https://hooks.slack.com/services/..."
+  }
+}
+```
+
+| Param | Options | Default |
+|---|---|---|
+| `timeout` | Duration string | `"5m"` |
+| `fallback` | `"allow"` \| `"deny"` | `"deny"` |
+| `notify` | NotifyConfig object | `null` |
+
+### `redact` (PII Scrubbing)
+
+Removes sensitive data from request or response bodies.
+
+```json
+{
+  "action": "redact",
+  "direction": "both",
+  "patterns": ["ssn", "credit_card", "email", "api_key", "phone"],
+  "fields": ["request.body.secret_key"]
+}
+```
+
+| Param | Description |
 |---|---|
-| Seconds | "10s" |
-| Minutes | "5m" |
-| Hours | "1h" |
+| `direction` | `"request"`, `"response"`, or `"both"` |
+| `patterns` | Built-in PII patterns or custom regex strings |
+| `fields` | Specific body fields to fully redact |
 
-```yaml
-- type: rate_limit
-  window: "1m"
-  max_requests: 60
+**Built-in patterns:** `ssn`, `email`, `phone`, `credit_card`, `api_key`.
+
+### `transform`
+
+Modifies headers or appends system prompts.
+
+```json
+{
+  "action": "transform",
+  "operations": [
+    { "type": "set_header", "name": "X-Custom", "value": "Verified" },
+    { "type": "remove_header", "name": "X-Internal-Debug" },
+    { "type": "append_system_prompt", "text": "Do not hallucinate." }
+  ]
+}
 ```
 
-### 4. Spend Cap (Estimated)
-Limits total API spend based on provider pricing models.
+### `override`
 
-AIlink estimates cost based on token usage (LLMs) or request count (SaaS APIs).
+Override body fields before forwarding. Useful for model downgrades.
 
-```yaml
-- type: spend_cap
-  window: "24h"
-  max_usd: 10.00
+```json
+{
+  "action": "override",
+  "set_body_fields": {
+    "model": "gpt-3.5-turbo",
+    "max_tokens": 1000
+  }
+}
 ```
 
-### 5. Time Window
-Restricts access to specific days and times (e.g., business hours only).
+**Example:** Force GPT-4 requests to use GPT-3.5 when daily spend exceeds $50:
 
-```yaml
-- type: time_window
-  timezone: "UTC"
-  allow:
-    - days: ["Mon", "Tue", "Wed", "Thu", "Fri"]
-      hours: ["09:00", "17:00"]
+```json
+{
+  "when": {
+    "and": [
+      { "field": "request.body.model", "op": "eq", "value": "gpt-4" },
+      { "field": "usage.spend_today_usd", "op": "gt", "value": 50.00 }
+    ]
+  },
+  "then": { "action": "override", "set_body_fields": { "model": "gpt-3.5-turbo" } }
+}
 ```
 
-### 6. Human Approval (HITL)
-Pauses specific requests for manual approval via Slack/Dashboard.
+### `throttle`
 
-```yaml
-- type: human_approval
-  trigger:
-    methods: ["DELETE"]
-    paths: ["/v1/customers/*"]
-  timeout: "10m"
+Artificially delay the request (useful for testing or cost-dampening).
+
+```json
+{ "action": "throttle", "delay_ms": 2000 }
 ```
 
-### 7. IP Allowlist
-Restricts access to specific source IP ranges (CIDR).
+### `log` / `tag`
 
-```yaml
-- type: ip_allowlist
-  cidrs: ["10.0.0.0/8", "192.168.1.50/32"]
+Adds metadata to the audit trail without affecting the request.
+
+```json
+{ "action": "log", "level": "warn", "tags": { "risk": "high" } }
+```
+
+```json
+{ "action": "tag", "key": "department", "value": "finance" }
+```
+
+### `webhook`
+
+Fire an external webhook (e.g. Slack, PagerDuty) when a rule matches.
+
+```json
+{
+  "action": "webhook",
+  "url": "https://hooks.slack.com/services/...",
+  "timeout_ms": 5000,
+  "on_fail": "allow"
+}
+```
+
+| Param | Options | Default |
+|---|---|---|
+| `timeout_ms` | integer (ms) | `5000` |
+| `on_fail` | `"allow"` \| `"deny"` | `"allow"` |
+
+---
+
+## 4. Spend Caps
+
+Spend caps are implemented through the policy engine using `usage.*` fields. Redis-backed counters track daily and monthly spend per token in real-time.
+
+### Daily Spend Cap
+
+```json
+{
+  "name": "daily-budget-50",
+  "rules": [
+    {
+      "comment": "Block when daily spend exceeds $50",
+      "when": { "field": "usage.spend_today_usd", "op": "gt", "value": 50.00 },
+      "then": { "action": "deny", "status": 429, "message": "Daily budget exceeded ($50)" }
+    }
+  ]
+}
+```
+
+### Monthly Spend Cap with Model Downgrade
+
+```json
+{
+  "name": "cost-management",
+  "rules": [
+    {
+      "comment": "Hard block at $500/month",
+      "when": { "field": "usage.spend_month_usd", "op": "gt", "value": 500.00 },
+      "then": { "action": "deny", "message": "Monthly budget exceeded" }
+    },
+    {
+      "comment": "Downgrade GPT-4 to GPT-3.5 after $100/day",
+      "when": {
+        "and": [
+          { "field": "usage.spend_today_usd", "op": "gt", "value": 100.00 },
+          { "field": "request.body.model", "op": "eq", "value": "gpt-4" }
+        ]
+      },
+      "then": { "action": "override", "set_body_fields": { "model": "gpt-3.5-turbo" } }
+    }
+  ]
+}
+```
+
+### Request Volume Cap
+
+```json
+{
+  "comment": "Max 1000 requests per day",
+  "when": { "field": "usage.requests_today", "op": "gt", "value": 1000 },
+  "then": { "action": "deny", "status": 429, "message": "Daily request limit reached" }
+}
+```
+
+---
+
+## 5. Full Examples
+
+### Comprehensive Protection
+
+```json
+{
+  "name": "full-protection",
+  "rules": [
+    {
+      "comment": "Block high-spend agents",
+      "when": { "field": "usage.spend_today_usd", "op": "gt", "value": 50.00 },
+      "then": { "action": "deny", "message": "Daily budget exceeded" }
+    },
+    {
+      "comment": "Rate limit: 100 req/hour",
+      "when": { "always": true },
+      "then": { "action": "rate_limit", "window": "1h", "max_requests": 100 }
+    },
+    {
+      "comment": "Redact PII from responses",
+      "when": { "always": true },
+      "then": { "action": "redact", "direction": "response", "patterns": ["email", "ssn"] }
+    },
+    {
+      "comment": "Require approval for DELETE",
+      "when": { "field": "request.method", "op": "eq", "value": "DELETE" },
+      "then": { "action": "require_approval" }
+    }
+  ]
+}
+```
+
+### Time-Based Access Control
+
+```json
+{
+  "name": "business-hours-only",
+  "rules": [
+    {
+      "comment": "Block non-GET requests outside business hours (9-17 UTC)",
+      "when": {
+        "and": [
+          { "field": "request.method", "op": "neq", "value": "GET" },
+          {
+            "or": [
+              { "field": "context.time.hour", "op": "lt", "value": 9 },
+              { "field": "context.time.hour", "op": "gte", "value": 17 }
+            ]
+          }
+        ]
+      },
+      "then": { "action": "deny", "message": "Write operations restricted to business hours" }
+    }
+  ]
+}
+```
+
+### Shadow Mode Testing
+
+```json
+{
+  "name": "strict-path-test",
+  "mode": "shadow",
+  "rules": [
+    {
+      "comment": "Would block all paths except /v1/charges — shadow only",
+      "when": {
+        "field": "request.path",
+        "op": "starts_with",
+        "value": "/v1/charges"
+      },
+      "then": { "action": "allow" }
+    },
+    {
+      "when": { "always": true },
+      "then": { "action": "deny", "message": "Path not allowed" }
+    }
+  ]
+}
+```
+
+Review the audit logs for shadow violations, then promote:
+
+```bash
+# Check shadow violations
+curl http://localhost:8443/api/v1/audit/logs?shadow=true
+
+# Promote to enforce
+curl -X PATCH http://localhost:8443/api/v1/policies/{id} \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"mode": "enforce"}'
 ```

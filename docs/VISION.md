@@ -7,7 +7,7 @@
 ## Why AIlink Exists
 
 Current AI Agent deployments are insecure.
-When a developer builds an agent using LangChain, CrewAI, AutoGen, or vanilla Python, they must hand that agent real API keys (Stripe, GitHub, AWS, Slack, OpenAI) to do useful work. These keys typically live in plaintext `.env` files, hardcoded variables, or scattered across systems with minimal oversight.
+When a developer builds an agent using LangChain, CrewAI, AutoGen, or vanilla Python, they hand that agent real API keys — Stripe, GitHub, AWS, Slack, OpenAI — to do useful work. These keys usually live in `.env` files, hardcoded variables, or scattered across systems with no oversight.
 
 ### Core Risks
 
@@ -107,21 +107,21 @@ AIlink occupies a unique intersection that no existing product covers:
 
 ### Competitive Differentiators
 
-1. **Agent-native** — SDK designed for AI frameworks (LangChain, CrewAI), not generic HTTP clients
-2. **Policy-first** — Declarative YAML policies with shadow mode for safe rollout
-3. **HITL built-in** — Not an afterthought; approval workflows are first-class with Slack integration
-4. **Developer-first** — `pip install ailink` and one line of code, not a platform team deployment
-5. **Auto-rotation** — No other agent tool rotates real API keys automatically
+1. **Agent-native** — SDK built for AI frameworks (LangChain, CrewAI), not generic HTTP clients
+2. **Policy-first** — Declarative JSON policies with shadow mode for safe rollout
+3. **HITL built-in** — Approval workflows are first-class, not bolted on
+4. **Developer-first** — `pip install ailink` and one line of code
+5. **Auto-rotation** — Real API keys rotate automatically on a schedule
 
 ---
 
 ## Strategic Timing
 
-1. **AI Agent Adoption**: Frameworks like LangChain and AutoGen are driving agent deployment, necessitating a security layer.
+1. **AI Agent Adoption**: Frameworks like LangChain and AutoGen are driving agent deployment. Someone needs to secure the credentials these agents use.
 
-2. **Enterprise Governance**: Security teams block agent adoption due to lack of visibility and control. AIlink solves this compliance gap.
+2. **Enterprise Governance**: Security teams block agent adoption because there's no visibility or control. AIlink fills that gap.
 
-3. **MCP Support**: The Model Context Protocol creates a new attack surface for tool use. AIlink secures these interactions.
+3. **MCP Support**: The Model Context Protocol opens a new attack surface for tool use. AIlink can sit in front of MCP tool calls.
 
 ---
 

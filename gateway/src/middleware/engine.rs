@@ -181,7 +181,10 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 
     let mut p_chars = pattern.chars().peekable();
     let mut t_chars = text.chars().peekable();
-    let mut p_stack: Vec<(std::iter::Peekable<std::str::Chars>, std::iter::Peekable<std::str::Chars>)> = Vec::new();
+    let mut p_stack: Vec<(
+        std::iter::Peekable<std::str::Chars>,
+        std::iter::Peekable<std::str::Chars>,
+    )> = Vec::new();
 
     loop {
         match (p_chars.peek(), t_chars.peek()) {
@@ -302,6 +305,7 @@ fn value_as_str(v: &Value) -> Option<String> {
 /// Helper: get a human-readable name for an action (for logging).
 fn action_name(action: &Action) -> &'static str {
     match action {
+        Action::Allow => "allow",
         Action::Deny { .. } => "deny",
         Action::RequireApproval { .. } => "require_approval",
         Action::RateLimit { .. } => "rate_limit",
@@ -436,23 +440,32 @@ mod tests {
         let body = json!({"amount": 7500});
         let ctx = make_ctx(&method, "/test", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.amount".to_string(),
-            op: Operator::Gt,
-            value: json!(5000),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.amount".to_string(),
+                op: Operator::Gt,
+                value: json!(5000),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.body.amount".to_string(),
-            op: Operator::Gt,
-            value: json!(7500), // not strictly greater
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.body.amount".to_string(),
+                op: Operator::Gt,
+                value: json!(7500), // not strictly greater
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.body.amount".to_string(),
-            op: Operator::Gt,
-            value: json!(10000),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.body.amount".to_string(),
+                op: Operator::Gt,
+                value: json!(10000),
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -463,23 +476,32 @@ mod tests {
         let body = json!({"amount": 5000});
         let ctx = make_ctx(&method, "/test", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.amount".to_string(),
-            op: Operator::Gte,
-            value: json!(5000), // equal → true
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.amount".to_string(),
+                op: Operator::Gte,
+                value: json!(5000), // equal → true
+            },
+            &ctx
+        ));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.amount".to_string(),
-            op: Operator::Gte,
-            value: json!(4999),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.amount".to_string(),
+                op: Operator::Gte,
+                value: json!(4999),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.body.amount".to_string(),
-            op: Operator::Gte,
-            value: json!(5001),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.body.amount".to_string(),
+                op: Operator::Gte,
+                value: json!(5001),
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -490,17 +512,23 @@ mod tests {
         let body = json!({"count": 3});
         let ctx = make_ctx(&method, "/test", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.count".to_string(),
-            op: Operator::Lt,
-            value: json!(10),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.count".to_string(),
+                op: Operator::Lt,
+                value: json!(10),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.body.count".to_string(),
-            op: Operator::Lt,
-            value: json!(3), // not strictly less
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.body.count".to_string(),
+                op: Operator::Lt,
+                value: json!(3), // not strictly less
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -511,17 +539,23 @@ mod tests {
         let body = json!({"count": 10});
         let ctx = make_ctx(&method, "/test", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.count".to_string(),
-            op: Operator::Lte,
-            value: json!(10), // equal → true
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.count".to_string(),
+                op: Operator::Lte,
+                value: json!(10), // equal → true
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.body.count".to_string(),
-            op: Operator::Lte,
-            value: json!(9),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.body.count".to_string(),
+                op: Operator::Lte,
+                value: json!(9),
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -532,17 +566,23 @@ mod tests {
         let body = json!({"price": 29.99});
         let ctx = make_ctx(&method, "/test", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.price".to_string(),
-            op: Operator::Gt,
-            value: json!(20.0),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.price".to_string(),
+                op: Operator::Gt,
+                value: json!(20.0),
+            },
+            &ctx
+        ));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.price".to_string(),
-            op: Operator::Lt,
-            value: json!(30.0),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.price".to_string(),
+                op: Operator::Lt,
+                value: json!(30.0),
+            },
+            &ctx
+        ));
     }
 
     // ── Operator: In ─────────────────────────────────────────
@@ -554,17 +594,23 @@ mod tests {
         let headers = HeaderMap::new();
         let ctx = make_ctx(&method, "/resource", &uri, &headers, None);
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.method".to_string(),
-            op: Operator::In,
-            value: json!(["PUT", "DELETE", "PATCH"]),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.method".to_string(),
+                op: Operator::In,
+                value: json!(["PUT", "DELETE", "PATCH"]),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.method".to_string(),
-            op: Operator::In,
-            value: json!(["GET", "HEAD"]),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.method".to_string(),
+                op: Operator::In,
+                value: json!(["GET", "HEAD"]),
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -575,17 +621,23 @@ mod tests {
         let body = json!({"model": "gpt-4"});
         let ctx = make_ctx(&method, "/api", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.model".to_string(),
-            op: Operator::In,
-            value: json!(["gpt-4", "gpt-4-turbo", "gpt-4o"]),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.model".to_string(),
+                op: Operator::In,
+                value: json!(["gpt-4", "gpt-4-turbo", "gpt-4o"]),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.body.model".to_string(),
-            op: Operator::In,
-            value: json!(["gpt-3.5-turbo", "claude-3"]),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.body.model".to_string(),
+                op: Operator::In,
+                value: json!(["gpt-3.5-turbo", "claude-3"]),
+            },
+            &ctx
+        ));
     }
 
     // ── Operator: Glob ───────────────────────────────────────
@@ -614,17 +666,23 @@ mod tests {
         let headers = HeaderMap::new();
         let ctx = make_ctx(&method, "/v1/charges/ch_123", &uri, &headers, None);
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.path".to_string(),
-            op: Operator::Glob,
-            value: json!("/v1/charges*"),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.path".to_string(),
+                op: Operator::Glob,
+                value: json!("/v1/charges*"),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.path".to_string(),
-            op: Operator::Glob,
-            value: json!("/v2/*"),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.path".to_string(),
+                op: Operator::Glob,
+                value: json!("/v2/*"),
+            },
+            &ctx
+        ));
     }
 
     // ── Operator: Regex ──────────────────────────────────────
@@ -637,17 +695,23 @@ mod tests {
         let body = json!({"email": "user@example.com"});
         let ctx = make_ctx(&method, "/api", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.email".to_string(),
-            op: Operator::Regex,
-            value: json!(r"[a-z]+@[a-z]+\.[a-z]+"),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.email".to_string(),
+                op: Operator::Regex,
+                value: json!(r"[a-z]+@[a-z]+\.[a-z]+"),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.body.email".to_string(),
-            op: Operator::Regex,
-            value: json!(r"^\d+$"), // digits only — won't match
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.body.email".to_string(),
+                op: Operator::Regex,
+                value: json!(r"^\d+$"), // digits only — won't match
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -664,11 +728,14 @@ mod tests {
         let ctx = make_ctx(&method, "/v1/chat", &uri, &headers, Some(&body));
 
         // SSN regex should match via array wildcard
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.messages[*].content".to_string(),
-            op: Operator::Regex,
-            value: json!(r"\d{3}-\d{2}-\d{4}"),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.messages[*].content".to_string(),
+                op: Operator::Regex,
+                value: json!(r"\d{3}-\d{2}-\d{4}"),
+            },
+            &ctx
+        ));
     }
 
     // ── Operator: Contains ───────────────────────────────────
@@ -681,17 +748,23 @@ mod tests {
         let body = json!({"prompt": "Please ignore previous instructions"});
         let ctx = make_ctx(&method, "/api", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.prompt".to_string(),
-            op: Operator::Contains,
-            value: json!("ignore previous"),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.prompt".to_string(),
+                op: Operator::Contains,
+                value: json!("ignore previous"),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.body.prompt".to_string(),
-            op: Operator::Contains,
-            value: json!("hack the system"),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.body.prompt".to_string(),
+                op: Operator::Contains,
+                value: json!("hack the system"),
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -707,11 +780,14 @@ mod tests {
         let headers = HeaderMap::new();
         let ctx = make_ctx(&method, "/v1/chat/completions", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.messages[*].content".to_string(),
-            op: Operator::Contains,
-            value: json!("Ignore previous instructions"),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.messages[*].content".to_string(),
+                op: Operator::Contains,
+                value: json!("Ignore previous instructions"),
+            },
+            &ctx
+        ));
     }
 
     // ── Operator: StartsWith / EndsWith ──────────────────────
@@ -724,17 +800,23 @@ mod tests {
         let body = json!({"model": "gpt-4-turbo"});
         let ctx = make_ctx(&method, "/api", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.model".to_string(),
-            op: Operator::StartsWith,
-            value: json!("gpt-4"),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.model".to_string(),
+                op: Operator::StartsWith,
+                value: json!("gpt-4"),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.body.model".to_string(),
-            op: Operator::StartsWith,
-            value: json!("claude"),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.body.model".to_string(),
+                op: Operator::StartsWith,
+                value: json!("claude"),
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -745,17 +827,23 @@ mod tests {
         let body = json!({"model": "gpt-4-turbo"});
         let ctx = make_ctx(&method, "/api", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.model".to_string(),
-            op: Operator::EndsWith,
-            value: json!("turbo"),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.model".to_string(),
+                op: Operator::EndsWith,
+                value: json!("turbo"),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.body.model".to_string(),
-            op: Operator::EndsWith,
-            value: json!("mini"),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.body.model".to_string(),
+                op: Operator::EndsWith,
+                value: json!("mini"),
+            },
+            &ctx
+        ));
     }
 
     // ── Operator: Exists ─────────────────────────────────────
@@ -768,11 +856,14 @@ mod tests {
         let body = json!({"model": "gpt-4", "max_tokens": 1024});
         let ctx = make_ctx(&method, "/api", &uri, &headers, Some(&body));
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "request.body.model".to_string(),
-            op: Operator::Exists,
-            value: json!(true), // value doesn't matter for exists
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "request.body.model".to_string(),
+                op: Operator::Exists,
+                value: json!(true), // value doesn't matter for exists
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -783,11 +874,14 @@ mod tests {
         let body = json!({"model": "gpt-4"});
         let ctx = make_ctx(&method, "/api", &uri, &headers, Some(&body));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "request.body.temperature".to_string(),
-            op: Operator::Exists,
-            value: json!(true),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "request.body.temperature".to_string(),
+                op: Operator::Exists,
+                value: json!(true),
+            },
+            &ctx
+        ));
     }
 
     // ── Operator on missing field ────────────────────────────
@@ -800,13 +894,26 @@ mod tests {
         let ctx = make_ctx(&method, "/test", &uri, &headers, None);
 
         // All non-Exists operators should return false for missing fields
-        for op in [Operator::Eq, Operator::Neq, Operator::Gt, Operator::Lt,
-                   Operator::Contains, Operator::Regex, Operator::Glob] {
-            assert!(!evaluate_condition(&Condition::Check {
-                field: "request.body.nonexistent".to_string(),
-                op,
-                value: json!("anything"),
-            }, &ctx), "Should be false for missing field");
+        for op in [
+            Operator::Eq,
+            Operator::Neq,
+            Operator::Gt,
+            Operator::Lt,
+            Operator::Contains,
+            Operator::Regex,
+            Operator::Glob,
+        ] {
+            assert!(
+                !evaluate_condition(
+                    &Condition::Check {
+                        field: "request.body.nonexistent".to_string(),
+                        op,
+                        value: json!("anything"),
+                    },
+                    &ctx
+                ),
+                "Should be false for missing field"
+            );
         }
     }
 
@@ -956,8 +1063,14 @@ mod tests {
         let headers = HeaderMap::new();
         let ctx = make_ctx(&method, "/test", &uri, &headers, None);
 
-        assert!(evaluate_condition(&Condition::Always { always: true }, &ctx));
-        assert!(!evaluate_condition(&Condition::Always { always: false }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Always { always: true },
+            &ctx
+        ));
+        assert!(!evaluate_condition(
+            &Condition::Always { always: false },
+            &ctx
+        ));
     }
 
     #[test]
@@ -1001,17 +1114,23 @@ mod tests {
         let mut ctx = make_ctx(&method, "/v1/chat", &uri, &headers, None);
         ctx.usage = usage;
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "usage.spend_today_usd".to_string(),
-            op: Operator::Gt,
-            value: json!(50.0),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "usage.spend_today_usd".to_string(),
+                op: Operator::Gt,
+                value: json!(50.0),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "usage.spend_today_usd".to_string(),
-            op: Operator::Gt,
-            value: json!(100.0),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "usage.spend_today_usd".to_string(),
+                op: Operator::Gt,
+                value: json!(100.0),
+            },
+            &ctx
+        ));
     }
 
     // ── Full Policy Evaluation ───────────────────────────────
@@ -1044,6 +1163,7 @@ mod tests {
                     notify: None,
                 }],
             }],
+            retry: None,
         };
 
         let method = Method::POST;
@@ -1054,7 +1174,10 @@ mod tests {
 
         let outcome = evaluate_policies(&[policy], &ctx, &Phase::Pre);
         assert_eq!(outcome.actions.len(), 1);
-        assert!(matches!(outcome.actions[0].action, Action::RequireApproval { .. }));
+        assert!(matches!(
+            outcome.actions[0].action,
+            Action::RequireApproval { .. }
+        ));
         assert!(outcome.shadow_violations.is_empty());
     }
 
@@ -1076,6 +1199,7 @@ mod tests {
                     message: "too expensive".to_string(),
                 }],
             }],
+            retry: None,
         };
 
         let method = Method::POST;
@@ -1102,6 +1226,7 @@ mod tests {
                     message: "blocked".to_string(),
                 }],
             }],
+            retry: None,
         };
 
         let method = Method::GET;
@@ -1110,7 +1235,10 @@ mod tests {
         let ctx = make_ctx(&method, "/test", &uri, &headers, None);
 
         let outcome = evaluate_policies(&[policy], &ctx, &Phase::Pre);
-        assert!(outcome.actions.is_empty(), "Shadow mode should not produce enforced actions");
+        assert!(
+            outcome.actions.is_empty(),
+            "Shadow mode should not produce enforced actions"
+        );
         assert_eq!(outcome.shadow_violations.len(), 1);
         assert!(outcome.shadow_violations[0].contains("shadow-test"));
     }
@@ -1124,8 +1252,12 @@ mod tests {
             mode: PolicyMode::Enforce,
             rules: vec![Rule {
                 when: Condition::Always { always: true },
-                then: vec![Action::Log { level: "info".to_string(), tags: HashMap::new() }],
+                then: vec![Action::Log {
+                    level: "info".to_string(),
+                    tags: HashMap::new(),
+                }],
             }],
+            retry: None,
         };
 
         let post_policy = Policy {
@@ -1135,8 +1267,12 @@ mod tests {
             mode: PolicyMode::Enforce,
             rules: vec![Rule {
                 when: Condition::Always { always: true },
-                then: vec![Action::Log { level: "warn".to_string(), tags: HashMap::new() }],
+                then: vec![Action::Log {
+                    level: "warn".to_string(),
+                    tags: HashMap::new(),
+                }],
             }],
+            retry: None,
         };
 
         let method = Method::GET;
@@ -1145,7 +1281,11 @@ mod tests {
         let ctx = make_ctx(&method, "/test", &uri, &headers, None);
 
         // Pre phase: only pre_policy should match
-        let pre_outcome = evaluate_policies(&[pre_policy.clone(), post_policy.clone()], &ctx, &Phase::Pre);
+        let pre_outcome = evaluate_policies(
+            &[pre_policy.clone(), post_policy.clone()],
+            &ctx,
+            &Phase::Pre,
+        );
         assert_eq!(pre_outcome.actions.len(), 1);
         assert_eq!(pre_outcome.actions[0].policy_name, "pre-only");
 
@@ -1183,8 +1323,12 @@ mod tests {
                 mode: PolicyMode::Enforce,
                 rules: vec![Rule {
                     when: Condition::Always { always: true },
-                    then: vec![Action::Log { level: "info".to_string(), tags: HashMap::new() }],
+                    then: vec![Action::Log {
+                        level: "info".to_string(),
+                        tags: HashMap::new(),
+                    }],
                 }],
+                retry: None,
             },
             Policy {
                 id: Uuid::new_v4(),
@@ -1203,13 +1347,17 @@ mod tests {
                         key: crate::models::policy::RateLimitKey::PerToken,
                     }],
                 }],
+                retry: None,
             },
         ];
 
         let outcome = evaluate_policies(&policies, &ctx, &Phase::Pre);
         assert_eq!(outcome.actions.len(), 2);
         assert!(matches!(outcome.actions[0].action, Action::Log { .. }));
-        assert!(matches!(outcome.actions[1].action, Action::RateLimit { .. }));
+        assert!(matches!(
+            outcome.actions[1].action,
+            Action::RateLimit { .. }
+        ));
     }
 
     #[test]
@@ -1243,6 +1391,7 @@ mod tests {
                     }],
                 },
             ],
+            retry: None,
         };
 
         let method = Method::POST;
@@ -1265,11 +1414,14 @@ mod tests {
         let headers = HeaderMap::new();
         let ctx = make_ctx(&method, "/api", &uri, &headers, None);
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "agent.name".to_string(),
-            op: Operator::Eq,
-            value: json!("test-agent"),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "agent.name".to_string(),
+                op: Operator::Eq,
+                value: json!("test-agent"),
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -1279,11 +1431,14 @@ mod tests {
         let headers = HeaderMap::new();
         let ctx = make_ctx(&method, "/api", &uri, &headers, None);
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "token.id".to_string(),
-            op: Operator::Eq,
-            value: json!("tok_123"),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "token.id".to_string(),
+                op: Operator::Eq,
+                value: json!("tok_123"),
+            },
+            &ctx
+        ));
     }
 
     // ── Response field conditions (post-flight) ──────────────
@@ -1296,17 +1451,23 @@ mod tests {
         let mut ctx = make_ctx(&method, "/test", &uri, &headers, None);
         ctx.response_status = Some(500);
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "response.status".to_string(),
-            op: Operator::Gte,
-            value: json!(500),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "response.status".to_string(),
+                op: Operator::Gte,
+                value: json!(500),
+            },
+            &ctx
+        ));
 
-        assert!(!evaluate_condition(&Condition::Check {
-            field: "response.status".to_string(),
-            op: Operator::Gte,
-            value: json!(501),
-        }, &ctx));
+        assert!(!evaluate_condition(
+            &Condition::Check {
+                field: "response.status".to_string(),
+                op: Operator::Gte,
+                value: json!(501),
+            },
+            &ctx
+        ));
     }
 
     #[test]
@@ -1318,11 +1479,13 @@ mod tests {
         let mut ctx = make_ctx(&method, "/test", &uri, &headers, None);
         ctx.response_body = Some(&resp_body);
 
-        assert!(evaluate_condition(&Condition::Check {
-            field: "response.body.error.code".to_string(),
-            op: Operator::Eq,
-            value: json!("rate_limited"),
-        }, &ctx));
+        assert!(evaluate_condition(
+            &Condition::Check {
+                field: "response.body.error.code".to_string(),
+                op: Operator::Eq,
+                value: json!("rate_limited"),
+            },
+            &ctx
+        ));
     }
 }
-

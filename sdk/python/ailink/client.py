@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from .resources.audit import AuditResource, AsyncAuditResource
     from .resources.policies import PoliciesResource, AsyncPoliciesResource
     from .resources.credentials import CredentialsResource, AsyncCredentialsResource
+    from .resources.projects import ProjectsResource, AsyncProjectsResource
 
 
 class AIlinkClient:
@@ -193,6 +194,11 @@ class AIlinkClient:
         from .resources.credentials import CredentialsResource
         return CredentialsResource(self)
 
+    @cached_property
+    def projects(self) -> "ProjectsResource":
+        from .resources.projects import ProjectsResource
+        return ProjectsResource(self)
+
 
 class AsyncClient:
     """
@@ -334,3 +340,8 @@ class AsyncClient:
     def credentials(self) -> "AsyncCredentialsResource":
         from .resources.credentials import AsyncCredentialsResource
         return AsyncCredentialsResource(self)
+
+    @cached_property
+    def projects(self) -> "AsyncProjectsResource":
+        from .resources.projects import AsyncProjectsResource
+        return AsyncProjectsResource(self)

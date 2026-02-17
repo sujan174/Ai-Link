@@ -60,7 +60,7 @@ pub async fn track_spend(
         let redis_key = format!("spend:{}:{}:{}", token_id, window, period_key);
 
         let ttl: i64 = match *window {
-            "daily" => 86400 + 3600,    // +1h buffer
+            "daily" => 86400 + 3600, // +1h buffer
             "monthly" => 86400 * 32,
             _ => 86400,
         };

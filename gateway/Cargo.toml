@@ -71,6 +71,7 @@ opentelemetry = "0.21"
 opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
 opentelemetry-otlp = "0.14"
 tracing-opentelemetry = "0.22"
+bytes = "1.11.1"
 
 [dev-dependencies]
 tokio-test = "0.4"

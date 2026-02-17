@@ -12,6 +12,7 @@ mod cache;
 mod cli;
 mod config;
 mod errors;
+mod jobs;
 mod middleware;
 mod models;
 mod notification;
@@ -181,10 +182,15 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
         .nest("/api/v1", api::api_router())
         // Proxy: catch everything else
         .fallback(any(proxy::handler::proxy_handler))
-        .with_state(state)
+        .with_state(state.clone())
         .layer(tower_http::trace::TraceLayer::new_for_http())
+        // SECURITY: permissive CORS is fine for local dev; restrict origins in production
         .layer(CorsLayer::permissive())
         .layer(axum::middleware::from_fn(security_headers_middleware));
+
+    // Phase 4: Start background cleanup job for Level 2 log expiry
+    jobs::cleanup::spawn(state.db.pool().clone());
+    tracing::info!("Background cleanup job started (Level 2 log expiry every 1h)");
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -242,6 +248,7 @@ async fn handle_policy_command(
         cli::PolicyCommands::Create {
             name,
             mode,
+            phase,
             project_id,
             rate_limit,
             hitl_timeout,
@@ -277,14 +284,18 @@ async fn handle_policy_command(
                 }));
             }
 
+            if phase != "pre" && phase != "post" {
+                anyhow::bail!("Invalid phase: {}. Must be 'pre' or 'post'", phase);
+            }
+
             let rules_json = serde_json::to_value(rules)?;
             let id = state
                 .db
-                .insert_policy(pid, &name, &mode, rules_json)
+                .insert_policy(pid, &name, &mode, &phase, rules_json, None)
                 .await?;
             println!(
-                "Policy created:\n  Name:     {}\n  ID:       {}\n  Mode:     {}",
-                name, id, mode
+                "Policy created:\n  Name:     {}\n  ID:       {}\n  Mode:     {}\n  Phase:    {}",
+                name, id, mode, phase
             );
         }
         cli::PolicyCommands::List { project_id } => {

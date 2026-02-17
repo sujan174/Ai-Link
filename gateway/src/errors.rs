@@ -40,24 +40,24 @@ pub enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, msg) = match &self {
-            AppError::TokenNotFound => (StatusCode::UNAUTHORIZED, "invalid or missing token"),
-            AppError::PolicyDenied { .. } => (StatusCode::FORBIDDEN, "request blocked by policy"),
-            AppError::ApprovalTimeout => (StatusCode::REQUEST_TIMEOUT, "approval timed out"),
-            AppError::ApprovalRejected => (StatusCode::FORBIDDEN, "request rejected by reviewer"),
-            AppError::RateLimitExceeded => (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded"),
-            AppError::SpendCapReached => (StatusCode::PAYMENT_REQUIRED, "spend cap reached"),
-            AppError::Upstream(e) => (StatusCode::BAD_GATEWAY, e.as_str()),
+            AppError::TokenNotFound => (StatusCode::UNAUTHORIZED, "invalid or missing token".to_string()),
+            AppError::PolicyDenied { .. } => (StatusCode::FORBIDDEN, "request blocked by policy".to_string()),
+            AppError::ApprovalTimeout => (StatusCode::REQUEST_TIMEOUT, "approval timed out".to_string()),
+            AppError::ApprovalRejected => (StatusCode::FORBIDDEN, "request rejected by reviewer".to_string()),
+            AppError::RateLimitExceeded => (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded".to_string()),
+            AppError::SpendCapReached => (StatusCode::PAYMENT_REQUIRED, "spend cap reached".to_string()),
+            AppError::Upstream(e) => (StatusCode::BAD_GATEWAY, e.clone()),
             AppError::Database(e) => {
                 tracing::error!("Database error: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string())
             }
             AppError::Redis(e) => {
                 tracing::error!("Redis error: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string())
             }
             AppError::Internal(e) => {
                 tracing::error!("Internal error: {}", e);
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error".to_string())
             }
         };
 

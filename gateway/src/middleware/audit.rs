@@ -3,6 +3,7 @@ use sqlx::PgPool;
 
 /// Async audit log writer. Fires off a Tokio task to insert
 /// the audit entry into PG without blocking the response path.
+/// Phase 4: Two-phase insert — metadata to audit_logs, bodies to audit_log_bodies.
 pub fn log_async(pool: PgPool, entry: AuditEntry) {
     tokio::spawn(async move {
         if let Err(e) = insert_audit_log(&pool, &entry).await {
@@ -27,19 +28,24 @@ async fn insert_audit_log(pool: &PgPool, entry: &AuditEntry) -> anyhow::Result<(
         PolicyResult::HitlTimeout => ("timeout", Some("hitl"), None),
     };
 
+    // Phase 1: Insert metadata into audit_logs
     sqlx::query(
         r#"
         INSERT INTO audit_logs (
             id, created_at, project_id, token_id, agent_name, method, path, upstream_url,
             request_body_hash, policies_evaluated, policy_result, policy_mode, deny_reason,
             hitl_required, hitl_decision, hitl_latency_ms, upstream_status,
-            response_latency_ms, fields_redacted, shadow_violations, estimated_cost_usd
+            response_latency_ms, fields_redacted, shadow_violations, estimated_cost_usd,
+            prompt_tokens, completion_tokens, model, ttft_ms, tokens_per_second,
+            user_id, tenant_id, external_request_id, log_level
         )
         VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8,
             $9, $10, $11, $12, $13,
             $14, $15, $16, $17,
-            $18, $19, $20, $21
+            $18, $19, $20, $21,
+            $22, $23, $24, $25, $26,
+            $27, $28, $29, $30
         )
         "#,
     )
@@ -64,8 +70,39 @@ async fn insert_audit_log(pool: &PgPool, entry: &AuditEntry) -> anyhow::Result<(
     .bind(&entry.fields_redacted)
     .bind(&entry.shadow_violations)
     .bind(entry.estimated_cost_usd)
+    // Phase 4 columns
+    .bind(entry.prompt_tokens.map(|v| v as i32))
+    .bind(entry.completion_tokens.map(|v| v as i32))
+    .bind(&entry.model)
+    .bind(None::<i32>) // ttft_ms — placeholder until streaming support
+    .bind(entry.tokens_per_second)
+    .bind(&entry.user_id)
+    .bind(&entry.tenant_id)
+    .bind(&entry.external_request_id)
+    .bind(entry.log_level as i16)
     .execute(pool)
     .await?;
+
+    // Phase 2: Insert bodies into audit_log_bodies (only if log_level > 0)
+    if entry.log_level > 0 && (entry.request_body.is_some() || entry.response_body.is_some()) {
+        sqlx::query(
+            r#"
+            INSERT INTO audit_log_bodies (
+                audit_id, created_at, request_body, response_body,
+                request_headers, response_headers
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(entry.request_id)
+        .bind(entry.timestamp)
+        .bind(&entry.request_body)
+        .bind(&entry.response_body)
+        .bind(&entry.request_headers)
+        .bind(&entry.response_headers)
+        .execute(pool)
+        .await?;
+    }
 
     Ok(())
 }

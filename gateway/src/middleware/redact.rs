@@ -3,7 +3,6 @@
 //! Implements `Action::Redact` (pattern-based PII scrubbing) and
 //! `Action::Transform` (header/body mutations) for the condition→action engine.
 
-use axum::http::HeaderMap;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value;
@@ -23,27 +22,42 @@ struct BuiltinPattern {
 static EMAIL_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}").unwrap());
 
-static SSN_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap());
+static SSN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap());
 
-static CREDIT_CARD_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b(?:\d[ -]*?){13,19}\b").unwrap()
-});
+static CREDIT_CARD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:\d[ -]*?){13,19}\b").unwrap());
 
-static API_KEY_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b(sk-[a-zA-Z0-9_\-\.]{20,})\b").unwrap()
-});
+static API_KEY_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(sk-[a-zA-Z0-9_\-\.]{20,})\b").unwrap());
 
-static PHONE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b").unwrap()
-});
+static PHONE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b").unwrap());
 
 const BUILTIN_PATTERNS: &[BuiltinPattern] = &[
-    BuiltinPattern { name: "email", regex: &EMAIL_RE, replacement: "[REDACTED_EMAIL]" },
-    BuiltinPattern { name: "ssn", regex: &SSN_RE, replacement: "[REDACTED_SSN]" },
-    BuiltinPattern { name: "credit_card", regex: &CREDIT_CARD_RE, replacement: "[REDACTED_CC]" },
-    BuiltinPattern { name: "api_key", regex: &API_KEY_RE, replacement: "[REDACTED_API_KEY]" },
-    BuiltinPattern { name: "phone", regex: &PHONE_RE, replacement: "[REDACTED_PHONE]" },
+    BuiltinPattern {
+        name: "email",
+        regex: &EMAIL_RE,
+        replacement: "[REDACTED_EMAIL]",
+    },
+    BuiltinPattern {
+        name: "ssn",
+        regex: &SSN_RE,
+        replacement: "[REDACTED_SSN]",
+    },
+    BuiltinPattern {
+        name: "credit_card",
+        regex: &CREDIT_CARD_RE,
+        replacement: "[REDACTED_CC]",
+    },
+    BuiltinPattern {
+        name: "api_key",
+        regex: &API_KEY_RE,
+        replacement: "[REDACTED_API_KEY]",
+    },
+    BuiltinPattern {
+        name: "phone",
+        regex: &PHONE_RE,
+        replacement: "[REDACTED_PHONE]",
+    },
 ];
 
 // ── Redact ───────────────────────────────────────────────────
@@ -57,7 +71,11 @@ const BUILTIN_PATTERNS: &[BuiltinPattern] = &[
 /// Returns the list of pattern names that matched (for audit logging).
 pub fn apply_redact(body: &mut Value, action: &Action, is_request: bool) -> Vec<String> {
     let (direction, patterns, fields) = match action {
-        Action::Redact { direction, patterns, fields } => (direction, patterns, fields),
+        Action::Redact {
+            direction,
+            patterns,
+            fields,
+        } => (direction, patterns, fields),
         _ => return vec![],
     };
 
@@ -98,16 +116,12 @@ fn compile_patterns(patterns: &[String]) -> Vec<(Regex, String, String)> {
             if let Some(builtin) = BUILTIN_PATTERNS.iter().find(|b| b.name == p) {
                 // Clone the inner Regex from the Lazy
                 let re: &Regex = builtin.regex;
-                return Some((
-                    re.clone(),
-                    builtin.replacement.to_string(),
-                    p.clone(),
-                ));
+                return Some((re.clone(), builtin.replacement.to_string(), p.clone()));
             }
             // Try compiling as custom regex
-            Regex::new(p).ok().map(|re| {
-                (re, format!("[REDACTED_{}]", p.to_uppercase()), p.clone())
-            })
+            Regex::new(p)
+                .ok()
+                .map(|re| (re, format!("[REDACTED_{}]", p.to_uppercase()), p.clone()))
         })
         .collect()
 }
@@ -172,15 +186,29 @@ pub struct HeaderMutations {
     pub removals: Vec<String>,
 }
 
+/// Apply collected header mutations to a header map.
+#[allow(dead_code)]
+pub fn apply_header_mutations(headers: &mut hyper::HeaderMap, mutations: &HeaderMutations) {
+    for name in &mutations.removals {
+        if let Ok(key) = hyper::header::HeaderName::from_bytes(name.as_bytes()) {
+            headers.remove(&key);
+        }
+    }
+    for (name, value) in &mutations.inserts {
+        if let (Ok(key), Ok(val)) = (
+            hyper::header::HeaderName::from_bytes(name.as_bytes()),
+            hyper::header::HeaderValue::from_str(value),
+        ) {
+            headers.insert(key, val);
+        }
+    }
+}
+
 /// Apply a single transform operation.
 ///
 /// - `SetHeader`/`RemoveHeader` → collected into `HeaderMutations` for deferred application
 /// - `AppendSystemPrompt` → modifies the body in-place (OpenAI messages format)
-pub fn apply_transform(
-    body: &mut Value,
-    header_mutations: &mut HeaderMutations,
-    op: &TransformOp,
-) {
+pub fn apply_transform(body: &mut Value, header_mutations: &mut HeaderMutations, op: &TransformOp) {
     match op {
         TransformOp::SetHeader { name, value } => {
             tracing::info!(header = %name, "transform: set header");
@@ -197,21 +225,40 @@ pub fn apply_transform(
     }
 }
 
-/// Apply collected header mutations to an Axum HeaderMap.
-/// Called when building the upstream request, after all transforms are collected.
-pub fn apply_header_mutations(headers: &mut HeaderMap, mutations: &HeaderMutations) {
-    for name in &mutations.removals {
-        if let Ok(header_name) = name.parse::<axum::http::HeaderName>() {
-            headers.remove(&header_name);
+// ── Logging Redaction ────────────────────────────────────────
+
+/// Redact all known PII patterns from a JSON value for safe storage (Level 1 logging).
+/// Applies every built-in pattern (SSN, email, credit card, API key, phone) and returns
+/// the serialised JSON string, or None if input is None.
+pub fn redact_for_logging(body: &Option<serde_json::Value>) -> Option<String> {
+    let body = body.as_ref()?;
+    let mut clone = body.clone();
+    redact_all_patterns(&mut clone);
+    Some(serde_json::to_string(&clone).unwrap_or_default())
+}
+
+/// Apply every built-in PII pattern to all string values in a JSON tree.
+fn redact_all_patterns(v: &mut Value) {
+    match v {
+        Value::String(s) => {
+            for pat in BUILTIN_PATTERNS {
+                let re: &Regex = pat.regex;
+                if re.is_match(s) {
+                    *s = re.replace_all(s, pat.replacement).to_string();
+                }
+            }
         }
-    }
-    for (name, value) in &mutations.inserts {
-        if let (Ok(header_name), Ok(header_value)) = (
-            name.parse::<axum::http::HeaderName>(),
-            value.parse::<axum::http::HeaderValue>(),
-        ) {
-            headers.insert(header_name, header_value);
+        Value::Array(arr) => {
+            for item in arr {
+                redact_all_patterns(item);
+            }
         }
+        Value::Object(obj) => {
+            for (_, val) in obj {
+                redact_all_patterns(val);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -230,6 +277,7 @@ fn append_system_prompt(body: &mut Value, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hyper::HeaderMap;
     use serde_json::json;
 
     // ── Pattern-based Redaction ──────────────────────────────
@@ -462,7 +510,10 @@ mod tests {
         );
 
         assert_eq!(mutations.inserts.len(), 1);
-        assert_eq!(mutations.inserts[0], ("X-Custom".to_string(), "true".to_string()));
+        assert_eq!(
+            mutations.inserts[0],
+            ("X-Custom".to_string(), "true".to_string())
+        );
     }
 
     #[test]
@@ -537,7 +588,10 @@ mod tests {
         let mut body = json!({"contact": "Call me at 555-123-4567"});
         let matched = apply_redact(&mut body, &action, true);
 
-        assert!(body["contact"].as_str().unwrap().contains("[REDACTED_PHONE]"));
+        assert!(body["contact"]
+            .as_str()
+            .unwrap()
+            .contains("[REDACTED_PHONE]"));
         assert!(matched.contains(&"phone".to_string()));
     }
 }

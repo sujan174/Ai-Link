@@ -20,13 +20,8 @@ impl BuiltinStore {
         Ok(Self { crypto, pool })
     }
 
-
-
     /// Delegate to VaultCrypto for API handler use.
-    pub fn encrypt_string(
-        &self,
-        plaintext: &str,
-    ) -> anyhow::Result<EncryptedBlob> {
+    pub fn encrypt_string(&self, plaintext: &str) -> anyhow::Result<EncryptedBlob> {
         self.crypto.encrypt_string(plaintext)
     }
 }
@@ -43,10 +38,7 @@ impl VaultCrypto {
 
     /// Encrypts a plaintext string using envelope encryption.
     /// Returns (encrypted_dek, dek_nonce, encrypted_secret, secret_nonce).
-    pub fn encrypt_string(
-        &self,
-        plaintext: &str,
-    ) -> anyhow::Result<EncryptedBlob> {
+    pub fn encrypt_string(&self, plaintext: &str) -> anyhow::Result<EncryptedBlob> {
         // 1. Generate a random DEK
         let mut dek = [0u8; 32];
         OsRng.fill_bytes(&mut dek);

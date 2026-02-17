@@ -20,6 +20,8 @@ pub struct Policy {
     pub mode: PolicyMode,
     /// Ordered list of condition→action rules.
     pub rules: Vec<Rule>,
+    /// Optional retry configuration for this policy.
+    pub retry: Option<RetryConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -39,6 +41,50 @@ pub enum PolicyMode {
     #[default]
     Enforce,
     Shadow,
+}
+
+// ── Retry Configuration ──────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RetryConfig {
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_base_backoff")]
+    pub base_backoff_ms: u64,
+    #[serde(default = "default_max_backoff")]
+    pub max_backoff_ms: u64,
+    #[serde(default = "default_jitter")]
+    pub jitter_ms: u64,
+    #[serde(default = "default_retry_status_codes")]
+    pub status_codes: Vec<u16>,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: default_max_retries(),
+            base_backoff_ms: default_base_backoff(),
+            max_backoff_ms: default_max_backoff(),
+            jitter_ms: default_jitter(),
+            status_codes: default_retry_status_codes(),
+        }
+    }
+}
+
+fn default_max_retries() -> u32 {
+    3
+}
+fn default_base_backoff() -> u64 {
+    500
+}
+fn default_max_backoff() -> u64 {
+    10_000
+}
+fn default_jitter() -> u64 {
+    200
+}
+fn default_retry_status_codes() -> Vec<u16> {
+    vec![429, 500, 502, 503, 504]
 }
 
 // ── Rule ─────────────────────────────────────────────────────
@@ -70,17 +116,11 @@ pub struct Rule {
 #[serde(untagged)]
 pub enum Condition {
     /// All children must be true (AND).
-    All {
-        all: Vec<Condition>,
-    },
+    All { all: Vec<Condition> },
     /// At least one child must be true (OR).
-    Any {
-        any: Vec<Condition>,
-    },
+    Any { any: Vec<Condition> },
     /// Negation.
-    Not {
-        not: Box<Condition>,
-    },
+    Not { not: Box<Condition> },
     /// Leaf node: compare a field against a value.
     Check {
         field: String,
@@ -131,6 +171,8 @@ pub enum Operator {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
+    /// Explicitly allow the request (no-op, but stops further processing if we implemented rule-level short-circuiting, which we haven't yet, so just a no-op for now).
+    Allow,
     /// Block the request with a custom status code and message.
     Deny {
         #[serde(default = "default_deny_status")]
@@ -156,9 +198,7 @@ pub enum Action {
         key: RateLimitKey,
     },
     /// Artificially delay the request.
-    Throttle {
-        delay_ms: u64,
-    },
+    Throttle { delay_ms: u64 },
     /// Redact sensitive data from request or response body.
     Redact {
         #[serde(default)]
@@ -169,9 +209,7 @@ pub enum Action {
         fields: Vec<String>,
     },
     /// Transform the request (set headers, append system prompt, etc.)
-    Transform {
-        operations: Vec<TransformOp>,
-    },
+    Transform { operations: Vec<TransformOp> },
     /// Override body fields (e.g. force model downgrade).
     Override {
         set_body_fields: std::collections::HashMap<String, serde_json::Value>,
@@ -184,10 +222,7 @@ pub enum Action {
         tags: std::collections::HashMap<String, String>,
     },
     /// Add metadata tags to the audit log entry.
-    Tag {
-        key: String,
-        value: String,
-    },
+    Tag { key: String, value: String },
     /// Fire an external webhook.
     Webhook {
         url: String,
@@ -300,6 +335,7 @@ pub struct EvalOutcome {
 
 /// An action that was triggered by a specific policy+rule.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TriggeredAction {
     pub policy_id: Uuid,
     pub policy_name: String,
@@ -343,7 +379,11 @@ mod tests {
         let json = r#"{ "action": "require_approval", "timeout": "30m", "fallback": "deny" }"#;
         let action: Action = serde_json::from_str(json).unwrap();
         match action {
-            Action::RequireApproval { timeout, fallback, notify } => {
+            Action::RequireApproval {
+                timeout,
+                fallback,
+                notify,
+            } => {
                 assert_eq!(timeout, "30m");
                 assert_eq!(fallback, "deny");
                 assert!(notify.is_none());
@@ -376,7 +416,11 @@ mod tests {
         let json = r#"{ "action": "rate_limit", "window": "5m", "max_requests": 50 }"#;
         let action: Action = serde_json::from_str(json).unwrap();
         match action {
-            Action::RateLimit { window, max_requests, key } => {
+            Action::RateLimit {
+                window,
+                max_requests,
+                key,
+            } => {
                 assert_eq!(window, "5m");
                 assert_eq!(max_requests, 50);
                 assert!(matches!(key, RateLimitKey::PerToken)); // default
@@ -491,7 +535,9 @@ mod tests {
         }"#;
         let action: Action = serde_json::from_str(json).unwrap();
         match action {
-            Action::Webhook { url, timeout_ms, .. } => {
+            Action::Webhook {
+                url, timeout_ms, ..
+            } => {
                 assert_eq!(url, "https://hooks.example.com/alert");
                 assert_eq!(timeout_ms, 5000);
             }
@@ -508,7 +554,11 @@ mod tests {
         }"#;
         let action: Action = serde_json::from_str(json).unwrap();
         match action {
-            Action::Redact { direction, patterns, .. } => {
+            Action::Redact {
+                direction,
+                patterns,
+                ..
+            } => {
                 assert!(matches!(direction, RedactDirection::Request));
                 assert_eq!(patterns.len(), 2);
             }
@@ -530,7 +580,10 @@ mod tests {
             Action::Transform { operations } => {
                 assert_eq!(operations.len(), 2);
                 assert!(matches!(&operations[0], TransformOp::SetHeader { .. }));
-                assert!(matches!(&operations[1], TransformOp::AppendSystemPrompt { .. }));
+                assert!(matches!(
+                    &operations[1],
+                    TransformOp::AppendSystemPrompt { .. }
+                ));
             }
             _ => panic!("Expected Transform"),
         }
@@ -603,10 +656,19 @@ mod tests {
     #[test]
     fn test_deserialize_all_operators() {
         let operators = vec![
-            ("eq", "Eq"), ("neq", "Neq"), ("gt", "Gt"), ("gte", "Gte"),
-            ("lt", "Lt"), ("lte", "Lte"), ("in", "In"), ("glob", "Glob"),
-            ("regex", "Regex"), ("contains", "Contains"), ("exists", "Exists"),
-            ("starts_with", "StartsWith"), ("ends_with", "EndsWith"),
+            ("eq", "Eq"),
+            ("neq", "Neq"),
+            ("gt", "Gt"),
+            ("gte", "Gte"),
+            ("lt", "Lt"),
+            ("lte", "Lte"),
+            ("in", "In"),
+            ("glob", "Glob"),
+            ("regex", "Regex"),
+            ("contains", "Contains"),
+            ("exists", "Exists"),
+            ("starts_with", "StartsWith"),
+            ("ends_with", "EndsWith"),
         ];
         for (op_str, _label) in operators {
             let json = format!(
@@ -633,6 +695,7 @@ mod tests {
         assert_eq!(policy.phase, Phase::Pre);
         assert_eq!(policy.mode, PolicyMode::Enforce);
         assert!(policy.rules.is_empty());
+        assert!(policy.retry.is_none());
     }
 
     #[test]
@@ -693,6 +756,29 @@ mod tests {
         assert!(matches!(policy.rules[0].then[0], Action::Deny { .. }));
         assert!(matches!(policy.rules[1].then[0], Action::RateLimit { .. }));
         assert!(matches!(policy.rules[2].then[0], Action::Log { .. }));
+    }
+    
+    // ── Tests: Retry Config ──────────────────────────────────
+    
+    #[test]
+    fn test_retry_config_serialization() {
+        let json = r#"{
+            "id": "00000000-0000-0000-0000-000000000099",
+            "name": "retry-policy",
+            "mode": "enforce",
+            "rules": [],
+            "retry": {
+                "max_retries": 5,
+                "base_backoff_ms": 100,
+                "status_codes": [429, 503]
+            }
+        }"#;
+        let policy: Policy = serde_json::from_str(json).unwrap();
+        let retry = policy.retry.unwrap();
+        assert_eq!(retry.max_retries, 5);
+        assert_eq!(retry.base_backoff_ms, 100);
+        assert_eq!(retry.max_backoff_ms, 10000); // default
+        assert_eq!(retry.status_codes, vec![429, 503]);
     }
 
     // ── Full Scenario: Stripe HITL policy ────────────────────
@@ -761,7 +847,11 @@ mod tests {
 
         // First rule: rate limit for expensive models
         match &policy.rules[0].then[0] {
-            Action::RateLimit { window, max_requests, key } => {
+            Action::RateLimit {
+                window,
+                max_requests,
+                key,
+            } => {
                 assert_eq!(window, "1m");
                 assert_eq!(*max_requests, 10);
                 assert!(matches!(key, RateLimitKey::PerToken));

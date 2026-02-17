@@ -43,6 +43,7 @@ pub fn api_router() -> Router<Arc<AppState>> {
         .route("/approvals", get(handlers::list_approvals))
         .route("/approvals/:id/decision", post(handlers::decide_approval))
         .route("/audit", get(handlers::list_audit_logs))
+        .route("/audit/:id", get(handlers::get_audit_log))
         .route("/analytics/volume", get(analytics::get_request_volume))
         .route("/analytics/status", get(analytics::get_status_distribution))
         .route(
@@ -83,10 +84,15 @@ async fn admin_auth(req: Request, next: Next) -> Result<Response, StatusCode> {
     match provided_key {
         Some(k) if k == expected => Ok(next.run(req).await),
         Some(k) => {
+            // SECURITY: Never log the expected key or the full provided key
+            let masked = if k.len() > 8 {
+                format!("{}…{}", &k[..4], &k[k.len()-4..])
+            } else {
+                "****".to_string()
+            };
             tracing::warn!(
-                "admin API: invalid admin key. Provided: '{}', My: '{}'",
-                k,
-                expected
+                "admin API: invalid key (provided: '{}')",
+                masked
             );
             Err(StatusCode::UNAUTHORIZED)
         }

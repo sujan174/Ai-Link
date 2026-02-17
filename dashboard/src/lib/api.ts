@@ -1,9 +1,8 @@
-const GATEWAY_URL = process.env.NEXT_PUBLIC_GATEWAY_URL || "http://localhost:8443";
-// Hardcoding for dev to ensure it works even if .env is stale
-const ADMIN_KEY = "ailink-admin-test";
+// Use relative path to hit the Next.js proxy
+const BASE_URL = "/api/proxy";
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  let url = `${GATEWAY_URL}/api/v1${path}`;
+  let url = `${BASE_URL}${path}`;
 
   // Inject project_id if present (client-side only)
   if (typeof window !== "undefined") {
@@ -18,7 +17,6 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
     headers: {
       "Content-Type": "application/json",
-      "X-Admin-Key": ADMIN_KEY,
       ...options?.headers,
     },
   });
@@ -69,6 +67,29 @@ export interface AuditLog {
   agent_name: string | null;
   policy_result: string;
   estimated_cost_usd: string | null;
+  shadow_violations: string[] | null;
+  fields_redacted: string[] | null;
+  // Phase 4: AI golden signals
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  model: string | null;
+  tokens_per_second: number | null;
+  // Phase 4: Attribution
+  user_id: string | null;
+  tenant_id: string | null;
+  external_request_id: string | null;
+  log_level: number | null;
+}
+
+export interface AuditLogDetail extends AuditLog {
+  upstream_url: string;
+  policy_mode: string | null;
+  deny_reason: string | null;
+  // Bodies (from joined audit_log_bodies table)
+  request_body: string | null;
+  response_body: string | null;
+  request_headers: Record<string, string> | null;
+  response_headers: Record<string, string> | null;
 }
 
 export interface CreateTokenRequest {
@@ -108,6 +129,9 @@ export const decideApproval = (id: string, decision: "approved" | "rejected") =>
 
 export const listAuditLogs = (limit = 50, offset = 0) =>
   api<AuditLog[]>(`/audit?limit=${limit}&offset=${offset}`);
+
+export const getAuditLogDetail = (id: string) =>
+  api<AuditLogDetail>(`/audit/${id}`);
 
 // ── Policy Types & API ─────────────────────────
 

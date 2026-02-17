@@ -25,6 +25,8 @@ class PoliciesResource:
         name: str,
         rules: List[Dict[str, Any]],
         mode: str = "enforce",
+        phase: str = "pre",
+        retry: Optional[Dict[str, Any]] = None,
         project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -35,13 +37,18 @@ class PoliciesResource:
             rules: List of rule dicts using when/then syntax, e.g.
                 ``{"when": {"field": "usage.request_count", "operator": "gt", "value": 100}, "then": {"action": "deny", "status": 429, "message": "Rate limit exceeded"}}``
             mode: "enforce" (block violations) or "shadow" (log only)
+            phase: "pre" (request phase) or "post" (response phase)
+            retry: "retry" configuration dict (max_retries, base_backoff_ms, etc.)
             project_id: Optional project scope
         """
         payload: Dict[str, Any] = {
             "name": name,
             "rules": rules,
             "mode": mode,
+            "phase": phase,
         }
+        if retry:
+            payload["retry"] = retry
         if project_id:
             payload["project_id"] = project_id
         resp = self._client._http.post("/api/v1/policies", json=payload)
@@ -53,6 +60,8 @@ class PoliciesResource:
         policy_id: str,
         name: Optional[str] = None,
         mode: Optional[str] = None,
+        phase: Optional[str] = None,
+        retry: Optional[Dict[str, Any]] = None,
         rules: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Update a policy (partial update — only provided fields are changed)."""
@@ -61,6 +70,10 @@ class PoliciesResource:
             payload["name"] = name
         if mode is not None:
             payload["mode"] = mode
+        if phase is not None:
+            payload["phase"] = phase
+        if retry is not None:
+            payload["retry"] = retry
         if rules is not None:
             payload["rules"] = rules
         resp = self._client._http.put(f"/api/v1/policies/{policy_id}", json=payload)
@@ -94,6 +107,8 @@ class AsyncPoliciesResource:
         name: str,
         rules: List[Dict[str, Any]],
         mode: str = "enforce",
+        phase: str = "pre",
+        retry: Optional[Dict[str, Any]] = None,
         project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a new policy with rules."""
@@ -101,7 +116,10 @@ class AsyncPoliciesResource:
             "name": name,
             "rules": rules,
             "mode": mode,
+            "phase": phase,
         }
+        if retry:
+            payload["retry"] = retry
         if project_id:
             payload["project_id"] = project_id
         resp = await self._client._http.post("/api/v1/policies", json=payload)
@@ -113,6 +131,8 @@ class AsyncPoliciesResource:
         policy_id: str,
         name: Optional[str] = None,
         mode: Optional[str] = None,
+        phase: Optional[str] = None,
+        retry: Optional[Dict[str, Any]] = None,
         rules: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Update a policy (partial update)."""
@@ -121,6 +141,10 @@ class AsyncPoliciesResource:
             payload["name"] = name
         if mode is not None:
             payload["mode"] = mode
+        if phase is not None:
+            payload["phase"] = phase
+        if retry is not None:
+            payload["retry"] = retry
         if rules is not None:
             payload["rules"] = rules
         resp = await self._client._http.put(f"/api/v1/policies/{policy_id}", json=payload)

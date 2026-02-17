@@ -14,7 +14,7 @@ pip install ailink
 
 ### Quick Start
 
-#### explicit Client (Recommended)
+#### Explicit Client (Recommended)
 
 Use the `AIlinkClient` to proxy requests.
 
@@ -141,7 +141,6 @@ except AIlinkError as e:
 ### Configuration
 
 ```python
-```python
 client = AIlinkClient(
     api_key="ailink_v1_...",
     gateway_url="https://gateway.ailink.dev",  # default
@@ -208,7 +207,28 @@ try {
 
 ---
 
+## Project Management
+
+Manage projects programmatically via the SDK (Admin Key required).
+
+```python
+admin = AIlinkClient.admin(admin_key="ailink_admin_...")
+
+# List projects
+projects = admin.projects.list()
+
+# Create a project
+new_proj = admin.projects.create(name="finance-bot")
+project_id = new_proj["id"]
+
+# Delete a project
+admin.projects.delete(project_id)
+```
+
+---
+
 ## Multiple APIs in One Agent
+
 
 An agent can use multiple AIlink tokens to access different APIs, each with their own policies:
 

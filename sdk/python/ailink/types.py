@@ -48,10 +48,11 @@ class Policy(AIlinkModel):
     id: str
     name: str
     mode: str
+    phase: str = "pre"
     rules: List[Dict[str, Any]]
 
     def __repr__(self) -> str:
-        return f"Policy(id={self.id!r}, name={self.name!r}, mode={self.mode!r})"
+        return f"Policy(id={self.id!r}, name={self.name!r}, mode={self.mode!r}, phase={self.phase!r})"
 
 
 class AuditLog(AIlinkModel):

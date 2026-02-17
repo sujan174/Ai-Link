@@ -1,11 +1,10 @@
-pub mod aws_kms;
 pub mod builtin;
-pub mod hashicorp;
 
 use async_trait::async_trait;
 
 /// Abstraction over secret storage backends.
-/// Implementations: BuiltinStore (AES-256-GCM in PG), HashiCorp Vault, AWS KMS.
+/// Implementation: BuiltinStore (AES-256-GCM in PG).
+/// Future: HashiCorp Vault, AWS KMS.
 #[async_trait]
 pub trait SecretStore: Send + Sync {
     /// Encrypt and store a secret. Returns the storage ID.

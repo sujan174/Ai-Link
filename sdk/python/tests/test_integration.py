@@ -457,3 +457,75 @@ class TestHITLReject:
         # Rejected requests should return 403 (or similar denial)
         assert result.get("status") in (403, 429, 502), \
             f"Expected rejection status, got {result.get('status', result.get('error'))}"
+
+
+# ──────────────────────────────────────────────
+# 8. Resilience & Retry Logic
+# ──────────────────────────────────────────────
+
+
+class TestRetryLogic:
+    @pytest.fixture(scope="class")
+    def retry_policy(self, admin_client):
+        """Create a policy with aggressive retry settings for testing."""
+        # Use existing 'rules' structure, but add 'retry' config
+        # Python SDK create() accepts **kwargs, so passing retry dict should work
+        # provided the backend accepts it (which we verified it does).
+        return admin_client.policies.create(
+            name=f"retry-policy-{uuid.uuid4().hex[:8]}",
+            mode="enforce",
+            rules=[{"when": {"always": True}, "then": {"action": "allow"}}],  # Default allow
+            retry={
+                "max_retries": 2,
+                "base_backoff_ms": 1000,
+                "max_backoff_ms": 5000,
+                "status_codes": [500],
+            },
+        )
+
+    @pytest.fixture(scope="class")
+    def retry_token(self, admin_client, retry_policy, project_id):
+        """Create a token governed by the retry policy."""
+        cred = admin_client.credentials.create(
+            name=f"retry-cred-{uuid.uuid4().hex[:8]}",
+            provider="openai",
+            secret="sk-test",
+        )
+        token_resp = admin_client.tokens.create(
+            name=f"retry-tok-{uuid.uuid4().hex[:8]}",
+            credential_id=str(cred["id"]),
+            upstream_url="http://mock-upstream:80",
+            project_id=project_id,
+            policy_ids=[str(retry_policy["id"])],
+        )
+        return token_resp["token_id"]
+
+    def test_retry_timing(self, retry_token, gateway_url):
+        """
+        Request to /status/500 should fail 3 times total (1 initial + 2 retries).
+        Backoff:
+          Atmpt 1 (fail) -> wait 1.0s (base * 2^0) + jitter
+          Atmpt 2 (fail) -> wait 2.0s (base * 2^1) + jitter
+          Atmpt 3 (fail) -> return 500
+        Total wait: ~3.0s. Verification: > 2.8s.
+        """
+        agent = AIlinkClient(api_key=retry_token, gateway_url=gateway_url, timeout=10.0)
+        
+        start_time = time.time()
+        # httpbin /status/:code returns that status code
+        resp = agent.get("/status/500")
+        end_time = time.time()
+        
+        # It should eventually fail with 500
+        assert resp.status_code == 500
+        
+        duration = end_time - start_time
+        # We expect at least 1s + 2s = 3s of sleep.
+        # Assert > 2.8s to be safe but firm.
+        if duration <= 2.8:
+            print(f"\n[FAIL] Duration {duration:.2f}s too short.")
+            print(f"Response Status: {resp.status_code}")
+            print(f"Response Headers: {resp.headers}")
+            print(f"Response Body: {resp.text}")
+
+        assert duration > 2.8, f"Request returned too quickly ({duration:.2f}s); retries likely didn't happen."

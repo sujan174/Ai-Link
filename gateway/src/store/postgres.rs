@@ -102,7 +102,7 @@ impl PgStore {
 
     pub async fn get_token(&self, token_id: &str) -> anyhow::Result<Option<TokenRow>> {
         let row = sqlx::query_as::<_, TokenRow>(
-            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, created_at FROM tokens WHERE id = $1"
+            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, created_at, COALESCE(log_level, 1::SMALLINT) as log_level FROM tokens WHERE id = $1"
         )
         .bind(token_id)
         .fetch_optional(&self.pool)
@@ -113,7 +113,7 @@ impl PgStore {
 
     pub async fn list_tokens(&self, project_id: Uuid) -> anyhow::Result<Vec<TokenRow>> {
         let rows = sqlx::query_as::<_, TokenRow>(
-            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, created_at FROM tokens WHERE project_id = $1 ORDER BY created_at DESC"
+            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, created_at, COALESCE(log_level, 1::SMALLINT) as log_level FROM tokens WHERE project_id = $1 ORDER BY created_at DESC"
         )
         .bind(project_id)
         .fetch_all(&self.pool)
@@ -143,7 +143,7 @@ impl PgStore {
         }
 
         let rows = sqlx::query_as::<_, PolicyRow>(
-            "SELECT id, project_id, name, mode, rules, is_active, created_at FROM policies WHERE id = ANY($1) AND is_active = true"
+            "SELECT id, project_id, name, mode, phase, rules, retry, is_active, created_at FROM policies WHERE id = ANY($1) AND is_active = true"
         )
         .bind(policy_ids)
         .fetch_all(&self.pool)
@@ -155,13 +155,29 @@ impl PgStore {
                 "shadow" => crate::models::policy::PolicyMode::Shadow,
                 _ => crate::models::policy::PolicyMode::Enforce,
             };
+            let phase = match row.phase.as_str() {
+                "post" => crate::models::policy::Phase::Post,
+                _ => crate::models::policy::Phase::Pre,
+            };
             let rules: Vec<crate::models::policy::Rule> = serde_json::from_value(row.rules)?;
+            let retry_config = if let Some(r) = row.retry {
+                match serde_json::from_value(r) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        tracing::error!("Failed to deserialize retry config for policy {}: {}", row.id, e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             policies.push(crate::models::policy::Policy {
                 id: row.id,
                 name: row.name,
-                phase: crate::models::policy::Phase::Pre, // default, can be overridden via rules JSON
+                phase,
                 mode,
                 rules,
+                retry: retry_config,
             });
         }
 
@@ -170,7 +186,7 @@ impl PgStore {
 
     pub async fn list_policies(&self, project_id: Uuid) -> anyhow::Result<Vec<PolicyRow>> {
         let rows = sqlx::query_as::<_, PolicyRow>(
-            "SELECT id, project_id, name, mode, rules, is_active, created_at FROM policies WHERE project_id = $1 ORDER BY created_at DESC"
+            "SELECT id, project_id, name, mode, phase, rules, retry, is_active, created_at FROM policies WHERE project_id = $1 ORDER BY created_at DESC"
         )
         .bind(project_id)
         .fetch_all(&self.pool)
@@ -183,17 +199,21 @@ impl PgStore {
         project_id: Uuid,
         name: &str,
         mode: &str,
+        phase: &str,
         rules: serde_json::Value,
+        retry: Option<serde_json::Value>,
     ) -> anyhow::Result<Uuid> {
         let id = sqlx::query_scalar::<_, Uuid>(
-            r#"INSERT INTO policies (project_id, name, mode, rules)
-               VALUES ($1, $2, $3, $4)
+            r#"INSERT INTO policies (project_id, name, mode, phase, rules, retry)
+               VALUES ($1, $2, $3, $4, $5, $6)
                RETURNING id"#,
         )
         .bind(project_id)
         .bind(name)
         .bind(mode)
+        .bind(phase)
         .bind(rules)
+        .bind(retry)
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
@@ -204,19 +224,25 @@ impl PgStore {
         id: Uuid,
         project_id: Uuid,
         mode: Option<&str>,
+        phase: Option<&str>,
         rules: Option<serde_json::Value>,
+        retry: Option<serde_json::Value>,
         name: Option<&str>,
     ) -> anyhow::Result<bool> {
         // Build dynamic update — at least one field must change
         let result = sqlx::query(
             r#"UPDATE policies
                SET mode = COALESCE($1, mode),
-                   rules = COALESCE($2, rules),
-                   name = COALESCE($3, name)
-               WHERE id = $4 AND project_id = $5 AND is_active = true"#,
+                   phase = COALESCE($2, phase),
+                   rules = COALESCE($3, rules),
+                   retry = COALESCE($4, retry),
+                   name = COALESCE($5, name)
+               WHERE id = $6 AND project_id = $7 AND is_active = true"#,
         )
         .bind(mode)
+        .bind(phase)
         .bind(rules)
+        .bind(retry)
         .bind(name)
         .bind(id)
         .bind(project_id)
@@ -328,7 +354,9 @@ impl PgStore {
         let rows = sqlx::query_as::<_, AuditLogRow>(
             r#"SELECT id, created_at, token_id, method, path, upstream_status,
                       response_latency_ms, agent_name, policy_result, estimated_cost_usd,
-                      shadow_violations, fields_redacted
+                      shadow_violations, fields_redacted,
+                      prompt_tokens, completion_tokens, model, tokens_per_second,
+                      user_id, tenant_id, external_request_id, log_level
                FROM audit_logs
                WHERE project_id = $1
                ORDER BY created_at DESC
@@ -341,6 +369,35 @@ impl PgStore {
         .await?;
 
         Ok(rows)
+    }
+
+    /// Fetch a single audit log with its bodies (if available).
+    pub async fn get_audit_log_detail(
+        &self,
+        log_id: Uuid,
+        project_id: Uuid,
+    ) -> anyhow::Result<Option<AuditLogDetailRow>> {
+        let row = sqlx::query_as::<_, AuditLogDetailRow>(
+            r#"SELECT a.id, a.created_at, a.token_id, a.method, a.path,
+                      a.upstream_url, a.upstream_status,
+                      a.response_latency_ms, a.agent_name, a.policy_result,
+                      a.policy_mode, a.deny_reason,
+                      a.estimated_cost_usd, a.shadow_violations, a.fields_redacted,
+                      a.prompt_tokens, a.completion_tokens, a.model,
+                      a.tokens_per_second, a.user_id, a.tenant_id,
+                      a.external_request_id, a.log_level,
+                      b.request_body, b.response_body,
+                      b.request_headers, b.response_headers
+               FROM audit_logs a
+               LEFT JOIN audit_log_bodies b ON b.audit_id = a.id
+               WHERE a.id = $1 AND a.project_id = $2"#,
+        )
+        .bind(log_id)
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row)
     }
 
     // -- Analytics Operations --
@@ -458,6 +515,8 @@ pub struct TokenRow {
     pub policy_ids: Vec<Uuid>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
+    /// Privacy level: 0=metadata, 1=redacted(default), 2=full-debug
+    pub log_level: i16,
 }
 
 #[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
@@ -466,7 +525,9 @@ pub struct PolicyRow {
     pub project_id: Uuid,
     pub name: String,
     pub mode: String,
+    pub phase: String,
     pub rules: serde_json::Value,
+    pub retry: Option<serde_json::Value>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
 }
@@ -485,6 +546,48 @@ pub struct AuditLogRow {
     pub estimated_cost_usd: Option<rust_decimal::Decimal>,
     pub shadow_violations: Option<Vec<String>>,
     pub fields_redacted: Option<Vec<String>>,
+    // Phase 4 columns
+    pub prompt_tokens: Option<i32>,
+    pub completion_tokens: Option<i32>,
+    pub model: Option<String>,
+    pub tokens_per_second: Option<f32>,
+    pub user_id: Option<String>,
+    pub tenant_id: Option<String>,
+    pub external_request_id: Option<String>,
+    pub log_level: Option<i16>,
+}
+
+/// Detailed audit log row with joined body data (for single-entry view).
+#[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
+pub struct AuditLogDetailRow {
+    pub id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub token_id: Option<String>,
+    pub method: String,
+    pub path: String,
+    pub upstream_url: String,
+    pub upstream_status: Option<i16>,
+    pub response_latency_ms: i32,
+    pub agent_name: Option<String>,
+    pub policy_result: String,
+    pub policy_mode: Option<String>,
+    pub deny_reason: Option<String>,
+    pub estimated_cost_usd: Option<rust_decimal::Decimal>,
+    pub shadow_violations: Option<Vec<String>>,
+    pub fields_redacted: Option<Vec<String>>,
+    pub prompt_tokens: Option<i32>,
+    pub completion_tokens: Option<i32>,
+    pub model: Option<String>,
+    pub tokens_per_second: Option<f32>,
+    pub user_id: Option<String>,
+    pub tenant_id: Option<String>,
+    pub external_request_id: Option<String>,
+    pub log_level: Option<i16>,
+    // From audit_log_bodies JOIN
+    pub request_body: Option<String>,
+    pub response_body: Option<String>,
+    pub request_headers: Option<serde_json::Value>,
+    pub response_headers: Option<serde_json::Value>,
 }
 
 #[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]

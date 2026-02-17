@@ -25,11 +25,23 @@ services:
       AILINK_MASTER_KEY: "change_this_to_a_secure_random_key_32_bytes"
       
       # Slack Integration (for HITL)
-      SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/..."
+      # AILINK_SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/..."
       
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  dashboard:
+    image: ailink/dashboard:latest
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:8443/api/v1"
+      API_URL: "http://gateway:8443/api/v1"
+    depends_on:
+      - gateway
 
   postgres:
     image: postgres:16-alpine
@@ -39,11 +51,27 @@ services:
       POSTGRES_DB: ailink
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.50
+    ports:
+      - "16686:16686" # UI
+      - "4317:4317" # OTLP gRPC
 
 volumes:
   pgdata:
@@ -56,10 +84,9 @@ docker compose up -d
 ```
 
 ### 3. Verify
-```bash
-curl http://localhost:8443/healthz
-# 200 OK
-```
+-   **Dashboard**: http://localhost:3000
+-   **Gateway**: http://localhost:8443/healthz
+-   **Jaeger UI**: http://localhost:16686
 
 ---
 
@@ -79,12 +106,14 @@ Helm charts available in Phase 2. For now, deploy `ailink/gateway` as a Deployme
 |---|---|
 | `DATABASE_URL` | Postgres connection string |
 | `REDIS_URL` | Redis connection string |
-| `AILINK_MASTER_KEY` | 32-byte hex key for encrypting vault credentials |
-| `AILINK_LOG_LEVEL` | `info`, `debug`, or `trace` |
+| `AILINK_MASTER_KEY` | 32-byte hex key for vault encryption (Critical: Change in production!) |
+| `AILINK_ADMIN_KEY` | Admin API key (default: `ailink-admin-test`) |
+| `AILINK_LOG_LEVEL` | `info`, `debug`, or `trace` (default: `info`) |
 | `AILINK_PORT` | Port to bind (default: 8443) |
+| `AILINK_ENABLE_TEST_HOOKS`| Set to `1` to enable test-only headers (e.g., cost override). Off by default |
 
 ---
 
 ## SaaS (Managed)
 
-Contact sales for managed AIlink instances with SLAs, SSO, and dedicated support.
+Contact us for managed AIlink instances with SLAs, SSO, and dedicated support.

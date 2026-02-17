@@ -116,6 +116,8 @@ pub enum PolicyCommands {
         name: String,
         #[arg(long, default_value = "enforce")]
         mode: String,
+        #[arg(long, default_value = "pre")]
+        phase: String,
         #[arg(long)]
         project_id: Option<String>,
 

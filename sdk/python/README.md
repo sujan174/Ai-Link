@@ -1,6 +1,6 @@
 # AIlink Python SDK
 
-Official Python client for the [AIlink Gateway](https://github.com/ailink/ailink) — secure credential management and policy enforcement for AI agents.
+Python client for the [AIlink Gateway](https://github.com/sujan174/ailink) — secure credential management and policy enforcement for AI agents.
 
 ## Installation
 
@@ -19,7 +19,7 @@ pip install ailink[anthropic]   # Anthropic compatibility
 
 ### Agent / Proxy Usage
 
-Route LLM requests through the gateway with automatic credential injection:
+Route LLM requests through the gateway:
 
 ```python
 from ailink import AIlinkClient
@@ -27,7 +27,7 @@ from ailink import AIlinkClient
 # Create a client with your virtual token
 client = AIlinkClient(api_key="ailink_v1_...")
 
-# Use OpenAI's SDK — requests route through the gateway automatically
+# Use OpenAI's SDK — requests go through the gateway
 oai = client.openai()
 response = oai.chat.completions.create(
     model="gpt-4o",
@@ -44,11 +44,11 @@ from ailink import AIlinkClient
 
 admin = AIlinkClient.admin(admin_key="your-admin-key")
 
-# Credential lifecycle
+# Credentials
 cred = admin.credentials.create(name="prod-openai", provider="openai", secret="sk-...")
 creds = admin.credentials.list()  # → List[Credential]
 
-# Token lifecycle
+# Tokens
 token = admin.tokens.create(
     name="billing-bot",
     credential_id=cred["id"],
@@ -59,11 +59,12 @@ api_key = token["token_id"]  # → "ailink_v1_..."
 tokens = admin.tokens.list()           # → List[Token]
 admin.tokens.revoke(api_key)           # Soft-delete
 
-# Policy lifecycle
+# Policies (with optional retry config)
 policy = admin.policies.create(
     name="rate-limit-100",
     mode="enforce",
     rules=[{"type": "rate_limit", "window": "1m", "max_requests": 100}],
+    retry={"max_retries": 3, "base_delay_ms": 500, "max_backoff_ms": 10000},
 )
 admin.policies.update(policy["id"], mode="shadow")
 admin.policies.delete(policy["id"])
@@ -89,17 +90,15 @@ async with AsyncClient(api_key="ailink_v1_...") as client:
 
 ## Error Handling
 
-The SDK raises specific exceptions for different error types:
-
 ```python
 from ailink import AIlinkClient
 from ailink.exceptions import (
-    AuthenticationError,  # 401 — invalid API key
-    NotFoundError,        # 404 — resource doesn't exist
-    RateLimitError,       # 429 — rate limit exceeded
-    ValidationError,      # 422 — bad request payload
-    GatewayError,         # 5xx — gateway error
-    AIlinkError,          # Base class for all errors
+    AuthenticationError,  # 401
+    NotFoundError,        # 404
+    RateLimitError,       # 429
+    ValidationError,      # 422
+    GatewayError,         # 5xx
+    AIlinkError,          # Base class
 )
 
 admin = AIlinkClient.admin(admin_key="...")
@@ -115,7 +114,7 @@ except AIlinkError as e:
 
 ## Models
 
-All list methods return typed Pydantic models with attribute access:
+List methods return typed Pydantic models:
 
 | Model | Fields |
 | :--- | :--- |

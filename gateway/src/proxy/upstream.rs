@@ -1,34 +1,21 @@
-/// HTTP client for forwarding requests to upstream APIs.
-/// Uses reqwest-middleware for retries and tracing.
-use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
-use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
 use std::time::Duration;
+use reqwest::Client;
+use crate::models::policy::RetryConfig;
 
+#[derive(Clone)]
 pub struct UpstreamClient {
-    client: ClientWithMiddleware,
+    client: Client,
 }
 
 impl UpstreamClient {
     pub fn new() -> Self {
-        // Base HTTP client
-        let reqwest_client = reqwest::Client::builder()
+        let client = Client::builder()
             .use_rustls_tls()
             .pool_max_idle_per_host(32)
-            .timeout(Duration::from_secs(60)) // Total timeout including retries
+            .timeout(Duration::from_secs(60))
             .connect_timeout(Duration::from_secs(5))
             .build()
             .expect("failed to build HTTP client");
-
-        // Retry Policy: Exponential Backoff
-        // Retries: 3 times
-        // Base: 500ms
-        // Max: 10s
-        let retry_policy = ExponentialBackoff::builder().build_with_max_retries(3);
-
-        // Wrap with middleware
-        let client = ClientBuilder::new(reqwest_client)
-            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-            .build();
 
         Self { client }
     }
@@ -38,21 +25,21 @@ impl UpstreamClient {
         method: reqwest::Method,
         url: &str,
         headers: reqwest::header::HeaderMap,
-        body: Vec<u8>,
+        body: bytes::Bytes,
+        retry_config: &RetryConfig,
     ) -> Result<reqwest::Response, crate::errors::AppError> {
-        let resp = self
-            .client
-            .request(method, url)
-            .headers(headers)
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| {
-                // reqwest-middleware errors are compound, but to_string() gives details
-                tracing::warn!("Upstream request failed after retries: {}", e);
-                crate::errors::AppError::Upstream(e.to_string())
-            })?;
-
-        Ok(resp)
+        crate::proxy::retry::robust_request(
+            &self.client,
+            method,
+            url,
+            headers,
+            body,
+            retry_config,
+        )
+        .await
+        .map_err(|e| {
+             tracing::warn!("Upstream request failed: {}", e);
+             crate::errors::AppError::Upstream(e.to_string())
+        })
     }
 }
