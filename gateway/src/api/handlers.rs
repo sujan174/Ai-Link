@@ -1,11 +1,16 @@
 use std::sync::Arc;
+use std::convert::Infallible;
 
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
     Json,
 };
+use futures::stream::{self, Stream};
 use serde_json::json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -496,6 +501,21 @@ pub async fn delete_policy(
     Ok(Json(DeleteResponse { id, deleted }))
 }
 
+/// GET /api/v1/policies/:id/versions — list policy version history
+pub async fn list_policy_versions(
+    State(state): State<Arc<AppState>>,
+    Path(id_str): Path<String>,
+) -> Result<Json<Vec<crate::store::postgres::PolicyVersionRow>>, StatusCode> {
+    let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let versions = state.db.list_policy_versions(id).await.map_err(|e| {
+        tracing::error!("list_policy_versions failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(versions))
+}
+
 // ── Credential Handlers ──────────────────────────────────────
 
 /// GET /api/v1/credentials — list credential metadata (no secrets)
@@ -595,4 +615,238 @@ pub async fn revoke_token(
     })?;
 
     Ok(Json(RevokeResponse { token_id, revoked }))
+}
+
+// ── Token Usage Handler ──────────────────────────────────────
+
+/// GET /api/v1/tokens/:id/usage — per-token usage analytics (24h)
+pub async fn get_token_usage(
+    State(state): State<Arc<AppState>>,
+    Path(token_id): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<crate::models::analytics::TokenUsageStats>, StatusCode> {
+    let project_id = params.project_id.unwrap_or_else(default_project_id);
+
+    let stats = state
+        .db
+        .get_token_usage(&token_id, project_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("get_token_usage failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(stats))
+}
+
+// ── Audit Stream (SSE) ───────────────────────────────────────
+
+/// GET /api/v1/audit/stream — Server-Sent Events live audit tail
+pub async fn stream_audit_logs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationParams>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let project_id = params.project_id.unwrap_or_else(default_project_id);
+
+    let stream = stream::unfold(
+        (state, project_id, None::<chrono::DateTime<chrono::Utc>>),
+        |(state, project_id, last_seen)| async move {
+            // Poll every 2 seconds
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            let rows = state
+                .db
+                .list_audit_logs(project_id, 20, 0)
+                .await
+                .unwrap_or_default();
+
+            // Filter to only new entries since last_seen
+            let new_rows: Vec<&AuditLogRow> = if let Some(last) = last_seen {
+                rows.iter().filter(|r| r.created_at > last).collect()
+            } else {
+                // First poll: send nothing, just record the cursor
+                vec![]
+            };
+
+            let next_cursor = rows.first().map(|r| r.created_at).or(last_seen);
+
+            if new_rows.is_empty() {
+                // Send a heartbeat comment to keep connection alive
+                Some((Ok(Event::default().comment("heartbeat")), (state, project_id, next_cursor)))
+            } else {
+                let data = serde_json::to_string(&new_rows).unwrap_or_default();
+                Some((
+                    Ok(Event::default().data(data).event("audit")),
+                    (state, project_id, next_cursor),
+                ))
+            }
+        },
+    );
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// ── Notification Handlers ────────────────────────────────────
+
+/// GET /api/v1/notifications — list notifications
+pub async fn list_notifications(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Vec<crate::models::notification::Notification>>, StatusCode> {
+    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    // Default limit 20
+    let limit = 20;
+
+    let notifs = state
+        .db
+        .list_notifications(project_id, limit)
+        .await
+        .map_err(|e| {
+            tracing::error!("list_notifications failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(notifs))
+}
+
+/// GET /api/v1/notifications/unread — count unread
+pub async fn count_unread_notifications(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let project_id = params.project_id.unwrap_or_else(default_project_id);
+
+    let count = state
+        .db
+        .count_unread_notifications(project_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("count_unread_notifications failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(json!({ "count": count })))
+}
+
+/// POST /api/v1/notifications/:id/read — mark as read
+pub async fn mark_notification_read(
+    State(state): State<Arc<AppState>>,
+    Path(id_str): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let project_id = default_project_id();
+
+    let success = state
+        .db
+        .mark_notification_read(id, project_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("mark_notification_read failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(json!({ "success": success })))
+}
+
+/// POST /api/v1/notifications/read-all — mark all as read
+pub async fn mark_all_notifications_read(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let project_id = params.project_id.unwrap_or_else(default_project_id);
+
+    let success = state
+        .db
+        .mark_all_notifications_read(project_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("mark_all_notifications_read failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(json!({ "success": success })))
+}
+
+// ── Service Registry ─────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct CreateServiceRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub base_url: String,
+    pub service_type: Option<String>,
+    pub credential_id: Option<String>,
+    pub project_id: Option<Uuid>,
+}
+
+/// GET /api/v1/services — list all registered services for a project
+pub async fn list_services(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Vec<crate::models::service::Service>>, StatusCode> {
+    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    let services = state
+        .db
+        .list_services(project_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("list_services failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(services))
+}
+
+/// POST /api/v1/services — register a new external service
+pub async fn create_service(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<CreateServiceRequest>,
+) -> Result<(StatusCode, Json<crate::models::service::Service>), StatusCode> {
+    let project_id = payload.project_id.unwrap_or_else(default_project_id);
+
+    let credential_id = if let Some(ref cid) = payload.credential_id {
+        Some(Uuid::parse_str(cid).map_err(|_| StatusCode::BAD_REQUEST)?)
+    } else {
+        None
+    };
+
+    let svc = crate::store::postgres::NewService {
+        project_id,
+        name: payload.name,
+        description: payload.description.unwrap_or_default(),
+        base_url: payload.base_url,
+        service_type: payload.service_type.unwrap_or_else(|| "generic".to_string()),
+        credential_id,
+    };
+
+    let created = state
+        .db
+        .create_service(&svc)
+        .await
+        .map_err(|e| {
+            tracing::error!("create_service failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// DELETE /api/v1/services/:id — unregister a service
+pub async fn delete_service(
+    State(state): State<Arc<AppState>>,
+    Path(id_str): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let project_id = params.project_id.unwrap_or_else(default_project_id);
+
+    let deleted = state
+        .db
+        .delete_service(id, project_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("delete_service failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(json!({ "deleted": deleted })))
 }

@@ -227,19 +227,106 @@ admin.projects.delete(project_id)
 
 ---
 
+## Service Registry (Action Gateway)
+
+Register external APIs as named services. The gateway will proxy requests and automatically inject the linked credential.
+
+### Register a Service
+
+```python
+admin = AIlinkClient.admin(admin_key="ailink_admin_...")
+
+# Register Stripe
+admin.services.create(
+    name="stripe",
+    base_url="https://api.stripe.com",
+    description="Payment processing",
+    service_type="generic",        # or "llm"
+    credential_id="cred-uuid",     # auto-injected on proxy
+)
+
+# Register Slack (no credential needed for public webhooks)
+admin.services.create(
+    name="slack-webhook",
+    base_url="https://hooks.slack.com",
+    description="Slack notifications",
+)
+```
+
+### List and Delete Services
+
+```python
+# List all registered services
+services = admin.services.list()
+for svc in services:
+    print(f"{svc.name} → {svc.base_url} ({svc.service_type})")
+
+# Delete a service
+admin.services.delete(service_id="svc-uuid")
+```
+
+### Proxy Through a Service
+
+Once registered, agents proxy requests via `/v1/proxy/services/{name}/...`:
+
+```python
+agent = AIlinkClient(api_key="ailink_v1_...", agent_name="billing-bot")
+
+# Request is proxied to https://api.stripe.com/v1/charges
+# with the linked credential injected automatically
+charges = agent.post("/v1/proxy/services/stripe/v1/charges", json={
+    "amount": 5000,
+    "currency": "usd",
+})
+```
+
+This replaces the need for separate tokens per API — one token can access multiple services.
+
+### Service Model Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Service UUID |
+| `name` | string | Unique name (used in proxy URL) |
+| `base_url` | string | Upstream root URL |
+| `description` | string | Human-readable description |
+| `service_type` | string | `"generic"` or `"llm"` |
+| `credential_id` | string? | Linked credential (auto-injected) |
+| `is_active` | bool | Whether the service is active |
+| `created_at` | datetime | Creation timestamp |
+
+---
+
 ## Multiple APIs in One Agent
 
+### Option A: Service Registry (Recommended)
 
-An agent can use multiple AIlink tokens to access different APIs, each with their own policies:
+Register services once, then use a single token to access all of them:
 
 ```python
 from ailink import AIlinkClient
 
-stripe = AIlinkClient(token="ailink_v1_proj_abc_tok_stripe", agent_name="billing-bot")
-github = AIlinkClient(token="ailink_v1_proj_abc_tok_github", agent_name="billing-bot")
-slack  = AIlinkClient(token="ailink_v1_proj_abc_tok_slack",  agent_name="billing-bot")
+agent = AIlinkClient(api_key="ailink_v1_...", agent_name="billing-bot")
 
-# Each client routes to its own upstream with its own policies
+# Each request routes to the correct upstream via the service name
+charges = agent.post("/v1/proxy/services/stripe/v1/charges", json={...})
+repos   = agent.get("/v1/proxy/services/github/user/repos")
+agent.post("/v1/proxy/services/slack/api/chat.postMessage", json={
+    "channel": "#billing", "text": "Done!"
+})
+```
+
+### Option B: Separate Tokens
+
+Use separate tokens per API, each with their own upstream and policies:
+
+```python
+from ailink import AIlinkClient
+
+stripe = AIlinkClient(api_key="ailink_v1_proj_abc_tok_stripe", agent_name="billing-bot")
+github = AIlinkClient(api_key="ailink_v1_proj_abc_tok_github", agent_name="billing-bot")
+slack  = AIlinkClient(api_key="ailink_v1_proj_abc_tok_slack",  agent_name="billing-bot")
+
 charges = stripe.get("/v1/charges")
 repos = github.get("/user/repos")
 slack.post("/api/chat.postMessage", json={"channel": "#billing", "text": "Done!"})

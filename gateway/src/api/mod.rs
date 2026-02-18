@@ -24,6 +24,7 @@ pub fn api_router() -> Router<Arc<AppState>> {
             get(handlers::list_tokens).post(handlers::create_token),
         )
         .route("/tokens/:id", delete(handlers::revoke_token))
+        .route("/tokens/:id/usage", get(handlers::get_token_usage))
         .route(
             "/policies",
             get(handlers::list_policies).post(handlers::create_policy),
@@ -31,6 +32,10 @@ pub fn api_router() -> Router<Arc<AppState>> {
         .route(
             "/policies/:id",
             put(handlers::update_policy).delete(handlers::delete_policy),
+        )
+        .route(
+            "/policies/:id/versions",
+            get(handlers::list_policy_versions),
         )
         .route(
             "/credentials",
@@ -42,6 +47,7 @@ pub fn api_router() -> Router<Arc<AppState>> {
         )
         .route("/approvals", get(handlers::list_approvals))
         .route("/approvals/:id/decision", post(handlers::decide_approval))
+        .route("/audit/stream", get(handlers::stream_audit_logs))
         .route("/audit", get(handlers::list_audit_logs))
         .route("/audit/:id", get(handlers::get_audit_log))
         .route("/analytics/volume", get(analytics::get_request_volume))
@@ -49,6 +55,26 @@ pub fn api_router() -> Router<Arc<AppState>> {
         .route(
             "/analytics/latency",
             get(analytics::get_latency_percentiles),
+        )
+        // Services (Action Gateway)
+        .route(
+            "/services",
+            get(handlers::list_services).post(handlers::create_service),
+        )
+        .route("/services/:id", delete(handlers::delete_service))
+        // Notifications
+        .route("/notifications", get(handlers::list_notifications))
+        .route(
+            "/notifications/unread",
+            get(handlers::count_unread_notifications),
+        )
+        .route(
+            "/notifications/:id/read",
+            post(handlers::mark_notification_read),
+        )
+        .route(
+            "/notifications/read-all",
+            post(handlers::mark_all_notifications_read),
         )
         .layer(middleware::from_fn(admin_auth))
         .layer(TraceLayer::new_for_http())

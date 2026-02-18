@@ -155,7 +155,7 @@ gateway/src/
 │
 ├── api/
 │   ├── mod.rs            # Management API router + admin auth middleware
-│   ├── handlers.rs       # CRUD handlers for tokens, policies, credentials, approvals, audit
+│   ├── handlers.rs       # CRUD handlers for tokens, policies, credentials, services, approvals, audit
 │   └── analytics.rs      # Volume, status, latency analytics endpoints
 │
 ├── middleware/
@@ -170,6 +170,7 @@ gateway/src/
 │
 ├── proxy/
 │   ├── handler.rs        # Main proxy handler (auth → policy → key inject → forward → audit)
+│   │                     # Also handles service-based routing (/v1/proxy/services/{name}/...)
 │   ├── upstream.rs       # Reqwest client with retries, backoff, and connection pooling
 │   └── transform.rs      # URL rewriting, header mutation
 │
@@ -190,6 +191,7 @@ gateway/src/
 └── models/
     ├── token.rs           # Token types and serialization
     ├── policy.rs          # Policy rules, conditions, actions, and evaluation types
+    ├── service.rs         # Service Registry entity (Action Gateway)
     ├── audit.rs           # Audit log entry schema
     ├── approval.rs        # HITL approval request types
     └── cost.rs            # Token usage extraction and cost calculation

@@ -11,9 +11,12 @@ import {
   CreateTokenRequest
 } from "@/lib/api";
 import {
-  Plus, RefreshCw, Key, Shield, Trash2, Loader2, AlertTriangle
+  Plus, RefreshCw, Key, Shield, Trash2, Loader2, AlertTriangle, Blocks
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/empty-state";
+import { PageSkeleton } from "@/components/page-skeleton";
+import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table";
 import { columns } from "./columns";
@@ -36,6 +39,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 export default function TokensPage() {
+  const router = useRouter();
   const [tokens, setTokens] = useState<Token[]>([]);
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
@@ -147,17 +151,31 @@ export default function TokensPage() {
       </div>
 
       {/* Table */}
-      <div className="animate-slide-up stagger-2">
-        <DataTable
-          columns={columns}
-          data={tokens}
-          searchKey="name"
-          searchPlaceholder="Filter tokens..."
-          meta={{
-            onRevoke: (t: Token) => setRevokeTokenData(t),
-          }}
+      {loading ? (
+        <PageSkeleton cards={3} rows={5} />
+      ) : tokens.length === 0 ? (
+        <EmptyState
+          icon={Key}
+          title="No tokens created"
+          description="Create a virtual token to give your agents controlled access to upstream APIs."
+          actionLabel="Create Token"
+          onAction={() => setCreateOpen(true)}
+          className="bg-card/50 backdrop-blur-sm"
         />
-      </div>
+      ) : (
+        <div className="animate-slide-up stagger-2">
+          <DataTable
+            columns={columns}
+            data={tokens}
+            searchKey="name"
+            searchPlaceholder="Filter tokens..."
+            onRowClick={(token) => router.push(`/tokens/${token.id}`)}
+            meta={{
+              onRevoke: (t: Token) => setRevokeTokenData(t),
+            }}
+          />
+        </div>
+      )}
 
       {/* Revoke Confirmation Dialog */}
       <Dialog open={!!revokeTokenData} onOpenChange={(open) => !open && setRevokeTokenData(null)}>

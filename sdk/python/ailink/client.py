@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .resources.policies import PoliciesResource, AsyncPoliciesResource
     from .resources.credentials import CredentialsResource, AsyncCredentialsResource
     from .resources.projects import ProjectsResource, AsyncProjectsResource
+    from .resources.services import ServicesResource, AsyncServicesResource
 
 
 class AIlinkClient:
@@ -199,6 +200,11 @@ class AIlinkClient:
         from .resources.projects import ProjectsResource
         return ProjectsResource(self)
 
+    @cached_property
+    def services(self) -> "ServicesResource":
+        from .resources.services import ServicesResource
+        return ServicesResource(self)
+
 
 class AsyncClient:
     """
@@ -345,3 +351,8 @@ class AsyncClient:
     def projects(self) -> "AsyncProjectsResource":
         from .resources.projects import AsyncProjectsResource
         return AsyncProjectsResource(self)
+
+    @cached_property
+    def services(self) -> "AsyncServicesResource":
+        from .resources.services import AsyncServicesResource
+        return AsyncServicesResource(self)

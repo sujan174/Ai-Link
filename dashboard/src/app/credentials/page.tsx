@@ -1,20 +1,38 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { listCredentials, createCredential, Credential } from "@/lib/api";
-import { Fingerprint, Plus, Lock, RefreshCw, Server } from "lucide-react";
+import { listCredentials, createCredential, rotateCredential, Credential } from "@/lib/api";
+import { Fingerprint, Plus, Lock, RefreshCw, Server, RotateCw, Copy, Check, AlertTriangle, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/empty-state";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+    DialogTrigger,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
 
 export default function CredentialsPage() {
     const [credentials, setCredentials] = useState<Credential[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [showModal, setShowModal] = useState(false);
+
+    // Rotation state
+    const [rotatingId, setRotatingId] = useState<string | null>(null);
+    const [newSecret, setNewSecret] = useState<string | null>(null);
+    const [rotateLoading, setRotateLoading] = useState(false);
+    const [copied, setCopied] = useState(false);
 
     const fetchCredentials = useCallback(async () => {
         try {
@@ -32,6 +50,30 @@ export default function CredentialsPage() {
     useEffect(() => {
         fetchCredentials();
     }, [fetchCredentials]);
+
+    const handleRotate = async () => {
+        if (!rotatingId) return;
+        setRotateLoading(true);
+        try {
+            const res = await rotateCredential(rotatingId);
+            setNewSecret(res.secret);
+            toast.success("Credential rotated successfully");
+            fetchCredentials();
+        } catch (e) {
+            toast.error("Failed to rotate credential");
+            setRotatingId(null); // Close on error
+        } finally {
+            setRotateLoading(false);
+        }
+    };
+
+    const handleCopy = () => {
+        if (newSecret) {
+            navigator.clipboard.writeText(newSecret);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        }
+    };
 
     const activeCount = credentials.filter((c) => c.is_active).length;
 
@@ -103,25 +145,32 @@ export default function CredentialsPage() {
                             <TableHead>Provider</TableHead>
                             <TableHead>Version</TableHead>
                             <TableHead>Status</TableHead>
-                            <TableHead>Created</TableHead>
+                            <TableHead>Created At</TableHead>
+                            <TableHead className="w-[100px]">Actions</TableHead>
                         </TableRow>
                     </TableHeader>
                     <TableBody>
                         {loading ? (
-                            Array.from({ length: 3 }).map((_, i) => (
+                            Array.from({ length: 5 }).map((_, i) => (
                                 <TableRow key={i}>
-                                    <TableCell><div className="h-4 w-32 bg-muted/50 rounded shimmer" /></TableCell>
-                                    <TableCell><div className="h-4 w-20 bg-muted/50 rounded shimmer" /></TableCell>
-                                    <TableCell><div className="h-4 w-8 bg-muted/50 rounded shimmer" /></TableCell>
-                                    <TableCell><div className="h-4 w-16 bg-muted/50 rounded shimmer" /></TableCell>
-                                    <TableCell><div className="h-4 w-24 bg-muted/50 rounded shimmer" /></TableCell>
+                                    <TableCell><div className="h-4 w-24 animate-pulse bg-muted rounded" /></TableCell>
+                                    <TableCell><div className="h-4 w-16 animate-pulse bg-muted rounded" /></TableCell>
+                                    <TableCell><div className="h-4 w-8 animate-pulse bg-muted rounded" /></TableCell>
+                                    <TableCell><div className="h-4 w-12 animate-pulse bg-muted rounded" /></TableCell>
+                                    <TableCell><div className="h-4 w-24 animate-pulse bg-muted rounded" /></TableCell>
+                                    <TableCell><div className="h-4 w-8 animate-pulse bg-muted rounded" /></TableCell>
                                 </TableRow>
                             ))
                         ) : credentials.length === 0 ? (
                             <TableRow>
-                                <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
-                                    <Lock className="h-6 w-6 mx-auto mb-2 opacity-30" />
-                                    No credentials found. Add an API key to get started.
+                                <TableCell colSpan={6} className="h-96">
+                                    <EmptyState
+                                        icon={Lock}
+                                        title="No credentials found"
+                                        description="Add your first API key to the secure vault. We encrypt it with AES-256-GCM."
+                                        actionLabel="Add Credential"
+                                        onAction={() => setShowModal(true)}
+                                    />
                                 </TableCell>
                             </TableRow>
                         ) : (
@@ -142,6 +191,16 @@ export default function CredentialsPage() {
                                     <TableCell className="text-muted-foreground text-xs">
                                         {new Date(cred.created_at).toLocaleDateString()}
                                     </TableCell>
+                                    <TableCell>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            title="Rotate Credential"
+                                            onClick={() => setRotatingId(cred.id)}
+                                        >
+                                            <RotateCw className="h-4 w-4 text-muted-foreground hover:text-primary transition-colors" />
+                                        </Button>
+                                    </TableCell>
                                 </TableRow>
                             ))
                         )}
@@ -149,84 +208,161 @@ export default function CredentialsPage() {
                 </Table>
             </Card>
 
+            {/* Create Modal */}
             {showModal && (
                 <CreateCredentialModal
                     onClose={() => setShowModal(false)}
-                    onCreated={() => {
+                    onSuccess={() => {
                         setShowModal(false);
                         fetchCredentials();
                     }}
                 />
             )}
+
+            {/* Rotation Modal */}
+            <Dialog open={!!rotatingId} onOpenChange={(open) => {
+                if (!open) {
+                    setRotatingId(null);
+                    setNewSecret(null);
+                }
+            }}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2">
+                            <RotateCw className="h-5 w-5 text-blue-500" />
+                            Rotate Credential
+                        </DialogTitle>
+                        <DialogDescription>
+                            Are you sure you want to rotate this credential? This will generate a new version.
+                            Existing tokens will continue to work until you update them or revoke the old version.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {newSecret ? (
+                        <div className="space-y-4 py-4">
+                            <div className="rounded-lg bg-emerald-500/10 p-4 border border-emerald-500/20">
+                                <div className="flex items-center gap-2 text-emerald-500 font-medium mb-2">
+                                    <Check className="h-4 w-4" /> Rotation Successful
+                                </div>
+                                <p className="text-sm text-muted-foreground mb-4">
+                                    Here is your new secret. Copy it now, you won't see it again.
+                                </p>
+                                <div className="relative">
+                                    <pre className="p-3 bg-background rounded-md border border-border font-mono text-sm break-all pr-10">
+                                        {newSecret}
+                                    </pre>
+                                    <Button
+                                        size="icon"
+                                        variant="ghost"
+                                        className="absolute right-1 top-1 h-7 w-7"
+                                        onClick={handleCopy}
+                                    >
+                                        {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+                                    </Button>
+                                </div>
+                            </div>
+                            <DialogFooter>
+                                <Button onClick={() => {
+                                    setRotatingId(null);
+                                    setNewSecret(null);
+                                }}>Done</Button>
+                            </DialogFooter>
+                        </div>
+                    ) : (
+                        <DialogFooter>
+                            <Button variant="outline" onClick={() => setRotatingId(null)}>Cancel</Button>
+                            <Button onClick={handleRotate} disabled={rotateLoading}>
+                                {rotateLoading && <RotateCw className="mr-2 h-4 w-4 animate-spin" />}
+                                Rotate Key
+                            </Button>
+                        </DialogFooter>
+                    )}
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }
 
-function CreateCredentialModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function CreateCredentialModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
     const [name, setName] = useState("");
     const [provider, setProvider] = useState("openai");
     const [secret, setSecret] = useState("");
-    const [submitting, setSubmitting] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [loading, setLoading] = useState(false);
 
-    const handleSubmit = async () => {
-        if (!name || !secret) return;
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setLoading(true);
         try {
-            setSubmitting(true);
-            setError(null);
             await createCredential({ name, provider, secret });
-            onCreated();
+            toast.success("Credential created securely");
+            onSuccess();
         } catch (e) {
-            setError(e instanceof Error ? e.message : "Failed to create");
+            toast.error("Failed to create credential");
         } finally {
-            setSubmitting(false);
+            setLoading(false);
         }
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-            <Card className="w-full max-w-md glass-card animate-scale-in">
-                <CardHeader>
-                    <CardTitle>Add Credential</CardTitle>
-                    <CardDescription>Securely store a new API key.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
+        <Dialog open onOpenChange={() => onClose()}>
+            <DialogContent>
+                <DialogHeader>
+                    <DialogTitle>Add Credential</DialogTitle>
+                    <DialogDescription>
+                        Securely store an API key. It will be encrypted at rest.
+                    </DialogDescription>
+                </DialogHeader>
+                <form onSubmit={handleSubmit} className="space-y-4">
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Name</label>
-                        <Input placeholder="e.g. openai-prod" value={name} onChange={(e) => setName(e.target.value)} />
+                        <Label htmlFor="name">Name</Label>
+                        <Input
+                            id="name"
+                            placeholder="e.g. OpenAI Prod"
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            required
+                        />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">Provider</label>
-                        <select
+                        <Label htmlFor="provider">Provider</Label>
+                        <Input
+                            id="provider"
+                            placeholder="e.g. openai"
                             value={provider}
                             onChange={(e) => setProvider(e.target.value)}
-                            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                        >
-                            <option value="openai" className="bg-popover text-popover-foreground">OpenAI</option>
-                            <option value="anthropic" className="bg-popover text-popover-foreground">Anthropic</option>
-                            <option value="google" className="bg-popover text-popover-foreground">Google</option>
-                            <option value="custom" className="bg-popover text-popover-foreground">Custom</option>
-                        </select>
+                            required
+                        />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-sm font-medium">API Key</label>
-                        <Input type="password" placeholder="sk-..." value={secret} onChange={(e) => setSecret(e.target.value)} />
-                    </div>
-                    <div className="flex items-start gap-2 rounded-lg bg-blue-500/10 p-3 text-xs text-blue-500">
-                        <Lock className="h-4 w-4 mt-0.5 shrink-0" />
-                        <p>
-                            Encrypted with AES-256-GCM envelope encryption. The plaintext key never leaves the gateway and is not viewable in the dashboard.
+                        <Label htmlFor="secret">API Key / Secret</Label>
+                        <div className="relative">
+                            <Input
+                                id="secret"
+                                type="password"
+                                placeholder="sk-..."
+                                value={secret}
+                                onChange={(e) => setSecret(e.target.value)}
+                                required
+                                className="pr-10"
+                            />
+                            <Lock className="absolute right-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                        </div>
+                        <p className="text-[10px] text-muted-foreground">
+                            <Lock className="inline h-3 w-3 mr-1" />
+                            Encrypted with AES-256-GCM
                         </p>
                     </div>
-                    {error && <p className="text-xs text-destructive">{error}</p>}
-                    <div className="flex justify-end gap-2 pt-4">
-                        <Button variant="ghost" onClick={onClose}>Cancel</Button>
-                        <Button onClick={handleSubmit} disabled={submitting}>
-                            {submitting ? "Encrypting..." : "Add Credential"}
+                    <DialogFooter>
+                        <Button type="button" variant="outline" onClick={onClose}>
+                            Cancel
                         </Button>
-                    </div>
-                </CardContent>
-            </Card>
-        </div>
+                        <Button type="submit" disabled={loading}>
+                            {loading && <RefreshCw className="mr-2 h-4 w-4 animate-spin" />}
+                            Encrypt & Save
+                        </Button>
+                    </DialogFooter>
+                </form>
+            </DialogContent>
+        </Dialog>
     );
 }

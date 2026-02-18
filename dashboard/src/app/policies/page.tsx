@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table";
 import { columns } from "./columns";
+import { PolicyHistoryDialog } from "@/components/policy-history";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
@@ -74,6 +75,7 @@ export default function PoliciesPage() {
     const [createOpen, setCreateOpen] = useState(false);
     const [detailPolicy, setDetailPolicy] = useState<Policy | null>(null);
     const [editPolicy, setEditPolicy] = useState<Policy | null>(null);
+    const [historyPolicy, setHistoryPolicy] = useState<Policy | null>(null);
 
     const fetchPolicies = useCallback(async () => {
         try {
@@ -153,6 +155,7 @@ export default function PoliciesPage() {
                     policy={detailPolicy}
                     onClose={() => setDetailPolicy(null)}
                     onEdit={() => { setEditPolicy(detailPolicy); setDetailPolicy(null); }}
+                    onHistory={() => setHistoryPolicy(detailPolicy)}
                 />
             )}
 
@@ -167,6 +170,15 @@ export default function PoliciesPage() {
                         />
                     </DialogContent>
                 </Dialog>
+            )}
+
+            {/* History Dialog */}
+            {historyPolicy && (
+                <PolicyHistoryDialog
+                    policyId={historyPolicy.id}
+                    open={!!historyPolicy}
+                    onOpenChange={(open) => !open && setHistoryPolicy(null)}
+                />
             )}
         </div>
     );
@@ -203,10 +215,11 @@ function KPIMini({ icon: Icon, value, label, color }: {
 
 // ── Policy Detail Panel (Slide-over) ──────────────
 
-function PolicyDetailPanel({ policy, onClose, onEdit }: {
+function PolicyDetailPanel({ policy, onClose, onEdit, onHistory }: {
     policy: Policy;
     onClose: () => void;
     onEdit: () => void;
+    onHistory: () => void;
 }) {
     return (
         <div className="fixed inset-y-0 right-0 w-[480px] z-50 bg-card/95 backdrop-blur-xl border-l border-border shadow-2xl flex flex-col animate-slide-in-right">
@@ -227,6 +240,9 @@ function PolicyDetailPanel({ policy, onClose, onEdit }: {
                         toast.success("Copied");
                     }}>
                         <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onHistory} title="View History">
+                        <Clock className="h-4 w-4" />
                     </Button>
                     <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
                         <X className="h-4 w-4" />
@@ -294,7 +310,7 @@ function PolicyDetailPanel({ policy, onClose, onEdit }: {
                     Close
                 </Button>
             </div>
-        </div>
+        </div >
     );
 }
 

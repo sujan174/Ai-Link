@@ -17,7 +17,7 @@ import time
 import threading
 import requests
 from ailink import AIlinkClient
-from ailink.types import Token, Credential, Policy, AuditLog, ApprovalRequest
+from ailink.types import Token, Credential, Policy, AuditLog, ApprovalRequest, Service
 
 
 # ──────────────────────────────────────────────
@@ -529,3 +529,140 @@ class TestRetryLogic:
             print(f"Response Body: {resp.text}")
 
         assert duration > 2.8, f"Request returned too quickly ({duration:.2f}s); retries likely didn't happen."
+
+
+# ──────────────────────────────────────────────
+# 9. Service Registry (Action Gateway)
+# ──────────────────────────────────────────────
+
+
+class TestServices:
+    """Test the Service Registry CRUD lifecycle against a running gateway."""
+
+    @pytest.fixture(scope="class")
+    def credential(self, admin_client):
+        """Create a credential to link to services."""
+        return admin_client.credentials.create(
+            name=f"svc-cred-{uuid.uuid4().hex[:8]}",
+            provider="generic",
+            secret="sk-test-service-key",
+        )
+
+    @pytest.fixture(scope="class")
+    def service(self, admin_client, credential):
+        """Register a test service."""
+        return admin_client.services.create(
+            name=f"stripe-{uuid.uuid4().hex[:6]}",
+            base_url="https://api.stripe.com",
+            description="Test Stripe service",
+            service_type="generic",
+            credential_id=str(credential["id"]),
+        )
+
+    def test_create_service_returns_id(self, service):
+        """services.create() returns a dict with an id and name."""
+        assert service.get("id") is not None
+        assert "stripe" in service["name"]
+        assert service["base_url"] == "https://api.stripe.com"
+        assert service["service_type"] == "generic"
+
+    def test_list_services_returns_models(self, admin_client, service):
+        """services.list() returns Service Pydantic models."""
+        services = admin_client.services.list()
+        assert len(services) > 0
+        assert all(isinstance(s, Service) for s in services)
+
+        # Find our created service
+        our_svc = next(
+            (s for s in services if str(s.id) == str(service["id"])), None
+        )
+        assert our_svc is not None
+        assert our_svc.base_url == "https://api.stripe.com"
+        assert our_svc.is_active is True
+
+    def test_service_has_credential_link(self, admin_client, service, credential):
+        """Services correctly link to their credential."""
+        services = admin_client.services.list()
+        our_svc = next(s for s in services if str(s.id) == str(service["id"]))
+        assert str(our_svc.credential_id) == str(credential["id"])
+
+    def test_delete_service(self, admin_client, credential):
+        """services.delete() removes a service."""
+        # Create a throwaway service
+        throwaway = admin_client.services.create(
+            name=f"delete-me-{uuid.uuid4().hex[:8]}",
+            base_url="https://api.example.com",
+            credential_id=str(credential["id"]),
+        )
+        result = admin_client.services.delete(str(throwaway["id"]))
+        assert result.get("deleted") is True
+
+        # Verify it's gone from the list
+        services = admin_client.services.list()
+        ids = [str(s.id) for s in services]
+        assert str(throwaway["id"]) not in ids
+
+    def test_create_service_without_credential(self, admin_client):
+        """Services can be created without a credential (for public APIs)."""
+        svc = admin_client.services.create(
+            name=f"public-api-{uuid.uuid4().hex[:8]}",
+            base_url="https://api.publicapis.org",
+            description="No auth needed",
+        )
+        assert svc.get("id") is not None
+        assert svc["credential_id"] is None
+
+        # Cleanup
+        admin_client.services.delete(str(svc["id"]))
+
+
+class TestServiceProxy:
+    """Test proxying requests through a registered service."""
+
+    @pytest.fixture(scope="class")
+    def service_proxy_setup(self, admin_client, project_id, mock_upstream_url):
+        """
+        Create a credential, register a service pointing at mock upstream,
+        then create a token for proxying.
+        """
+        cred = admin_client.credentials.create(
+            name=f"svc-proxy-cred-{uuid.uuid4().hex[:8]}",
+            provider="openai",
+            secret="sk-test",
+        )
+        svc = admin_client.services.create(
+            name=f"mockapi-{uuid.uuid4().hex[:6]}",
+            base_url=mock_upstream_url,
+            description="Mock upstream for testing",
+            service_type="generic",
+            credential_id=str(cred["id"]),
+        )
+        token_resp = admin_client.tokens.create(
+            name=f"svc-proxy-tok-{uuid.uuid4().hex[:8]}",
+            credential_id=str(cred["id"]),
+            upstream_url=mock_upstream_url,  # fallback
+            project_id=project_id,
+        )
+        return {
+            "token_id": token_resp["token_id"],
+            "service_name": svc["name"],
+        }
+
+    def test_proxy_via_service_route(self, service_proxy_setup, gateway_url):
+        """
+        Agent request to /v1/proxy/services/{name}/anything
+        should be proxied to the service's base_url.
+        """
+        agent = AIlinkClient(
+            api_key=service_proxy_setup["token_id"],
+            gateway_url=gateway_url,
+            timeout=10.0,
+        )
+        svc_name = service_proxy_setup["service_name"]
+        resp = agent.post(
+            f"/v1/proxy/services/{svc_name}/anything/service-test",
+            json={"test": "service_proxy"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["json"]["test"] == "service_proxy"

@@ -43,6 +43,22 @@ class Credential(AIlinkModel):
         return f"Credential(id={self.id!r}, name={self.name!r}, provider={self.provider!r})"
 
 
+class Service(AIlinkModel):
+    """A registered external service for the Action Gateway."""
+    id: str
+    name: str
+    description: str = ""
+    base_url: str
+    service_type: str = "generic"
+    credential_id: Optional[str] = None
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    def __repr__(self) -> str:
+        return f"Service(id={self.id!r}, name={self.name!r}, type={self.service_type!r})"
+
+
 class Policy(AIlinkModel):
     """A security policy applied to token requests."""
     id: str

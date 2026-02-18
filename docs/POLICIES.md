@@ -531,3 +531,104 @@ curl -X PATCH http://localhost:8443/api/v1/policies/{id} \
   -H "Authorization: Bearer $ADMIN_KEY" \
   -d '{"mode": "enforce"}'
 ```
+
+---
+
+## 6. Service-Scoped Policies
+
+When using the **Service Registry** (Action Gateway), requests are proxied via `/v1/proxy/services/{service_name}/...`. Policies can target specific services using path matching.
+
+### Restrict Access to Specific Services
+
+```json
+{
+  "name": "only-stripe-and-github",
+  "rules": [
+    {
+      "comment": "Allow Stripe API access",
+      "when": { "field": "request.path", "op": "starts_with", "value": "/v1/proxy/services/stripe/" },
+      "then": { "action": "allow" }
+    },
+    {
+      "comment": "Allow GitHub API access",
+      "when": { "field": "request.path", "op": "starts_with", "value": "/v1/proxy/services/github/" },
+      "then": { "action": "allow" }
+    },
+    {
+      "comment": "Block all other services",
+      "when": { "field": "request.path", "op": "starts_with", "value": "/v1/proxy/services/" },
+      "then": { "action": "deny", "message": "Service not allowed for this token" }
+    }
+  ]
+}
+```
+
+### Per-Service Rate Limits
+
+```json
+{
+  "name": "service-rate-limits",
+  "rules": [
+    {
+      "comment": "Stripe: 30 req/min (API rate limit alignment)",
+      "when": { "field": "request.path", "op": "starts_with", "value": "/v1/proxy/services/stripe/" },
+      "then": { "action": "rate_limit", "window": "1m", "max_requests": 30 }
+    },
+    {
+      "comment": "Slack: 10 req/min (avoid spam)",
+      "when": { "field": "request.path", "op": "starts_with", "value": "/v1/proxy/services/slack/" },
+      "then": { "action": "rate_limit", "window": "1m", "max_requests": 10 }
+    }
+  ]
+}
+```
+
+### HITL for Destructive Service Operations
+
+```json
+{
+  "name": "approve-destructive-service-calls",
+  "rules": [
+    {
+      "comment": "Require approval for DELETE on any service",
+      "when": {
+        "and": [
+          { "field": "request.path", "op": "starts_with", "value": "/v1/proxy/services/" },
+          { "field": "request.method", "op": "eq", "value": "DELETE" }
+        ]
+      },
+      "then": { "action": "require_approval", "timeout": "10m", "fallback": "deny" }
+    }
+  ]
+}
+```
+
+### Multi-Service Agent with Full Protection
+
+```json
+{
+  "name": "multi-service-agent-policy",
+  "rules": [
+    {
+      "comment": "Stripe: read-only",
+      "when": {
+        "and": [
+          { "field": "request.path", "op": "starts_with", "value": "/v1/proxy/services/stripe/" },
+          { "field": "request.method", "op": "neq", "value": "GET" }
+        ]
+      },
+      "then": { "action": "deny", "message": "Stripe access is read-only" }
+    },
+    {
+      "comment": "GitHub: redact API keys from responses",
+      "when": { "field": "request.path", "op": "starts_with", "value": "/v1/proxy/services/github/" },
+      "then": { "action": "redact", "direction": "response", "patterns": ["api_key"] }
+    },
+    {
+      "comment": "Global: 500 req/day across all services",
+      "when": { "field": "usage.requests_today", "op": "gt", "value": 500 },
+      "then": { "action": "deny", "status": 429, "message": "Daily limit reached" }
+    }
+  ]
+}
+```

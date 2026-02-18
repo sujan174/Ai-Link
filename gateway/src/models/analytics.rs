@@ -20,3 +20,19 @@ pub struct LatencyStat {
     pub p99: f64,
     pub avg: f64,
 }
+
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct TokenUsageBucket {
+    pub bucket: DateTime<Utc>,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TokenUsageStats {
+    pub total_requests: i64,
+    pub success_count: i64,
+    pub error_count: i64,
+    pub avg_latency_ms: f64,
+    pub total_cost_usd: f64,
+    pub hourly: Vec<TokenUsageBucket>,
+}

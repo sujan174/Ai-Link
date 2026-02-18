@@ -17,6 +17,7 @@ from .client import AIlinkClient, AsyncClient
 from .types import (
     Token,
     Credential,
+    Service,
     Policy,
     AuditLog,
     ApprovalRequest,
@@ -45,6 +46,7 @@ __all__ = [
     # Types
     "Token",
     "Credential",
+    "Service",
     "Policy",
     "AuditLog",
     "ApprovalRequest",

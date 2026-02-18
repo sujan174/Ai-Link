@@ -18,7 +18,7 @@ import httpx
 from unittest.mock import patch, MagicMock
 import ailink
 from ailink import AIlinkClient, AsyncClient
-from ailink.types import Token, Credential, Policy, AuditLog, ApprovalRequest, ApprovalDecision
+from ailink.types import Token, Credential, Policy, AuditLog, ApprovalRequest, ApprovalDecision, Service
 from ailink.exceptions import AuthenticationError, NotFoundError, GatewayError
 
 
@@ -611,3 +611,228 @@ class TestAsyncClient:
             async with AsyncClient(api_key="key") as client:
                 client.anthropic()
                 MockAsyncAnthropic.assert_called()
+
+
+# ──────────────────────────────────────────────
+# 11. Services Resource (Action Gateway)
+# ──────────────────────────────────────────────
+
+
+class TestServicesResource:
+    def test_list_returns_service_models(self):
+        """services.list() returns List[Service] Pydantic models."""
+        def handler(request):
+            assert request.url.path == "/api/v1/services"
+            return httpx.Response(200, json=[
+                {
+                    "id": "svc_001",
+                    "project_id": "proj_1",
+                    "name": "stripe",
+                    "description": "Stripe payment API",
+                    "base_url": "https://api.stripe.com",
+                    "service_type": "generic",
+                    "credential_id": "cred_abc",
+                    "is_active": True,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                },
+                {
+                    "id": "svc_002",
+                    "project_id": "proj_1",
+                    "name": "openai",
+                    "description": "OpenAI LLM",
+                    "base_url": "https://api.openai.com",
+                    "service_type": "llm",
+                    "credential_id": "cred_def",
+                    "is_active": True,
+                    "created_at": "2026-01-02T00:00:00Z",
+                    "updated_at": "2026-01-02T00:00:00Z",
+                },
+            ])
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        services = client.services.list()
+
+        assert len(services) == 2
+        assert isinstance(services[0], Service)
+        assert services[0].name == "stripe"
+        assert services[0].base_url == "https://api.stripe.com"
+        assert services[0].service_type == "generic"
+        assert services[0].credential_id == "cred_abc"
+        assert services[1].name == "openai"
+        assert services[1].service_type == "llm"
+
+    def test_create_sends_correct_payload(self):
+        """services.create() sends name, base_url, service_type, and credential_id."""
+        def handler(request):
+            data = json.loads(request.read())
+            assert data["name"] == "slack"
+            assert data["base_url"] == "https://slack.com/api"
+            assert data["service_type"] == "generic"
+            assert data["credential_id"] == "cred_slack"
+            assert data["description"] == "Slack workspace API"
+            return httpx.Response(201, json={
+                "id": "svc_new",
+                "project_id": "proj_1",
+                "name": "slack",
+                "description": "Slack workspace API",
+                "base_url": "https://slack.com/api",
+                "service_type": "generic",
+                "credential_id": "cred_slack",
+                "is_active": True,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            })
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        result = client.services.create(
+            name="slack",
+            base_url="https://slack.com/api",
+            description="Slack workspace API",
+            credential_id="cred_slack",
+        )
+
+        assert result["id"] == "svc_new"
+        assert result["name"] == "slack"
+
+    def test_create_without_credential(self):
+        """services.create() works without a credential_id."""
+        def handler(request):
+            data = json.loads(request.read())
+            assert data["name"] == "public-api"
+            assert "credential_id" not in data  # Should not be sent when empty
+            return httpx.Response(201, json={
+                "id": "svc_pub",
+                "project_id": "proj_1",
+                "name": "public-api",
+                "description": "",
+                "base_url": "https://api.public.com",
+                "service_type": "generic",
+                "credential_id": None,
+                "is_active": True,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            })
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        result = client.services.create(
+            name="public-api",
+            base_url="https://api.public.com",
+        )
+
+        assert result["id"] == "svc_pub"
+        assert result["credential_id"] is None
+
+    def test_delete_calls_correct_endpoint(self):
+        """services.delete() sends DELETE to /api/v1/services/{id}."""
+        def handler(request):
+            assert request.method == "DELETE"
+            assert "/api/v1/services/svc_001" in str(request.url)
+            return httpx.Response(200, json={"deleted": True})
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        result = client.services.delete("svc_001")
+        assert result["deleted"] is True
+
+    def test_list_empty(self):
+        """services.list() returns empty list when no services registered."""
+        def handler(request):
+            return httpx.Response(200, json=[])
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        services = client.services.list()
+        assert services == []
+
+    def test_service_model_repr(self):
+        """Service model has a useful repr."""
+        svc = Service(
+            id="svc_001",
+            name="stripe",
+            base_url="https://api.stripe.com",
+            service_type="generic",
+        )
+        assert "stripe" in repr(svc)
+        assert "generic" in repr(svc)
+
+    def test_service_model_dict_access(self):
+        """Service model supports dict-style access for backward compat."""
+        svc = Service(
+            id="svc_001",
+            name="stripe",
+            base_url="https://api.stripe.com",
+            service_type="generic",
+        )
+        assert svc["name"] == "stripe"
+        assert "name" in svc
+
+
+# ──────────────────────────────────────────────
+# 12. Async Services Resource
+# ──────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+class TestAsyncServicesResource:
+    async def test_async_services_list(self):
+        """Async services.list() returns Service models."""
+        async def handler(request):
+            return httpx.Response(200, json=[
+                {
+                    "id": "svc_async_1",
+                    "project_id": "proj_1",
+                    "name": "hubspot",
+                    "description": "HubSpot CRM",
+                    "base_url": "https://api.hubspot.com",
+                    "service_type": "generic",
+                    "credential_id": "cred_hs",
+                    "is_active": True,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ])
+
+        transport = httpx.MockTransport(handler)
+        async with AsyncClient(api_key="key", transport=transport) as client:
+            services = await client.services.list()
+            assert len(services) == 1
+            assert isinstance(services[0], Service)
+            assert services[0].name == "hubspot"
+
+    async def test_async_services_create(self):
+        """Async services.create() sends correct payload."""
+        async def handler(request):
+            data = json.loads(await request.aread())
+            assert data["name"] == "github"
+            return httpx.Response(201, json={
+                "id": "svc_gh",
+                "project_id": "proj_1",
+                "name": "github",
+                "description": "GitHub API",
+                "base_url": "https://api.github.com",
+                "service_type": "generic",
+                "credential_id": "cred_gh",
+                "is_active": True,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            })
+
+        transport = httpx.MockTransport(handler)
+        async with AsyncClient(api_key="key", transport=transport) as client:
+            result = await client.services.create(
+                name="github",
+                base_url="https://api.github.com",
+                description="GitHub API",
+                credential_id="cred_gh",
+            )
+            assert result["id"] == "svc_gh"
+
+    async def test_async_services_delete(self):
+        """Async services.delete() calls correct endpoint."""
+        async def handler(request):
+            assert request.method == "DELETE"
+            return httpx.Response(200, json={"deleted": True})
+
+        transport = httpx.MockTransport(handler)
+        async with AsyncClient(api_key="key", transport=transport) as client:
+            result = await client.services.delete("svc_async_1")
+            assert result["deleted"] is True

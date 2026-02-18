@@ -229,6 +229,18 @@ impl PgStore {
         retry: Option<serde_json::Value>,
         name: Option<&str>,
     ) -> anyhow::Result<bool> {
+        // Snapshot current state into policy_versions before updating
+        sqlx::query(
+            r#"INSERT INTO policy_versions (policy_id, version, name, mode, phase, rules, retry)
+               SELECT id, version, name, mode, phase, rules, retry
+               FROM policies
+               WHERE id = $1 AND project_id = $2 AND is_active = true"#,
+        )
+        .bind(id)
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+
         // Build dynamic update — at least one field must change
         let result = sqlx::query(
             r#"UPDATE policies
@@ -236,7 +248,8 @@ impl PgStore {
                    phase = COALESCE($2, phase),
                    rules = COALESCE($3, rules),
                    retry = COALESCE($4, retry),
-                   name = COALESCE($5, name)
+                   name = COALESCE($5, name),
+                   version = version + 1
                WHERE id = $6 AND project_id = $7 AND is_active = true"#,
         )
         .bind(mode)
@@ -260,6 +273,22 @@ impl PgStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn list_policy_versions(
+        &self,
+        policy_id: Uuid,
+    ) -> anyhow::Result<Vec<PolicyVersionRow>> {
+        let rows = sqlx::query_as::<_, PolicyVersionRow>(
+            r#"SELECT id, policy_id, version, name, mode, phase, rules, retry, changed_by, created_at
+               FROM policy_versions
+               WHERE policy_id = $1
+               ORDER BY version DESC"#,
+        )
+        .bind(policy_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 
     // -- Approval Operations --
@@ -466,6 +495,192 @@ impl PgStore {
         .await?;
         Ok(row)
     }
+
+    // -- Token Usage Analytics --
+
+    pub async fn get_token_usage(
+        &self,
+        token_id: &str,
+        project_id: Uuid,
+    ) -> anyhow::Result<crate::models::analytics::TokenUsageStats> {
+        // Aggregate stats
+        let stats = sqlx::query_as::<_, (i64, i64, i64, f64, f64)>(
+            r#"SELECT
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE upstream_status >= 200 AND upstream_status < 400) as success,
+                COUNT(*) FILTER (WHERE upstream_status >= 400 OR upstream_status IS NULL) as errors,
+                COALESCE(AVG(response_latency_ms)::float8, 0) as avg_latency,
+                COALESCE(SUM(estimated_cost_usd)::float8, 0) as total_cost
+            FROM audit_logs
+            WHERE token_id = $1 AND project_id = $2
+              AND created_at > now() - interval '24 hours'"#,
+        )
+        .bind(token_id)
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        // Hourly buckets for sparkline
+        let hourly = sqlx::query_as::<_, crate::models::analytics::TokenUsageBucket>(
+            r#"SELECT
+                date_trunc('hour', created_at) as bucket,
+                COUNT(*) as count
+            FROM audit_logs
+            WHERE token_id = $1 AND project_id = $2
+              AND created_at > now() - interval '24 hours'
+            GROUP BY 1
+            ORDER BY 1 ASC"#,
+        )
+        .bind(token_id)
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(crate::models::analytics::TokenUsageStats {
+            total_requests: stats.0,
+            success_count: stats.1,
+            error_count: stats.2,
+            avg_latency_ms: stats.3,
+            total_cost_usd: stats.4,
+            hourly,
+        })
+    }
+
+    // -- Notification Operations --
+
+    pub async fn create_notification(
+        &self,
+        project_id: Uuid,
+        r#type: &str,
+        title: &str,
+        body: Option<&str>,
+        metadata: Option<serde_json::Value>,
+    ) -> anyhow::Result<Uuid> {
+        let id = sqlx::query_scalar::<_, Uuid>(
+            r#"INSERT INTO notifications (project_id, type, title, body, metadata)
+               VALUES ($1, $2, $3, $4, $5)
+               RETURNING id"#,
+        )
+        .bind(project_id)
+        .bind(r#type)
+        .bind(title)
+        .bind(body)
+        .bind(metadata)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    pub async fn list_notifications(
+        &self,
+        project_id: Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<crate::models::notification::Notification>> {
+        let rows = sqlx::query_as::<_, crate::models::notification::Notification>(
+            r#"SELECT id, project_id, type, title, body, metadata, is_read, created_at
+               FROM notifications
+               WHERE project_id = $1
+               ORDER BY created_at DESC
+               LIMIT $2"#,
+        )
+        .bind(project_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn count_unread_notifications(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<i64> {
+        let count = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*) FROM notifications WHERE project_id = $1 AND is_read = false"#,
+        )
+        .bind(project_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count)
+    }
+
+    pub async fn mark_notification_read(
+        &self,
+        id: Uuid,
+        project_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"UPDATE notifications SET is_read = true WHERE id = $1 AND project_id = $2"#,
+        )
+        .bind(id)
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn mark_all_notifications_read(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"UPDATE notifications SET is_read = true WHERE project_id = $1 AND is_read = false"#,
+        )
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // -- Service Operations --
+
+    pub async fn create_service(&self, svc: &NewService) -> anyhow::Result<crate::models::service::Service> {
+        let row = sqlx::query_as::<_, crate::models::service::Service>(
+            r#"INSERT INTO services (project_id, name, description, base_url, service_type, credential_id)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               RETURNING id, project_id, name, description, base_url, service_type, credential_id, is_active, created_at, updated_at"#,
+        )
+        .bind(svc.project_id)
+        .bind(&svc.name)
+        .bind(&svc.description)
+        .bind(&svc.base_url)
+        .bind(&svc.service_type)
+        .bind(svc.credential_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_services(&self, project_id: Uuid) -> anyhow::Result<Vec<crate::models::service::Service>> {
+        let rows = sqlx::query_as::<_, crate::models::service::Service>(
+            "SELECT id, project_id, name, description, base_url, service_type, credential_id, is_active, created_at, updated_at FROM services WHERE project_id = $1 ORDER BY created_at DESC"
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_service_by_name(&self, project_id: Uuid, name: &str) -> anyhow::Result<Option<crate::models::service::Service>> {
+        let row = sqlx::query_as::<_, crate::models::service::Service>(
+            "SELECT id, project_id, name, description, base_url, service_type, credential_id, is_active, created_at, updated_at FROM services WHERE project_id = $1 AND name = $2 AND is_active = true"
+        )
+        .bind(project_id)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn delete_service(&self, id: Uuid, project_id: Uuid) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM services WHERE id = $1 AND project_id = $2"
+        )
+        .bind(id)
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 // -- Input structs --
@@ -596,4 +811,29 @@ pub struct ProjectRow {
     pub org_id: Uuid,
     pub name: String,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
+pub struct PolicyVersionRow {
+    pub id: Uuid,
+    pub policy_id: Uuid,
+    pub version: i32,
+    pub name: Option<String>,
+    pub mode: Option<String>,
+    pub phase: Option<String>,
+    pub rules: serde_json::Value,
+    pub retry: Option<serde_json::Value>,
+    pub changed_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+// ── Service Registry ─────────────────────────────────────────
+
+pub struct NewService {
+    pub project_id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub base_url: String,
+    pub service_type: String,
+    pub credential_id: Option<Uuid>,
 }

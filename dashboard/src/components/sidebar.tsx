@@ -14,6 +14,7 @@ import {
     LayoutDashboard,
     Moon,
     Sun,
+    Plug,
 } from "lucide-react";
 import { ProjectSwitcher } from "@/components/project-switcher";
 import { useEffect, useState } from "react";
@@ -26,9 +27,46 @@ export function Sidebar({ className }: SidebarProps) {
 
 
     const [mounted, setMounted] = useState(false);
+    const [health, setHealth] = useState<"online" | "offline" | "checking">("checking");
+    const [approvalCount, setApprovalCount] = useState(0);
 
     useEffect(() => {
         setMounted(true);
+
+        const checkHealth = async () => {
+            try {
+                // We'll just check if the promise resolves
+                await fetch("/api/proxy/healthz");
+                setHealth("online");
+            } catch {
+                setHealth("offline");
+            }
+        };
+
+        const checkApprovals = async () => {
+            try {
+                // This fetches all approvals - efficiently we'd want a count endpoint but this works for v1
+                const res = await fetch("/api/proxy/approvals");
+                if (res.ok) {
+                    const data = await res.json();
+                    setApprovalCount(data.filter((a: any) => a.status === "pending").length);
+                }
+            } catch (e) {
+                console.error("Failed to fetch approvals", e);
+            }
+        };
+
+        // Initial check
+        checkHealth();
+        checkApprovals();
+
+        // Poll every 30s
+        const interval = setInterval(() => {
+            checkHealth();
+            checkApprovals();
+        }, 10000);
+
+        return () => clearInterval(interval);
     }, []);
 
     const routes = [
@@ -41,6 +79,7 @@ export function Sidebar({ className }: SidebarProps) {
             href: "/audit",
             label: "Audit Logs",
             icon: ClipboardList,
+            badge: null,
         },
         {
             href: "/analytics",
@@ -63,9 +102,15 @@ export function Sidebar({ className }: SidebarProps) {
             icon: ShieldAlert,
         },
         {
+            href: "/services",
+            label: "Services",
+            icon: Plug,
+        },
+        {
             href: "/approvals",
             label: "Approvals",
             icon: CheckCircle,
+            badge: approvalCount > 0 ? approvalCount : null,
         },
     ];
 
@@ -113,10 +158,10 @@ export function Sidebar({ className }: SidebarProps) {
                                 )}
                             >
                                 <route.icon className={cn("h-4 w-4", isActive && "text-primary")} />
-                                {route.label}
-                                {route.label === "Approvals" && (
-                                    <span className="ml-auto flex h-5 w-5 items-center justify-center rounded-full bg-amber-500/15 text-[10px] font-bold text-amber-500">
-                                        •
+                                <span className="flex-1">{route.label}</span>
+                                {route.badge && (
+                                    <span className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500/15 px-1.5 text-[10px] font-bold text-amber-500 transition-all">
+                                        {route.badge}
                                     </span>
                                 )}
                             </Link>
@@ -143,10 +188,14 @@ export function Sidebar({ className }: SidebarProps) {
                 )}
 
                 <div className="flex items-center justify-between text-xs text-muted-foreground px-3">
-                    <span className="font-mono">v0.1.0</span>
-                    <div className="flex items-center gap-1.5">
-                        <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                        <span>Online</span>
+                    <span className="font-mono">v0.6.0</span>
+                    <div className="flex items-center gap-1.5" title={health === "online" ? "Gateway connected" : "Gateway unreachable"}>
+                        <div className={cn(
+                            "h-2 w-2 rounded-full transition-colors duration-500",
+                            health === "online" ? "bg-emerald-500 animate-pulse" :
+                                health === "offline" ? "bg-rose-500" : "bg-amber-500"
+                        )} />
+                        <span>{health === "online" ? "Online" : health === "offline" ? "Offline" : "Checking..."}</span>
                     </div>
                 </div>
             </div>

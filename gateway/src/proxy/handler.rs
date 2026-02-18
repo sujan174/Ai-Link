@@ -235,6 +235,25 @@ pub async fn proxy_handler(
                     0, None, None, None, None, None, None, None, None,
                     user_id.clone(), tenant_id.clone(), external_request_id.clone(),
                 );
+                
+                // Phase 5: Emit notification
+                let state_clone = state.clone();
+                let project_id = token.project_id;
+                let title = format!("Policy Violation: {}", triggered.policy_name);
+                let body = message.clone();
+                tokio::spawn(async move {
+                    let _ = state_clone
+                        .db
+                        .create_notification(
+                            project_id,
+                            "policy_violation",
+                            &title,
+                            Some(&body),
+                            None,
+                        )
+                        .await;
+                });
+
                 return Err(AppError::PolicyDenied {
                     policy: triggered.policy_name.clone(),
                     reason: message.clone(),
@@ -300,6 +319,25 @@ pub async fn proxy_handler(
                         0, None, None, None, None, None, None, None, None,
                         user_id.clone(), tenant_id.clone(), external_request_id.clone(),
                     );
+
+                    // Phase 5: Emit notification
+                    let state_clone = state.clone();
+                    let project_id = token.project_id;
+                    let title = format!("Rate Limit Exceeded: {}", triggered.policy_name);
+                    let body = format!("Limit of {} requests per {}s reached", max_requests, window_secs);
+                    tokio::spawn(async move {
+                        let _ = state_clone
+                            .db
+                            .create_notification(
+                                project_id,
+                                "rate_limit_exceeded",
+                                &title,
+                                Some(&body),
+                                None,
+                            )
+                            .await;
+                    });
+
                     return Err(AppError::RateLimitExceeded);
                 }
             }
@@ -474,6 +512,25 @@ pub async fn proxy_handler(
             .await
             .map_err(AppError::Internal)?;
 
+        // Phase 5: Emit notification
+        let state_clone = state.clone();
+        let project_id = token.project_id;
+        let title = "Approval Required".to_string();
+        let body = format!("Request to {} requires approval.", path);
+        let metadata = serde_json::json!({ "approval_id": approval_id });
+        tokio::spawn(async move {
+            let _ = state_clone
+                .db
+                .create_notification(
+                    project_id,
+                    "approval_needed",
+                    &title,
+                    Some(&body),
+                    Some(metadata),
+                )
+                .await;
+        });
+
         // Send Slack notification (async)
         let notifier = state.notifier.clone();
         let app_id = approval_id;
@@ -608,15 +665,48 @@ pub async fn proxy_handler(
         hitl_latency_ms = Some(hitl_start.elapsed().as_millis() as i32);
     }
 
-    // -- 4. Decrypt real API key + get injection config --
+    // -- 4. Resolve credential + upstream URL --
+    // Service Registry: if path starts with /v1/proxy/services/{name}/...,
+    // dynamically resolve the service and use its credential + base_url.
+    let service_prefix = "/v1/proxy/services/";
+    let (effective_credential_id, effective_upstream_url, effective_path) =
+        if path.starts_with(service_prefix) {
+            let rest = &path[service_prefix.len()..]; // "stripe/v1/charges"
+            let (svc_name, remaining_path) = match rest.find('/') {
+                Some(pos) => (&rest[..pos], &rest[pos..]),         // ("stripe", "/v1/charges")
+                None => (rest, "/"),                                // ("stripe", "/")
+            };
+
+            let service = state
+                .db
+                .get_service_by_name(token.project_id, svc_name)
+                .await
+                .map_err(AppError::Internal)?
+                .ok_or_else(|| {
+                    AppError::Upstream(format!("Service not found: {}", svc_name))
+                })?;
+
+            let cred_id = service.credential_id.ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!(
+                    "Service '{}' has no credential configured",
+                    svc_name
+                ))
+            })?;
+
+            (cred_id, service.base_url.clone(), remaining_path.to_string())
+        } else {
+            // Legacy path: use token's credential + upstream_url
+            (token.credential_id, token.upstream_url.clone(), path.clone())
+        };
+
     let (mut real_key, _provider, injection_mode, injection_header) = state
         .vault
-        .retrieve(&token.credential_id.to_string())
+        .retrieve(&effective_credential_id.to_string())
         .await
         .map_err(AppError::Internal)?;
 
     // -- 5. Build upstream request --
-    let upstream_url = proxy::transform::rewrite_url(&token.upstream_url, &path);
+    let upstream_url = proxy::transform::rewrite_url(&effective_upstream_url, &effective_path);
 
     // Use modified body if overrides were applied, otherwise original
     let final_body = if let Some(ref modified) = parsed_body {

@@ -140,6 +140,68 @@ Returns metadata only (names, providers, rotation status). **Never returns the s
 
 ---
 
+### Services (Action Gateway)
+
+Register external APIs as named services. The gateway proxies requests and injects credentials automatically.
+
+#### List Services
+`GET /services`
+
+Returns all registered services for the current project.
+
+**Response**:
+```json
+[
+  {
+    "id": "uuid",
+    "project_id": "uuid",
+    "name": "stripe",
+    "description": "Payment processing",
+    "base_url": "https://api.stripe.com",
+    "service_type": "generic",
+    "credential_id": "uuid",
+    "is_active": true,
+    "created_at": "2026-02-18T10:00:00Z",
+    "updated_at": "2026-02-18T10:00:00Z"
+  }
+]
+```
+
+#### Create Service
+`POST /services`
+
+```json
+{
+  "name": "stripe",
+  "base_url": "https://api.stripe.com",
+  "description": "Payment processing",
+  "service_type": "generic",
+  "credential_id": "uuid"
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | yes | Unique name (used in proxy URL path) |
+| `base_url` | yes | Upstream root URL |
+| `description` | no | Human-readable description |
+| `service_type` | no | `"generic"` (default) or `"llm"` |
+| `credential_id` | no | Credential to inject when proxying |
+
+#### Delete Service
+`DELETE /services/{id}`
+
+Removes a registered service. Existing proxy requests in flight are not affected.
+
+#### Proxy Through a Service
+`ANY /v1/proxy/services/{service_name}/*`
+
+Routes the request to the service's `base_url` with the linked credential injected. The path after the service name is appended to the base URL.
+
+**Example**: `POST /v1/proxy/services/stripe/v1/charges` → `POST https://api.stripe.com/v1/charges`
+
+---
+
 ### Human-in-the-Loop (HITL)
 
 Manage pending approval requests.

@@ -51,6 +51,7 @@ AIlink sits between your agent and every external API. Instead of handing agents
 | 🔄 **Retry & Resilience** | Configurable retries with exponential backoff and jitter |
 | 🛡️ **PII Scrubbing** | Auto-redact credit cards, SSNs, emails, API keys from responses |
 | 📊 **Audit Trail** | Every request logged — who, what, when, which policy fired |
+| 🔌 **Service Registry** | Register APIs as named services — one token accesses multiple APIs |
 | ⚡ **Fast** | Rust gateway, tiered caching, <1ms overhead on the hot path |
 
 ---

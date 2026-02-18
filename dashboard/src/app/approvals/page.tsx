@@ -2,8 +2,9 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { listApprovals, decideApproval, ApprovalRequest } from "@/lib/api";
-import { RefreshCw, Clock, CheckCircle, XCircle, Eye, ArrowUpRight, X, User, Calendar, FileJson, ShieldCheck } from "lucide-react";
+import { RefreshCw, Clock, CheckCircle, XCircle, Eye, ArrowUpRight, X, User, Calendar, FileJson, ShieldCheck, Inbox } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/empty-state";
 import { Card } from "@/components/ui/card";
 import { DataTable } from "@/components/data-table";
 import { columns } from "./columns";
@@ -93,17 +94,32 @@ export default function ApprovalsPage() {
                 />
             </div>
 
-            <div className="animate-slide-up stagger-2">
-                <DataTable
-                    columns={columns}
-                    data={approvals}
-                    searchKey="id"
-                    searchPlaceholder="Filter by Request ID..."
-                    meta={{
-                        onView: (r: ApprovalRequest) => setDetailRequest(r),
-                    }}
+            {loading ? (
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                    {Array.from({ length: 6 }).map((_, i) => (
+                        <Card key={i} className="h-48 animate-pulse bg-muted/50" />
+                    ))}
+                </div>
+            ) : approvals.length === 0 ? (
+                <EmptyState
+                    icon={Inbox}
+                    title="All caught up"
+                    description="No pending requests requiring human approval."
+                    className="bg-card/50 backdrop-blur-sm"
                 />
-            </div>
+            ) : (
+                <div className="animate-slide-up stagger-2">
+                    <DataTable
+                        columns={columns}
+                        data={approvals}
+                        searchKey="id"
+                        searchPlaceholder="Filter by Request ID..."
+                        meta={{
+                            onView: (r: ApprovalRequest) => setDetailRequest(r),
+                        }}
+                    />
+                </div>
+            )}
 
             {/* Detail Slide-Over */}
             {detailRequest && (

@@ -110,6 +110,8 @@ export interface CreateTokenResponse {
 
 export const listTokens = () => api<Token[]>("/tokens");
 
+export const getToken = (id: string) => api<Token>(`/tokens/${id}`);
+
 export const createToken = (data: CreateTokenRequest) =>
   api<CreateTokenResponse>("/tokens", {
     method: "POST",
@@ -127,8 +129,11 @@ export const decideApproval = (id: string, decision: "approved" | "rejected") =>
     }
   );
 
-export const listAuditLogs = (limit = 50, offset = 0) =>
-  api<AuditLog[]>(`/audit?limit=${limit}&offset=${offset}`);
+export const listAuditLogs = (limit = 50, offset = 0, filters?: { token_id?: string }) => {
+  let qs = `limit=${limit}&offset=${offset}`;
+  if (filters?.token_id) qs += `&token_id=${filters.token_id}`;
+  return api<AuditLog[]>(`/audit?${qs}`);
+};
 
 export const getAuditLogDetail = (id: string) =>
   api<AuditLogDetail>(`/audit/${id}`);
@@ -190,6 +195,11 @@ export const createCredential = (data: { name: string; provider: string; secret:
     body: JSON.stringify(data),
   });
 
+export const rotateCredential = (id: string) =>
+  api<{ id: string; secret: string; message: string }>(`/credentials/${id}/rotate`, {
+    method: "POST",
+  });
+
 // ── Token Revocation ───────────────────────────
 
 export const revokeToken = (tokenId: string) =>
@@ -238,3 +248,119 @@ export const createProject = (name: string) =>
     method: "POST",
     body: JSON.stringify({ name }),
   });
+
+// ── System API ─────────────────────────────────
+
+export const getHealth = () => api<{ status: string }>("/healthz");
+
+// ── Policy Versions ──────────────────────────
+
+export interface PolicyVersion {
+  id: string;
+  policy_id: string;
+  version: number;
+  name: string | null;
+  mode: string | null;
+  phase: string | null;
+  rules: unknown[];
+  retry: unknown | null;
+  changed_by: string | null;
+  created_at: string;
+}
+
+export const listPolicyVersions = (policyId: string) =>
+  api<PolicyVersion[]>(`/policies/${policyId}/versions`);
+
+// ── Token Usage ──────────────────────────────
+
+export interface TokenUsageBucket {
+  bucket: string;
+  count: number;
+}
+
+export interface TokenUsageStats {
+  total_requests: number;
+  success_count: number;
+  error_count: number;
+  avg_latency_ms: number;
+  total_cost_usd: number;
+  hourly: TokenUsageBucket[];
+}
+
+export const getTokenUsage = (tokenId: string) =>
+  api<TokenUsageStats>(`/tokens/${tokenId}/usage`);
+
+// ── Notifications ────────────────────────────
+
+export interface Notification {
+  id: string;
+  project_id: string;
+  type: string;
+  title: string;
+  body: string | null;
+  metadata: Record<string, unknown> | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+export const listNotifications = () => api<Notification[]>("/notifications");
+
+export const countUnreadNotifications = () =>
+  api<{ count: number }>("/notifications/unread");
+
+export const markNotificationRead = (id: string) =>
+  api<{ success: boolean }>(`/notifications/${id}/read`, { method: "POST" });
+
+export const markAllNotificationsRead = () =>
+  api<{ success: boolean }>("/notifications/read-all", { method: "POST" });
+
+// ── Services (Action Gateway) ────────────────
+
+export interface Service {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  base_url: string;
+  service_type: string;
+  credential_id: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export const listServices = () => api<Service[]>("/services");
+
+export const createService = (data: {
+  name: string;
+  description?: string;
+  base_url: string;
+  service_type?: string;
+  credential_id?: string;
+}) =>
+  api<Service>("/services", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const deleteService = (id: string) =>
+  api<{ deleted: boolean }>(`/services/${id}`, { method: "DELETE" });
+
+// ── SSE Stream ───────────────────────────────
+
+export const streamAuditLogs = (onEvent: (log: AuditLog) => void) => {
+  const projectId = typeof window !== "undefined" ? localStorage.getItem("ailink_project_id") : null;
+  const url = `${BASE_URL}/audit/stream${projectId ? `?project_id=${projectId}` : ""}`;
+  const evtSource = new EventSource(url);
+
+  evtSource.addEventListener("audit", (e) => {
+    try {
+      const logs: AuditLog[] = JSON.parse(e.data);
+      logs.forEach(onEvent);
+    } catch (err) {
+      console.error("Failed to parse SSE audit event", err);
+    }
+  });
+
+  return () => evtSource.close();
+};
