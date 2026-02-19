@@ -118,8 +118,10 @@ fn compile_patterns(patterns: &[String]) -> Vec<(Regex, String, String)> {
                 let re: &Regex = builtin.regex;
                 return Some((re.clone(), builtin.replacement.to_string(), p.clone()));
             }
-            // Try compiling as custom regex
-            Regex::new(p)
+            // Try compiling as custom regex with size limit to prevent ReDoS
+            regex::RegexBuilder::new(p)
+                .size_limit(1_000_000) // 1MB limit on compiled regex size
+                .build()
                 .ok()
                 .map(|re| (re, format!("[REDACTED_{}]", p.to_uppercase()), p.clone()))
         })
@@ -211,6 +213,12 @@ pub fn apply_header_mutations(headers: &mut hyper::HeaderMap, mutations: &Header
 pub fn apply_transform(body: &mut Value, header_mutations: &mut HeaderMutations, op: &TransformOp) {
     match op {
         TransformOp::SetHeader { name, value } => {
+            // SEC: Block reserved headers to prevent credential injection override
+            let reserved = ["authorization", "host", "cookie", "set-cookie", "x-admin-key"];
+            if reserved.contains(&name.to_lowercase().as_str()) {
+                tracing::warn!(header = %name, "transform: blocked reserved header");
+                return;
+            }
             tracing::info!(header = %name, "transform: set header");
             header_mutations.inserts.push((name.clone(), value.clone()));
         }

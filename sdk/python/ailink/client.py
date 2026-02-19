@@ -1,5 +1,7 @@
 from __future__ import annotations
+import uuid
 import httpx
+from contextlib import contextmanager, asynccontextmanager
 from functools import cached_property
 from typing import Optional, TYPE_CHECKING
 
@@ -79,6 +81,72 @@ class AIlinkClient:
     def close(self):
         """Close the underlying HTTP connection pool."""
         self._http.close()
+
+    # ── Passthrough / BYOK ─────────────────────────────────────
+
+    @contextmanager
+    def with_upstream_key(self, key: str, header: str = "Bearer"):
+        """
+        Context manager for Passthrough (BYOK) mode.
+
+        When the token has no stored credential, the gateway forwards
+        whatever key you supply here directly to the upstream as the
+        Authorization header.  The AIlink token still authenticates *you*
+        to the gateway; this key authenticates the gateway to the upstream.
+
+        Args:
+            key:    The upstream API key (e.g. "sk-...").
+            header: Auth scheme prefix (default: "Bearer").
+
+        Example::
+
+            with client.with_upstream_key("sk-my-openai-key") as byok:
+                resp = byok.post("/v1/chat/completions", json={...})
+        """
+        auth_value = f"{header} {key}" if header else key
+        scoped = _ScopedClient(
+            self._http,
+            extra_headers={"X-Real-Authorization": auth_value},
+        )
+        try:
+            yield scoped
+        finally:
+            pass  # parent client owns the connection pool
+
+    # ── Session Tracing ────────────────────────────────────────
+
+    @contextmanager
+    def trace(
+        self,
+        session_id: Optional[str] = None,
+        parent_span_id: Optional[str] = None,
+    ):
+        """
+        Context manager that injects distributed-tracing headers.
+
+        All requests made inside the block are tagged with the given
+        session and span IDs, which appear in audit logs and can be
+        used to correlate multi-step agent workflows.
+
+        Args:
+            session_id:     Logical session identifier (auto-generated if omitted).
+            parent_span_id: Parent span for nested traces.
+
+        Example::
+
+            with client.trace(session_id="conv-abc123") as t:
+                t.post("/v1/chat/completions", json={...})
+                t.post("/v1/chat/completions", json={...})  # same session
+        """
+        sid = session_id or str(uuid.uuid4())
+        extra: dict = {"x-session-id": sid}
+        if parent_span_id:
+            extra["x-parent-span-id"] = parent_span_id
+        scoped = _ScopedClient(self._http, extra_headers=extra)
+        try:
+            yield scoped
+        finally:
+            pass
 
     # ── HTTP Methods ───────────────────────────────────────────
 
@@ -205,6 +273,21 @@ class AIlinkClient:
         from .resources.services import ServicesResource
         return ServicesResource(self)
 
+    @cached_property
+    def api_keys(self) -> "ApiKeysResource":
+        from .resources.api_keys import ApiKeysResource
+        return ApiKeysResource(self)
+
+    @cached_property
+    def billing(self) -> "BillingResource":
+        from .resources.billing import BillingResource
+        return BillingResource(self)
+
+    @cached_property
+    def analytics(self) -> "AnalyticsResource":
+        from .resources.analytics import AnalyticsResource
+        return AnalyticsResource(self)
+
 
 class AsyncClient:
     """
@@ -255,15 +338,63 @@ class AsyncClient:
         name = f", agent_name={self._agent_name!r}" if self._agent_name else ""
         return f"AsyncClient(gateway_url={self.gateway_url!r}{name})"
 
-    async def close(self):
-        """Close the underlying async HTTP connection pool."""
-        await self._http.aclose()
-
     async def __aenter__(self):
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
+
+    async def close(self):
+        """Close the underlying HTTP connection pool."""
+        await self._http.aclose()
+
+    # ── Passthrough / BYOK ─────────────────────────────────────
+
+    @asynccontextmanager
+    async def with_upstream_key(self, key: str, header: str = "Bearer"):
+        """
+        Async context manager for Passthrough (BYOK) mode.
+
+        Example::
+
+            async with client.with_upstream_key("sk-my-key") as byok:
+                resp = await byok.post("/v1/chat/completions", json={...})
+        """
+        auth_value = f"{header} {key}" if header else key
+        scoped = _AsyncScopedClient(
+            self._http,
+            extra_headers={"X-Real-Authorization": auth_value},
+        )
+        try:
+            yield scoped
+        finally:
+            pass
+
+    # ── Session Tracing ────────────────────────────────────────
+
+    @asynccontextmanager
+    async def trace(
+        self,
+        session_id: Optional[str] = None,
+        parent_span_id: Optional[str] = None,
+    ):
+        """
+        Async context manager that injects distributed-tracing headers.
+
+        Example::
+
+            async with client.trace(session_id="conv-abc123") as t:
+                await t.post("/v1/chat/completions", json={...})
+        """
+        sid = session_id or str(uuid.uuid4())
+        extra: dict = {"x-session-id": sid}
+        if parent_span_id:
+            extra["x-parent-span-id"] = parent_span_id
+        scoped = _AsyncScopedClient(self._http, extra_headers=extra)
+        try:
+            yield scoped
+        finally:
+            pass
 
     # ── HTTP Methods ───────────────────────────────────────────
 
@@ -272,42 +403,36 @@ class AsyncClient:
         return await self._http.request(method, url, **kwargs)
 
     async def get(self, url: str, **kwargs) -> httpx.Response:
-        """Send a GET request."""
         return await self._http.get(url, **kwargs)
 
     async def post(self, url: str, **kwargs) -> httpx.Response:
-        """Send a POST request."""
         return await self._http.post(url, **kwargs)
 
     async def put(self, url: str, **kwargs) -> httpx.Response:
-        """Send a PUT request."""
         return await self._http.put(url, **kwargs)
 
     async def patch(self, url: str, **kwargs) -> httpx.Response:
-        """Send a PATCH request."""
         return await self._http.patch(url, **kwargs)
 
     async def delete(self, url: str, **kwargs) -> httpx.Response:
-        """Send a DELETE request."""
         return await self._http.delete(url, **kwargs)
 
     # ── Provider Factories ─────────────────────────────────────
 
-    def openai(self) -> "openai.AsyncClient":
-        """Returns a configured openai.AsyncClient."""
+    def openai(self) -> "openai.AsyncOpenAI":
         try:
             import openai
         except ImportError:
             raise ImportError("Please install 'openai' package: pip install ailink[openai]")
 
-        return openai.AsyncClient(
+        return openai.AsyncOpenAI(
             api_key=self.api_key,
             base_url=self.gateway_url,
+            default_headers={"X-AIlink-Agent-Name": self._agent_name} if self._agent_name else None,
             max_retries=0,
         )
 
     def anthropic(self) -> "anthropic.AsyncAnthropic":
-        """Returns a configured anthropic.AsyncAnthropic client."""
         try:
             import anthropic
         except ImportError:
@@ -356,3 +481,88 @@ class AsyncClient:
     def services(self) -> "AsyncServicesResource":
         from .resources.services import AsyncServicesResource
         return AsyncServicesResource(self)
+
+    @cached_property
+    def api_keys(self) -> "AsyncApiKeysResource":
+        from .resources.api_keys import AsyncApiKeysResource
+        return AsyncApiKeysResource(self)
+
+    @cached_property
+    def billing(self) -> "AsyncBillingResource":
+        from .resources.billing import AsyncBillingResource
+        return AsyncBillingResource(self)
+
+    @cached_property
+    def analytics(self) -> "AsyncAnalyticsResource":
+        from .resources.analytics import AsyncAnalyticsResource
+        return AsyncAnalyticsResource(self)
+
+
+# ── Scoped helpers (internal) ─────────────────────────────────────────────────
+#
+# These are lightweight wrappers returned by with_upstream_key() and trace().
+# They share the parent's httpx client (connection pool) but merge extra headers
+# into every request.  They intentionally expose only HTTP methods — no admin
+# resources — because they are short-lived, single-purpose objects.
+
+
+class _ScopedClient:
+    """Sync scoped client that merges extra headers into every request."""
+
+    def __init__(self, http: httpx.Client, extra_headers: dict):
+        self._http = http
+        self._extra = extra_headers
+
+    def _merge(self, kwargs: dict) -> dict:
+        existing = dict(kwargs.pop("headers", {}) or {})
+        kwargs["headers"] = {**existing, **self._extra}
+        return kwargs
+
+    def request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        return self._http.request(method, url, **self._merge(kwargs))
+
+    def get(self, url: str, **kwargs) -> httpx.Response:
+        return self._http.get(url, **self._merge(kwargs))
+
+    def post(self, url: str, **kwargs) -> httpx.Response:
+        return self._http.post(url, **self._merge(kwargs))
+
+    def put(self, url: str, **kwargs) -> httpx.Response:
+        return self._http.put(url, **self._merge(kwargs))
+
+    def patch(self, url: str, **kwargs) -> httpx.Response:
+        return self._http.patch(url, **self._merge(kwargs))
+
+    def delete(self, url: str, **kwargs) -> httpx.Response:
+        return self._http.delete(url, **self._merge(kwargs))
+
+
+class _AsyncScopedClient:
+    """Async scoped client that merges extra headers into every request."""
+
+    def __init__(self, http: httpx.AsyncClient, extra_headers: dict):
+        self._http = http
+        self._extra = extra_headers
+
+    def _merge(self, kwargs: dict) -> dict:
+        existing = dict(kwargs.pop("headers", {}) or {})
+        kwargs["headers"] = {**existing, **self._extra}
+        return kwargs
+
+    async def request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        return await self._http.request(method, url, **self._merge(kwargs))
+
+    async def get(self, url: str, **kwargs) -> httpx.Response:
+        return await self._http.get(url, **self._merge(kwargs))
+
+    async def post(self, url: str, **kwargs) -> httpx.Response:
+        return await self._http.post(url, **self._merge(kwargs))
+
+    async def put(self, url: str, **kwargs) -> httpx.Response:
+        return await self._http.put(url, **self._merge(kwargs))
+
+    async def patch(self, url: str, **kwargs) -> httpx.Response:
+        return await self._http.patch(url, **self._merge(kwargs))
+
+    async def delete(self, url: str, **kwargs) -> httpx.Response:
+        return await self._http.delete(url, **self._merge(kwargs))

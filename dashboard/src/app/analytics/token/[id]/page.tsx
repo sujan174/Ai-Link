@@ -1,0 +1,258 @@
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+import { getTokenVolume, getTokenStatus, getTokenLatency, TokenVolume, TokenStatus, TokenLatency, listTokens, Token } from "@/lib/api";
+import {
+    RefreshCw,
+    TrendingUp,
+    Activity,
+    Zap,
+    ArrowUpRight,
+    ArrowDownRight,
+    ArrowLeft
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+import {
+    AreaChart,
+    Area,
+    XAxis,
+    YAxis,
+    CartesianGrid,
+    Tooltip,
+    ResponsiveContainer,
+    BarChart,
+    Bar,
+    Cell,
+    PieChart,
+    Pie,
+} from "recharts";
+import { useRouter } from "next/navigation";
+import { PageSkeleton } from "@/components/page-skeleton";
+
+export default function TokenAnalyticsPage({ params }: { params: { id: string } }) {
+    const router = useRouter();
+    const [volume, setVolume] = useState<TokenVolume[]>([]);
+    const [statusData, setStatusData] = useState<TokenStatus[]>([]);
+    const [latency, setLatency] = useState<TokenLatency | null>(null);
+    const [token, setToken] = useState<Token | null>(null); // For name etc
+    const [loading, setLoading] = useState(true);
+
+    const fetchData = useCallback(async () => {
+        try {
+            setLoading(true);
+            const [volData, statData, latData, tokens] = await Promise.all([
+                getTokenVolume(params.id),
+                getTokenStatus(params.id),
+                getTokenLatency(params.id),
+                listTokens(), // Inefficient but needed to get name if not passed
+            ]);
+
+            setVolume(volData.reverse()); // Assume server returns desc? older first for charts
+            // Actually server returns desc usually? chart needs newer last.
+            // If server returns latest first, reverse.
+
+            setStatusData(statData);
+            setLatency(latData);
+            setToken(tokens.find(t => t.id === params.id) || null);
+        } catch {
+            toast.error("Failed to load analytics data");
+        } finally {
+            setLoading(false);
+        }
+    }, [params.id]);
+
+    useEffect(() => {
+        fetchData();
+    }, [fetchData]);
+
+    if (loading && !token) {
+        return <PageSkeleton />;
+    }
+
+    const pieData = statusData.map(d => ({
+        name: d.status === 0 ? "Unknown" : `${d.status}s`, // Group by status code? or ranges?
+        // Server returns status code itself.
+        // Let's bucket them
+        value: d.count,
+        color: d.status >= 200 && d.status < 300 ? "#10b981" :
+            d.status >= 300 && d.status < 400 ? "#06b6d4" :
+                d.status >= 400 && d.status < 500 ? "#f59e0b" :
+                    d.status >= 500 ? "#ef4444" : "#71717a"
+    }));
+    // Aggregate by bucket?
+    // Actually server implementation returns distinct status codes? Yes.
+    // Let's aggregate for pie chart
+    const statusBuckets = statusData.reduce((acc, curr) => {
+        const key = curr.status === 0 ? "Unknown" : `${Math.floor(curr.status / 100)}xx`;
+        acc[key] = (acc[key] || 0) + curr.count;
+        return acc;
+    }, {} as Record<string, number>);
+
+    const finalPieData = Object.entries(statusBuckets).map(([name, value]) => ({
+        name,
+        value,
+        color: name === "2xx" ? "#10b981" :
+            name === "3xx" ? "#06b6d4" :
+                name === "4xx" ? "#f59e0b" :
+                    name === "5xx" ? "#ef4444" : "#71717a"
+    }));
+
+    return (
+        <div className="p-8 space-y-8 max-w-[1600px] mx-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between animate-fade-in">
+                <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                        <Button variant="ghost" size="icon" onClick={() => router.back()}>
+                            <ArrowLeft className="h-4 w-4" />
+                        </Button>
+                        <h2 className="text-3xl font-bold tracking-tight">Token Analytics</h2>
+                    </div>
+                    <p className="text-muted-foreground ml-10">
+                        Performance metrics for <code className="bg-muted px-1.5 py-0.5 rounded text-xs">{params.id}</code>
+                        {token && <span className="ml-2 font-medium text-foreground">({token.name})</span>}
+                    </p>
+                </div>
+                <Button variant="outline" size="sm" onClick={fetchData} disabled={loading}>
+                    <RefreshCw className={cn("h-4 w-4 mr-2", loading && "animate-spin")} />
+                    Refresh
+                </Button>
+            </div>
+
+            {/* KPI Cards */}
+            <div className="grid gap-4 md:grid-cols-3 animate-fade-in duration-500">
+                <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium">Total Volume (24h)</CardTitle>
+                        <Activity className="h-4 w-4 text-muted-foreground" />
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-2xl font-bold">{volume.reduce((acc, v) => acc + v.count, 0)}</div>
+                        <p className="text-xs text-muted-foreground">Requests in last 24 hours</p>
+                    </CardContent>
+                </Card>
+                <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium">Avg Latency (P50)</CardTitle>
+                        <Zap className="h-4 w-4 text-muted-foreground" />
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-2xl font-bold">{Math.round(latency?.p50 || 0)}ms</div>
+                        <p className="text-xs text-muted-foreground">Detailed: P90 {Math.round(latency?.p90 || 0)}ms, P99 {Math.round(latency?.p99 || 0)}ms</p>
+                    </CardContent>
+                </Card>
+                <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium">Error Rate</CardTitle>
+                        <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-2xl font-bold">
+                            {(() => {
+                                const total = statusData.reduce((acc, s) => acc + s.count, 0);
+                                const errors = statusData.filter(s => s.status >= 400).reduce((acc, s) => acc + s.count, 0);
+                                return total > 0 ? ((errors / total) * 100).toFixed(1) + "%" : "0%";
+                            })()}
+                        </div>
+                        <p className="text-xs text-muted-foreground">Responses with 4xx/5xx status</p>
+                    </CardContent>
+                </Card>
+            </div>
+
+            {/* Charts Row */}
+            <div className="grid gap-4 md:grid-cols-2 animate-fade-in duration-700">
+                {/* Volume Chart */}
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Request Volume (Hourly)</CardTitle>
+                    </CardHeader>
+                    <CardContent className="h-[300px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={volume}>
+                                <defs>
+                                    <linearGradient id="volGradient" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                                        <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                                    </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.5} />
+                                <XAxis
+                                    dataKey="hour"
+                                    tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                                    tickFormatter={(val) => new Date(val).getHours() + 'h'}
+                                />
+                                <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
+                                <Tooltip
+                                    labelFormatter={(label) => new Date(label).toLocaleString()}
+                                    contentStyle={{
+                                        background: "var(--card)",
+                                        border: "1px solid var(--border)",
+                                        borderRadius: "8px",
+                                        fontSize: "12px",
+                                    }}
+                                />
+                                <Area
+                                    type="monotone"
+                                    dataKey="count"
+                                    stroke="#3b82f6"
+                                    strokeWidth={2}
+                                    fill="url(#volGradient)"
+                                />
+                            </AreaChart>
+                        </ResponsiveContainer>
+                    </CardContent>
+                </Card>
+
+                {/* Status Distribution */}
+                <Card>
+                    <CardHeader>
+                        <CardTitle>Status Codes</CardTitle>
+                    </CardHeader>
+                    <CardContent className="h-[300px] flex items-center justify-center">
+                        <ResponsiveContainer width="50%" height="100%">
+                            <PieChart>
+                                <Pie
+                                    data={finalPieData}
+                                    cx="50%"
+                                    cy="50%"
+                                    innerRadius={60}
+                                    outerRadius={80}
+                                    paddingAngle={4}
+                                    dataKey="value"
+                                >
+                                    {finalPieData.map((entry, index) => (
+                                        <Cell key={`cell-${index}`} fill={entry.color} />
+                                    ))}
+                                </Pie>
+                                <Tooltip
+                                    contentStyle={{
+                                        background: "var(--card)",
+                                        border: "1px solid var(--border)",
+                                        borderRadius: "8px",
+                                        fontSize: "12px",
+                                    }}
+                                />
+                            </PieChart>
+                        </ResponsiveContainer>
+                        <div className="space-y-4">
+                            {finalPieData.map((entry) => (
+                                <div key={entry.name} className="flex items-center gap-3">
+                                    <div
+                                        className="h-3 w-3 rounded-full"
+                                        style={{ backgroundColor: entry.color }}
+                                    />
+                                    <span className="text-sm font-mono">{entry.name}</span>
+                                    <span className="text-sm font-bold tabular-nums">{entry.value}</span>
+                                </div>
+                            ))}
+                            {finalPieData.length === 0 && <span className="text-sm text-muted-foreground">No data available</span>}
+                        </div>
+                    </CardContent>
+                </Card>
+            </div>
+        </div>
+    );
+}

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { getToken, listAuditLogs, getTokenUsage, Token, AuditLog, TokenUsageStats } from "@/lib/api";
+import { getToken, listAuditLogs, getTokenUsage, getSpendCaps, upsertSpendCap, deleteSpendCap, Token, AuditLog, TokenUsageStats, SpendStatus } from "@/lib/api";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import {
     Key,
@@ -15,7 +15,10 @@ import {
     XCircle,
     AlertTriangle,
     Copy,
-    Trash2
+    Trash2,
+    DollarSign,
+    TrendingUp,
+    X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -60,22 +63,33 @@ export default function TokenDetailPage() {
     const [token, setToken] = useState<Token | null>(null);
     const [logs, setLogs] = useState<AuditLog[]>([]);
     const [usage, setUsage] = useState<TokenUsageStats | null>(null);
+    const [spend, setSpend] = useState<SpendStatus | null>(null);
     const [loading, setLoading] = useState(true);
     const [copied, setCopied] = useState(false);
+    const [capInput, setCapInput] = useState<{ daily: string; monthly: string }>({ daily: "", monthly: "" });
+    const [savingCap, setSavingCap] = useState<"daily" | "monthly" | null>(null);
 
     useEffect(() => {
         if (!id) return;
 
         const loadData = async () => {
             try {
-                const [t, l, u] = await Promise.all([
+                const [t, l, u, s] = await Promise.all([
                     getToken(id),
                     listAuditLogs(50, 0, { token_id: id }),
-                    getTokenUsage(id)
+                    getTokenUsage(id),
+                    getSpendCaps(id).catch(() => null),
                 ]);
                 setToken(t);
                 setLogs(l);
                 setUsage(u);
+                setSpend(s);
+                if (s) {
+                    setCapInput({
+                        daily: s.daily_limit_usd != null ? String(s.daily_limit_usd) : "",
+                        monthly: s.monthly_limit_usd != null ? String(s.monthly_limit_usd) : "",
+                    });
+                }
             } catch (e) {
                 console.error(e);
                 toast.error("Failed to load token details");
@@ -92,6 +106,30 @@ export default function TokenDetailPage() {
         navigator.clipboard.writeText(token.id);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
+    };
+
+    const handleSaveCap = async (period: "daily" | "monthly") => {
+        const val = period === "daily" ? capInput.daily : capInput.monthly;
+        const num = parseFloat(val);
+        if (isNaN(num) || num <= 0) { toast.error("Enter a valid positive amount"); return; }
+        setSavingCap(period);
+        try {
+            await upsertSpendCap(id, period, num);
+            const updated = await getSpendCaps(id);
+            setSpend(updated);
+            toast.success(`${period === "daily" ? "Daily" : "Monthly"} cap saved`);
+        } catch { toast.error("Failed to save cap"); }
+        finally { setSavingCap(null); }
+    };
+
+    const handleRemoveCap = async (period: "daily" | "monthly") => {
+        try {
+            await deleteSpendCap(id, period);
+            const updated = await getSpendCaps(id);
+            setSpend(updated);
+            setCapInput((prev) => ({ ...prev, [period]: "" }));
+            toast.success(`${period === "daily" ? "Daily" : "Monthly"} cap removed`);
+        } catch { toast.error("Failed to remove cap"); }
     };
 
     if (loading) {
@@ -223,7 +261,7 @@ export default function TokenDetailPage() {
 
                 <Card className="glass-card">
                     <CardHeader className="pb-3">
-                        <CardTitle className="text-sm font-medium">Policies & scopes</CardTitle>
+                        <CardTitle className="text-sm font-medium">Policies &amp; scopes</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div>
@@ -241,6 +279,80 @@ export default function TokenDetailPage() {
                     </CardContent>
                 </Card>
             </div>
+
+            {/* Budget & Spend Caps */}
+            <Card className="glass-card">
+                <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-500/10">
+                            <DollarSign className="h-4 w-4 text-violet-500" />
+                        </div>
+                        <CardTitle className="text-sm font-medium">Budget &amp; Spend Caps</CardTitle>
+                    </div>
+                    {spend && (spend.daily_limit_usd != null || spend.monthly_limit_usd != null) && (
+                        <Badge variant="outline" className="text-emerald-500 border-emerald-500/30 bg-emerald-500/10 text-[10px]">
+                            <TrendingUp className="h-3 w-3 mr-1" /> Active
+                        </Badge>
+                    )}
+                </CardHeader>
+                <CardContent className="space-y-5">
+                    {(["daily", "monthly"] as const).map((period) => {
+                        const limit = period === "daily" ? spend?.daily_limit_usd : spend?.monthly_limit_usd;
+                        const current = period === "daily" ? (spend?.current_daily_usd ?? 0) : (spend?.current_monthly_usd ?? 0);
+                        const pct = limit != null && limit > 0 ? Math.min((current / limit) * 100, 100) : 0;
+                        const barColor = pct >= 100 ? "bg-rose-500" : pct >= 80 ? "bg-amber-500" : "bg-emerald-500";
+                        return (
+                            <div key={period} className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-xs font-medium capitalize">{period} Cap</span>
+                                    {limit != null && (
+                                        <div className="flex items-center gap-1.5">
+                                            <span className={`text-xs font-mono ${pct >= 100 ? "text-rose-500" : pct >= 80 ? "text-amber-500" : "text-emerald-500"
+                                                }`}>
+                                                ${current.toFixed(4)} / ${limit.toFixed(2)}
+                                            </span>
+                                            <button
+                                                onClick={() => handleRemoveCap(period)}
+                                                className="text-muted-foreground hover:text-rose-500 transition-colors"
+                                                title="Remove cap"
+                                            >
+                                                <X className="h-3 w-3" />
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                                {limit != null && (
+                                    <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                                        <div
+                                            className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+                                            style={{ width: `${pct}%` }}
+                                        />
+                                    </div>
+                                )}
+                                <div className="flex items-center gap-2">
+                                    <span className="text-[10px] text-muted-foreground w-14">Limit ($)</span>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        step="0.01"
+                                        placeholder={limit != null ? String(limit) : "No cap"}
+                                        value={period === "daily" ? capInput.daily : capInput.monthly}
+                                        onChange={(e) => setCapInput((prev) => ({ ...prev, [period]: e.target.value }))}
+                                        className="flex-1 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    />
+                                    <button
+                                        onClick={() => handleSaveCap(period)}
+                                        disabled={savingCap === period}
+                                        className="rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                                    >
+                                        {savingCap === period ? "Saving…" : "Save"}
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </CardContent>
+            </Card>
 
             {/* Recent Activity */}
             <div className="space-y-4">

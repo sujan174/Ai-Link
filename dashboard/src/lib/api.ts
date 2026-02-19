@@ -14,6 +14,7 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
   }
 
   const res = await fetch(url, {
+    cache: "no-store",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -26,7 +27,12 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(`API ${res.status}: ${body}`);
   }
 
+  if (res.status === 204) {
+    return null as T;
+  }
+
   return res.json();
+
 }
 
 // ── Types ──────────────────────────────────────
@@ -79,17 +85,37 @@ export interface AuditLog {
   tenant_id: string | null;
   external_request_id: string | null;
   log_level: number | null;
+  // Phase 5: LLM Observability
+  tool_call_count: number | null;
+  finish_reason: string | null;
+  error_type: string | null;
+  is_streaming: boolean | null;
+  // Phase 6: Caching & Router
+  cache_hit: boolean | null;
 }
 
 export interface AuditLogDetail extends AuditLog {
   upstream_url: string;
   policy_mode: string | null;
   deny_reason: string | null;
+  // Phase 5: LLM Observability (detail only)
+  tool_calls: unknown[] | null;
+  session_id: string | null;
+  parent_span_id: string | null;
+  ttft_ms: number | null;
   // Bodies (from joined audit_log_bodies table)
   request_body: string | null;
   response_body: string | null;
   request_headers: Record<string, string> | null;
   response_headers: Record<string, string> | null;
+  // Router
+  router_info: { detected_provider?: string; original_model?: string; translated_model?: string } | null;
+}
+
+export interface UpstreamEntry {
+  url: string;
+  weight?: number;
+  priority?: number;
 }
 
 export interface CreateTokenRequest {
@@ -98,6 +124,7 @@ export interface CreateTokenRequest {
   upstream_url: string;
   project_id?: string;
   policy_ids?: string[];
+  upstreams?: UpstreamEntry[];
 }
 
 export interface CreateTokenResponse {
@@ -112,11 +139,16 @@ export const listTokens = () => api<Token[]>("/tokens");
 
 export const getToken = (id: string) => api<Token>(`/tokens/${id}`);
 
-export const createToken = (data: CreateTokenRequest) =>
-  api<CreateTokenResponse>("/tokens", {
+export const createToken = (data: CreateTokenRequest) => {
+  if (!data.project_id && typeof window !== "undefined") {
+    const pid = localStorage.getItem("ailink_project_id");
+    if (pid) data.project_id = pid;
+  }
+  return api<CreateTokenResponse>("/tokens", {
     method: "POST",
     body: JSON.stringify(data),
   });
+};
 
 export const listApprovals = () => api<ApprovalRequest[]>("/approvals");
 
@@ -137,6 +169,21 @@ export const listAuditLogs = (limit = 50, offset = 0, filters?: { token_id?: str
 
 export const getAuditLogDetail = (id: string) =>
   api<AuditLogDetail>(`/audit/${id}`);
+
+export const swrFetcher = <T>(path: string) => api<T>(path);
+
+// ── Upstream Health ─────────────────────────────
+
+export interface UpstreamStatus {
+  token_id: string;
+  url: string;
+  is_healthy: boolean;
+  failure_count: number;
+  cooldown_remaining_secs: number | null;
+}
+
+export const getUpstreamHealth = () =>
+  api<UpstreamStatus[]>('/health/upstreams');
 
 // ── Policy Types & API ─────────────────────────
 
@@ -159,11 +206,16 @@ export interface CreatePolicyRequest {
 
 export const listPolicies = () => api<Policy[]>("/policies");
 
-export const createPolicy = (data: CreatePolicyRequest) =>
-  api<{ id: string; name: string; message: string }>("/policies", {
+export const createPolicy = (data: CreatePolicyRequest) => {
+  if (!data.project_id && typeof window !== "undefined") {
+    const pid = localStorage.getItem("ailink_project_id");
+    if (pid) data.project_id = pid;
+  }
+  return api<{ id: string; name: string; message: string }>("/policies", {
     method: "POST",
     body: JSON.stringify(data),
   });
+};
 
 export const updatePolicy = (id: string, data: { name?: string; mode?: string; rules?: unknown[] }) =>
   api<{ id: string; name: string; message: string }>(`/policies/${id}`, {
@@ -337,11 +389,17 @@ export const createService = (data: {
   base_url: string;
   service_type?: string;
   credential_id?: string;
-}) =>
-  api<Service>("/services", {
+}) => {
+  const payload = { ...data, project_id: undefined };
+  if (typeof window !== "undefined") {
+    const pid = localStorage.getItem("ailink_project_id");
+    if (pid) (payload as any).project_id = pid;
+  }
+  return api<Service>("/services", {
     method: "POST",
-    body: JSON.stringify(data),
+    body: JSON.stringify(payload),
   });
+};
 
 export const deleteService = (id: string) =>
   api<{ deleted: boolean }>(`/services/${id}`, { method: "DELETE" });
@@ -364,3 +422,221 @@ export const streamAuditLogs = (onEvent: (log: AuditLog) => void) => {
 
   return () => evtSource.close();
 };
+
+// ── API Keys ──────────────────────────────────────────────
+
+export interface ApiKey {
+  id: string;
+  org_id: string;
+  user_id: string | null;
+  name: string;
+  key_prefix: string;
+  role: string;
+  scopes: string[];
+  last_used_at: string | null;
+  expires_at: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface CreateApiKeyRequest {
+  name: string;
+  role: string;
+  scopes: string[];
+  key_prefix?: string;
+}
+
+export interface CreateApiKeyResponse {
+  key: string;
+  id: string;
+  name: string;
+}
+
+export async function listApiKeys(): Promise<ApiKey[]> {
+  return api("/auth/keys");
+}
+
+export async function createApiKey(req: CreateApiKeyRequest): Promise<CreateApiKeyResponse> {
+  return api("/auth/keys", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export async function revokeApiKey(id: string): Promise<boolean> {
+  // Returns boolean if successful (true) or throws
+  await api(`/auth/keys/${id}`, { method: "DELETE" });
+  return true;
+}
+
+export async function getWhoAmI(): Promise<any> {
+  return api("/auth/whoami");
+}
+
+// ── Billing ───────────────────────────────────────────────
+
+export interface UsageMeter {
+  org_id: string;
+  period: string; // YYYY-MM
+  total_requests: number;
+  total_tokens_used: number;
+  total_spend_usd: number;
+  updated_at: string;
+}
+
+export async function getUsage(period?: string): Promise<UsageMeter> {
+  const query = period ? `?period=${period}` : "";
+  return api(`/billing/usage${query}`);
+}
+
+// ── Analytics ─────────────────────────────────────────────
+
+export interface TokenSummary {
+  token_id: string;
+  total_requests: number;
+  errors: number;
+  avg_latency_ms: number;
+  last_active: string | null;
+}
+
+export interface TokenVolume {
+  hour: string;
+  count: number;
+}
+
+export interface TokenStatus {
+  status: number;
+  count: number;
+}
+
+export interface TokenLatency {
+  p50: number;
+  p90: number;
+  p99: number;
+}
+
+export async function getTokenAnalytics(): Promise<TokenSummary[]> {
+  return api("/analytics/tokens");
+}
+
+export async function getTokenVolume(tokenId: string): Promise<TokenVolume[]> {
+  return api(`/analytics/tokens/${tokenId}/volume`);
+}
+
+export async function getTokenStatus(tokenId: string): Promise<TokenStatus[]> {
+  return api(`/analytics/tokens/${tokenId}/status`);
+}
+
+export async function getTokenLatency(tokenId: string): Promise<TokenLatency> {
+  return api(`/analytics/tokens/${tokenId}/latency`);
+}
+
+// ── Spend Caps ────────────────────────────────────────────────
+
+export interface SpendStatus {
+  daily_limit_usd: number | null;
+  monthly_limit_usd: number | null;
+  current_daily_usd: number;
+  current_monthly_usd: number;
+}
+
+export async function getSpendCaps(tokenId: string): Promise<SpendStatus> {
+  return api(`/tokens/${tokenId}/spend`);
+}
+
+export async function upsertSpendCap(
+  tokenId: string,
+  period: "daily" | "monthly",
+  limit_usd: number
+): Promise<void> {
+  return api(`/tokens/${tokenId}/spend`, {
+    method: "PUT",
+    body: JSON.stringify({ period, limit_usd }),
+  });
+}
+
+export async function deleteSpendCap(
+  tokenId: string,
+  period: "daily" | "monthly"
+): Promise<void> {
+  return api(`/tokens/${tokenId}/spend/${period}`, { method: "DELETE" });
+}
+
+// ── Webhooks ──────────────────────────────────────────────────
+
+export interface Webhook {
+  id: string;
+  project_id: string;
+  url: string;
+  events: string[];
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface TestWebhookResponse {
+  success: boolean;
+  message: string;
+}
+
+export async function listWebhooks(): Promise<Webhook[]> {
+  return api("/webhooks");
+}
+
+export async function createWebhook(data: {
+  url: string;
+  events?: string[];
+}): Promise<Webhook> {
+  return api("/webhooks", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteWebhook(id: string): Promise<void> {
+  return api(`/webhooks/${id}`, { method: "DELETE" });
+}
+
+export async function testWebhook(url: string): Promise<TestWebhookResponse> {
+  return api("/webhooks/test", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
+}
+
+// ── Analytics (Phase 8) ──────────────────────────────────────
+
+export interface AnalyticsSummary {
+  total_requests: number;
+  success_count: number;
+  error_count: number;
+  avg_latency: number;
+  total_cost: number;
+  total_tokens: number;
+}
+
+export interface AnalyticsTimeseriesPoint {
+  bucket: string;
+  request_count: number;
+  error_count: number;
+  cost: number;
+  lat: number;
+}
+
+// ── System Settings (Phase 9) ────────────────────────────────
+
+export interface SystemSettings {
+  [key: string]: unknown;
+}
+
+export const getSettings = () => api<SystemSettings>("/settings");
+
+export const updateSettings = (settings: SystemSettings) =>
+  api<{ success: boolean }>("/settings", {
+    method: "PUT",
+    body: JSON.stringify({ settings }),
+  });
+
+export const flushCache = () =>
+  api<{ success: boolean; message: string }>("/system/flush-cache", {
+    method: "POST",
+  });

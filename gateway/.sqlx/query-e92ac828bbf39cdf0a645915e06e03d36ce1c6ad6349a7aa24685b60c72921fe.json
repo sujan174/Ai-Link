@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM usage_meters WHERE org_id = $1 AND period = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "period",
+        "type_info": "Date"
+      },
+      {
+        "ordinal": 3,
+        "name": "total_requests",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "total_tokens_used",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "total_spend_usd",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e92ac828bbf39cdf0a645915e06e03d36ce1c6ad6349a7aa24685b60c72921fe"
+}

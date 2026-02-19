@@ -1,8 +1,9 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, NaiveDate};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+#[derive(Clone)]
 pub struct PgStore {
     pool: PgPool,
 }
@@ -44,6 +45,19 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Verify that a project belongs to the given org.
+    /// Used by API handlers to enforce project isolation.
+    pub async fn project_belongs_to_org(&self, project_id: Uuid, org_id: Uuid) -> anyhow::Result<bool> {
+        let exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND org_id = $2)"
+        )
+        .bind(project_id)
+        .bind(org_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
     }
 
     // -- Credential Operations --
@@ -102,7 +116,7 @@ impl PgStore {
 
     pub async fn get_token(&self, token_id: &str) -> anyhow::Result<Option<TokenRow>> {
         let row = sqlx::query_as::<_, TokenRow>(
-            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, created_at, COALESCE(log_level, 1::SMALLINT) as log_level FROM tokens WHERE id = $1"
+            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams FROM tokens WHERE id = $1"
         )
         .bind(token_id)
         .fetch_optional(&self.pool)
@@ -113,7 +127,7 @@ impl PgStore {
 
     pub async fn list_tokens(&self, project_id: Uuid) -> anyhow::Result<Vec<TokenRow>> {
         let rows = sqlx::query_as::<_, TokenRow>(
-            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, created_at, COALESCE(log_level, 1::SMALLINT) as log_level FROM tokens WHERE project_id = $1 ORDER BY created_at DESC"
+            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams FROM tokens WHERE project_id = $1 AND is_active = true ORDER BY created_at DESC"
         )
         .bind(project_id)
         .fetch_all(&self.pool)
@@ -385,7 +399,9 @@ impl PgStore {
                       response_latency_ms, agent_name, policy_result, estimated_cost_usd,
                       shadow_violations, fields_redacted,
                       prompt_tokens, completion_tokens, model, tokens_per_second,
-                      user_id, tenant_id, external_request_id, log_level
+                      user_id, tenant_id, external_request_id, log_level,
+                      tool_call_count, finish_reason, error_type, is_streaming,
+                      cache_hit
                FROM audit_logs
                WHERE project_id = $1
                ORDER BY created_at DESC
@@ -415,6 +431,10 @@ impl PgStore {
                       a.prompt_tokens, a.completion_tokens, a.model,
                       a.tokens_per_second, a.user_id, a.tenant_id,
                       a.external_request_id, a.log_level,
+                      a.tool_calls, a.tool_call_count, a.finish_reason,
+                      a.session_id, a.parent_span_id, a.error_type,
+                      a.is_streaming, a.ttft_ms,
+                      a.cache_hit, a.router_info,
                       b.request_body, b.response_body,
                       b.request_headers, b.response_headers
                FROM audit_logs a
@@ -681,6 +701,60 @@ impl PgStore {
         .await?;
         Ok(result.rows_affected() > 0)
     }
+    pub async fn get_analytics_summary(
+        &self,
+        project_id: Uuid,
+        hours: i32,
+    ) -> anyhow::Result<crate::models::analytics::AnalyticsSummary> {
+        let row = sqlx::query_as::<_, crate::models::analytics::AnalyticsSummary>(
+            r#"
+            SELECT 
+                count(*)::bigint as total_requests,
+                count(*) filter (where upstream_status >= 200 and upstream_status < 400)::bigint as success_count,
+                count(*) filter (where upstream_status >= 400 or upstream_status is null)::bigint as error_count,
+                coalesce(avg(response_latency_ms), 0.0)::float8 as avg_latency,
+                coalesce(sum(estimated_cost_usd), 0.0)::float8 as total_cost,
+                coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint as total_tokens
+            FROM audit_logs
+            WHERE project_id = $1 AND created_at > now() - ($2 || ' hours')::interval
+            "#
+        )
+        .bind(project_id)
+        .bind(hours.to_string())
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn get_analytics_timeseries(
+        &self,
+        project_id: Uuid,
+        hours: i32,
+    ) -> anyhow::Result<Vec<crate::models::analytics::AnalyticsTimeseriesPoint>> {
+        // Dynamic bucket size based on range
+        let bucket = if hours <= 24 { "hour" } else { "day" };
+        
+        let rows = sqlx::query_as::<_, crate::models::analytics::AnalyticsTimeseriesPoint>(
+            r#"
+            SELECT 
+                date_trunc($3, created_at) as bucket,
+                count(*)::bigint as request_count,
+                count(*) filter (where upstream_status >= 400)::bigint as error_count,
+                coalesce(sum(estimated_cost_usd), 0.0)::float8 as cost,
+                coalesce(avg(response_latency_ms), 0.0)::float8 as lat
+            FROM audit_logs
+            WHERE project_id = $1 AND created_at > now() - ($2 || ' hours')::interval
+            GROUP BY 1
+            ORDER BY 1 ASC
+            "#
+        )
+        .bind(project_id)
+        .bind(hours.to_string())
+        .bind(bucket)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
 }
 
 // -- Input structs --
@@ -701,7 +775,7 @@ pub struct NewToken {
     pub id: String,
     pub project_id: Uuid,
     pub name: String,
-    pub credential_id: Uuid,
+    pub credential_id: Option<Uuid>,
     pub upstream_url: String,
     pub scopes: serde_json::Value,
     pub policy_ids: Vec<Uuid>,
@@ -724,14 +798,17 @@ pub struct TokenRow {
     pub id: String,
     pub project_id: Uuid,
     pub name: String,
-    pub credential_id: Uuid,
+    pub credential_id: Option<Uuid>,
     pub upstream_url: String,
     pub scopes: serde_json::Value,
     pub policy_ids: Vec<Uuid>,
     pub is_active: bool,
+    pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     /// Privacy level: 0=metadata, 1=redacted(default), 2=full-debug
     pub log_level: i16,
+    /// Optional multi-upstream configuration for loadbalancing
+    pub upstreams: Option<serde_json::Value>,
 }
 
 #[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
@@ -770,6 +847,13 @@ pub struct AuditLogRow {
     pub tenant_id: Option<String>,
     pub external_request_id: Option<String>,
     pub log_level: Option<i16>,
+    // Phase 5: LLM Observability
+    pub tool_call_count: Option<i16>,
+    pub finish_reason: Option<String>,
+    pub error_type: Option<String>,
+    pub is_streaming: Option<bool>,
+    // Phase 6: Response Cache
+    pub cache_hit: Option<bool>,
 }
 
 /// Detailed audit log row with joined body data (for single-entry view).
@@ -798,11 +882,23 @@ pub struct AuditLogDetailRow {
     pub tenant_id: Option<String>,
     pub external_request_id: Option<String>,
     pub log_level: Option<i16>,
+    // Phase 5: LLM Observability
+    pub tool_calls: Option<serde_json::Value>,
+    pub tool_call_count: Option<i16>,
+    pub finish_reason: Option<String>,
+    pub session_id: Option<String>,
+    pub parent_span_id: Option<String>,
+    pub error_type: Option<String>,
+    pub is_streaming: Option<bool>,
+    pub ttft_ms: Option<i64>,
     // From audit_log_bodies JOIN
     pub request_body: Option<String>,
     pub response_body: Option<String>,
     pub request_headers: Option<serde_json::Value>,
     pub response_headers: Option<serde_json::Value>,
+    // Phase 6: Router Debugger
+    pub cache_hit: Option<bool>,
+    pub router_info: Option<serde_json::Value>,
 }
 
 #[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
@@ -836,4 +932,415 @@ pub struct NewService {
     pub base_url: String,
     pub service_type: String,
     pub credential_id: Option<Uuid>,
+}
+
+#[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
+pub struct ApiKeyRow {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub user_id: Option<Uuid>,
+    pub name: String,
+    pub key_hash: String,
+    pub key_prefix: String,
+    pub role: String,
+    pub scopes: serde_json::Value,
+    pub is_active: bool,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
+pub struct UsageMeterRow {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub period: NaiveDate,
+    pub total_requests: i64,
+    pub total_tokens_used: i64,
+    pub total_spend_usd: rust_decimal::Decimal,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+// Analytics structs
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TokenSummary {
+    pub token_id: Option<String>,
+    pub total_requests: i64,
+    pub errors: i64,
+    pub avg_latency_ms: f64,
+    pub last_active: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TokenVolumeStat {
+    pub hour: DateTime<Utc>,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TokenStatusStat {
+    pub status: i16,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TokenLatencyStat {
+    pub p50: f64,
+    pub p90: f64,
+    pub p99: f64,
+}
+
+impl PgStore {
+    // ── API Keys ─────────────────────────────────────────────────
+
+    pub async fn create_api_key(
+        &self,
+        org_id: Uuid,
+        user_id: Option<Uuid>,
+        name: &str,
+        key_hash: &str,
+        key_prefix: &str,
+        role: &str,
+        scopes: serde_json::Value,
+    ) -> anyhow::Result<Uuid> {
+        let rec = sqlx::query!(
+            r#"INSERT INTO api_keys (org_id, user_id, name, key_hash, key_prefix, role, scopes)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               RETURNING id"#,
+            org_id,
+            user_id,
+            name,
+            key_hash,
+            key_prefix,
+            role,
+            scopes
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(rec.id)
+    }
+
+    pub async fn get_api_key_by_hash(&self, key_hash: &str) -> anyhow::Result<Option<ApiKeyRow>> {
+        let key = sqlx::query_as!(
+            ApiKeyRow,
+            "SELECT * FROM api_keys WHERE key_hash = $1 AND is_active = true",
+            key_hash
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(key)
+    }
+
+    pub async fn list_api_keys(&self, org_id: Uuid) -> anyhow::Result<Vec<ApiKeyRow>> {
+        let keys = sqlx::query_as!(
+            ApiKeyRow,
+            "SELECT * FROM api_keys WHERE org_id = $1 ORDER BY created_at DESC",
+            org_id
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(keys)
+    }
+
+    pub async fn revoke_api_key(&self, id: Uuid, org_id: Uuid) -> anyhow::Result<bool> {
+        let result: sqlx::postgres::PgQueryResult = sqlx::query!(
+            "UPDATE api_keys SET is_active = false WHERE id = $1 AND org_id = $2",
+            id,
+            org_id
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn touch_api_key_usage(&self, id: Uuid) -> anyhow::Result<()> {
+        sqlx::query!(
+            "UPDATE api_keys SET last_used_at = NOW() WHERE id = $1",
+            id
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    // ── Usage Metering ───────────────────────────────────────────
+
+    pub async fn increment_usage(
+        &self,
+        org_id: Uuid,
+        period: NaiveDate,
+        requests: i64,
+        tokens: i64,
+        spend_usd: rust_decimal::Decimal,
+    ) -> anyhow::Result<()> {
+        sqlx::query!(
+            r#"INSERT INTO usage_meters (org_id, period, total_requests, total_tokens_used, total_spend_usd)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (org_id, period) DO UPDATE SET
+                   total_requests = usage_meters.total_requests + $3,
+                   total_tokens_used = usage_meters.total_tokens_used + $4,
+                   total_spend_usd = usage_meters.total_spend_usd + $5,
+                   updated_at = NOW()"#,
+            org_id,
+            period,
+            requests,
+            tokens,
+            spend_usd
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_usage(
+        &self,
+        org_id: Uuid,
+        period: NaiveDate,
+    ) -> anyhow::Result<Option<UsageMeterRow>> {
+        let usage = sqlx::query_as!(
+            UsageMeterRow,
+            "SELECT * FROM usage_meters WHERE org_id = $1 AND period = $2",
+            org_id,
+            period
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(usage)
+    }
+
+    // ── Per-Token Analytics ──────────────────────────────────────
+
+    pub async fn get_token_summary(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<Vec<TokenSummary>> {
+        // sqlx doesn't map directly to struct with aggregate functions easily without `AS` aliases matching struct fields exactly.
+        // We'll use query_as! with explicit mapping if needed, or ensuring column names match.
+        // Note: avg returns numeric/float, COUNT returns bigint (i64).
+        // latency might be null if 0 requests, COALESCE to 0.
+        let rows = sqlx::query_as!(
+            TokenSummary,
+            r#"SELECT 
+                token_id, 
+                COUNT(*) as "total_requests!",
+                COUNT(*) FILTER (WHERE upstream_status >= 400) as "errors!",
+                COALESCE(AVG(response_latency_ms)::float8, 0.0) as "avg_latency_ms!",
+                MAX(created_at) as last_active
+             FROM audit_logs
+             WHERE project_id = $1 AND created_at > now() - interval '24 hours'
+             GROUP BY token_id 
+             ORDER BY 2 DESC"#,
+            project_id
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    pub async fn get_token_volume_24h(
+        &self,
+        project_id: Uuid,
+        token_id: &str,
+    ) -> anyhow::Result<Vec<TokenVolumeStat>> {
+        let rows = sqlx::query_as!(
+            TokenVolumeStat,
+            r#"SELECT 
+                date_trunc('hour', created_at) as "hour!", 
+                COUNT(*) as "count!"
+             FROM audit_logs
+             WHERE project_id = $1 AND token_id = $2
+               AND created_at > now() - interval '24 hours'
+             GROUP BY 1 
+             ORDER BY 1"#,
+            project_id,
+            token_id
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_token_status_distribution_24h(
+        &self,
+        project_id: Uuid,
+        token_id: &str,
+    ) -> anyhow::Result<Vec<TokenStatusStat>> {
+        let rows = sqlx::query_as!(
+            TokenStatusStat,
+            r#"SELECT 
+                COALESCE(upstream_status, 0)::smallint as "status!", 
+                COUNT(*) as "count!"
+             FROM audit_logs
+             WHERE project_id = $1 AND token_id = $2
+               AND created_at > now() - interval '24 hours'
+             GROUP BY 1 
+             ORDER BY 2 DESC"#,
+            project_id,
+            token_id
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_token_latency_percentiles_24h(
+        &self,
+        project_id: Uuid,
+        token_id: &str,
+    ) -> anyhow::Result<TokenLatencyStat> {
+         let row = sqlx::query!(
+            r#"SELECT 
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY response_latency_ms) as p50,
+                percentile_cont(0.9) WITHIN GROUP (ORDER BY response_latency_ms) as p90,
+                percentile_cont(0.99) WITHIN GROUP (ORDER BY response_latency_ms) as p99
+             FROM audit_logs
+             WHERE project_id = $1 AND token_id = $2
+               AND created_at > now() - interval '24 hours'"#,
+            project_id,
+            token_id
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(TokenLatencyStat {
+            p50: row.p50.unwrap_or(0.0),
+            p90: row.p90.unwrap_or(0.0),
+            p99: row.p99.unwrap_or(0.0),
+        })
+    }
+
+    // -- Model Pricing Operations --
+
+    pub async fn list_model_pricing(&self) -> anyhow::Result<Vec<ModelPricingRow>> {
+        let rows = sqlx::query_as::<_, ModelPricingRow>(
+            r#"SELECT id, provider, model_pattern, input_per_m, output_per_m, is_active, created_at, updated_at
+               FROM model_pricing
+               WHERE is_active = true
+               ORDER BY provider ASC, model_pattern ASC"#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Upsert a pricing entry. Returns the row ID.
+    pub async fn upsert_model_pricing(
+        &self,
+        provider: &str,
+        model_pattern: &str,
+        input_per_m: rust_decimal::Decimal,
+        output_per_m: rust_decimal::Decimal,
+    ) -> anyhow::Result<Uuid> {
+        let id: Uuid = sqlx::query_scalar(
+            r#"INSERT INTO model_pricing (provider, model_pattern, input_per_m, output_per_m)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (provider, model_pattern) DO UPDATE
+                 SET input_per_m = EXCLUDED.input_per_m,
+                     output_per_m = EXCLUDED.output_per_m,
+                     is_active = true,
+                     updated_at = NOW()
+               RETURNING id"#
+        )
+        .bind(provider)
+        .bind(model_pattern)
+        .bind(input_per_m)
+        .bind(output_per_m)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    /// Soft-delete a pricing entry (sets is_active = false).
+    pub async fn delete_model_pricing(&self, id: Uuid) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE model_pricing SET is_active = false, updated_at = NOW() WHERE id = $1 AND is_active = true"
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+    // -- System Settings Operations --
+
+    pub async fn get_system_setting<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<Option<T>> {
+        let row = sqlx::query_scalar::<_, serde_json::Value>(
+            "SELECT value FROM system_settings WHERE key = $1"
+        )
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(val) = row {
+            let parsed: T = serde_json::from_value(val)?;
+            Ok(Some(parsed))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn set_system_setting<T: serde::Serialize>(
+        &self,
+        key: &str,
+        value: &T,
+        description: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let json_val = serde_json::to_value(value)?;
+        
+        sqlx::query(
+            r#"
+            INSERT INTO system_settings (key, value, description)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value,
+                description = COALESCE(EXCLUDED.description, system_settings.description),
+                updated_at = NOW()
+            "#
+        )
+        .bind(key)
+        .bind(json_val)
+        .bind(description)
+        .execute(&self.pool)
+        .await?;
+        
+        Ok(())
+    }
+
+    pub async fn get_all_system_settings(&self) -> anyhow::Result<std::collections::HashMap<String, serde_json::Value>> {
+        let rows = sqlx::query_as::<_, (String, serde_json::Value)>(
+            "SELECT key, value FROM system_settings"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut settings = std::collections::HashMap::new();
+        for (k, v) in rows {
+            settings.insert(k, v);
+        }
+        Ok(settings)
+    }
+}
+
+// -- Model Pricing Row --
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize)]
+pub struct ModelPricingRow {
+    pub id: Uuid,
+    pub provider: String,
+    pub model_pattern: String,
+    pub input_per_m: rust_decimal::Decimal,
+    pub output_per_m: rust_decimal::Decimal,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }

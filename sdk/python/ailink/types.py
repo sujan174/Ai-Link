@@ -86,6 +86,14 @@ class AuditLog(AIlinkModel):
     hitl_latency_ms: Optional[int] = None
     fields_redacted: Optional[List[str]] = Field(default_factory=list)
     shadow_violations: Optional[List[str]] = Field(default_factory=list)
+    # LLM Observability
+    model: Optional[str] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    finish_reason: Optional[str] = None
+    is_streaming: Optional[bool] = None
+    # Caching & Router
+    cache_hit: Optional[bool] = None
 
     def __repr__(self) -> str:
         return f"AuditLog(id={self.id!r}, method={self.method!r}, path={self.path!r}, status={self.upstream_status})"
@@ -123,3 +131,10 @@ class ApprovalDecision(AIlinkModel):
 
     def __repr__(self) -> str:
         return f"ApprovalDecision(id={self.id!r}, status={self.status!r})"
+
+
+class Response(AIlinkModel):
+    """Generic API response wrapper."""
+    message: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+

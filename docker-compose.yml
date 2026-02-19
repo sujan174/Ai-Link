@@ -13,6 +13,10 @@ services:
       NEXT_PUBLIC_API_URL: "http://localhost:8443/api/v1"
       # Server-side access to Gateway (docker internal)
       API_URL: "http://gateway:8443/api/v1"
+      GATEWAY_INTERNAL_URL: "http://gateway:8443"
+      AILINK_ADMIN_KEY: "ailink-admin-test"
+      # SEC-01: Dashboard proxy auth secret
+      DASHBOARD_SECRET: "ailink-dashboard-dev-secret"
     depends_on:
       - gateway
 
@@ -34,6 +38,10 @@ services:
       # Security (Example key; change in production!)
       - AILINK_MASTER_KEY=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
       - AILINK_ADMIN_KEY=ailink-admin-test
+      # SEC-06: Restrict CORS to dashboard origin
+      - DASHBOARD_ORIGIN=http://localhost:3000
+      # Enable test hooks for integration testing (X-AILink-Test-Cost header)
+      - AILINK_ENABLE_TEST_HOOKS=1
       # Notifications (Set real value here if needed)
       # - AILINK_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
     depends_on:

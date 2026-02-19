@@ -101,7 +101,7 @@ export function PolicyHistoryDialog({ policyId, open, onOpenChange }: { policyId
                                         </div>
                                     </div>
 
-                                    {selectedVersion.retry && (
+                                    {!!selectedVersion.retry && (
                                         <div>
                                             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 block">Retry Policy</label>
                                             <div className="rounded-lg border bg-muted/50 p-4 font-mono text-xs overflow-x-auto whitespace-pre">

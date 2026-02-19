@@ -28,6 +28,15 @@ pub fn extract_usage(_upstream_url: &str, body: &[u8]) -> anyhow::Result<Option<
         }
     }
 
+    // Gemini: usageMetadata
+    if let Some(meta) = json.get("usageMetadata") {
+        let input = meta.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let output = meta.get("candidatesTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        if input > 0 || output > 0 {
+            return Ok(Some((input, output)));
+        }
+    }
+
     Ok(None)
 }
 
@@ -44,12 +53,10 @@ pub struct ModelPricing {
     pub output_cost_per_m: Decimal,
 }
 
-/// Get pricing for a given provider and model.
-/// Prices are in USD per 1M tokens.
-pub fn get_model_pricing(provider: &str, model: &str) -> ModelPricing {
+/// Hardcoded fallback pricing table.
+/// Used when the DB-backed cache is empty (e.g., before first load or on DB error).
+pub fn get_model_pricing_fallback(provider: &str, model: &str) -> ModelPricing {
     let zero = Decimal::ZERO;
-
-    // Helper to parse decimal safely (panics on invalid hardcoded string which is fine/test-like)
     let d = |s: &str| Decimal::from_str(s).unwrap();
 
     match (provider, model) {
@@ -92,13 +99,41 @@ pub fn get_model_pricing(provider: &str, model: &str) -> ModelPricing {
     }
 }
 
+/// Calculate cost using the DB-backed pricing cache.
+/// Falls back to hardcoded table if the cache is empty.
+///
+/// This is the async version used by the proxy handler.
+pub async fn calculate_cost_with_cache(
+    pricing: &crate::models::pricing_cache::PricingCache,
+    provider: &str,
+    model: &str,
+    input_tokens: u32,
+    output_tokens: u32,
+) -> Decimal {
+    let one_million = Decimal::from(1_000_000);
+
+    let (input_per_m, output_per_m) = if let Some(p) = pricing.lookup(provider, model).await {
+        p
+    } else {
+        // Cache miss — fall back to hardcoded table
+        let fallback = get_model_pricing_fallback(provider, model);
+        (fallback.input_cost_per_m, fallback.output_cost_per_m)
+    };
+
+    let input_cost = (Decimal::from(input_tokens) / one_million) * input_per_m;
+    let output_cost = (Decimal::from(output_tokens) / one_million) * output_per_m;
+    input_cost + output_cost
+}
+
+/// Synchronous version kept for backwards compatibility with non-async call sites.
+/// Uses only the hardcoded fallback table.
 pub fn calculate_cost(
     provider: &str,
     model: &str,
     input_tokens: u32,
     output_tokens: u32,
 ) -> Decimal {
-    let pricing = get_model_pricing(provider, model);
+    let pricing = get_model_pricing_fallback(provider, model);
     let one_million = Decimal::from(1_000_000);
 
     let input_cost = (Decimal::from(input_tokens) / one_million) * pricing.input_cost_per_m;

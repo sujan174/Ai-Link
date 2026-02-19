@@ -20,6 +20,7 @@ import { Breadcrumbs } from "@/components/breadcrumbs";
 import { CommandPalette } from "@/components/command-palette";
 import { MobileNav } from "@/components/mobile-nav";
 import { NotificationBell } from "@/components/notification-bell";
+import { ProjectSwitcher } from "@/components/project-switcher";
 
 export default function RootLayout({
   children,
@@ -40,7 +41,10 @@ export default function RootLayout({
                     <div className="flex-1">
                       <Breadcrumbs />
                     </div>
-                    <NotificationBell />
+                    <div className="flex items-center gap-2">
+                      <ProjectSwitcher className="w-[200px]" />
+                      <NotificationBell />
+                    </div>
                   </div>
                   <div className="page-enter">
                     {children}

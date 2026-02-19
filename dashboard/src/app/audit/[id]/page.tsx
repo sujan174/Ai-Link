@@ -19,7 +19,14 @@ import {
     Globe,
     Terminal,
     FileJson,
-    User
+    User,
+    Wrench,
+    Timer,
+    Radio,
+    GitBranch,
+    AlertTriangle,
+    ChevronDown,
+    ChevronUp
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +48,7 @@ export default function AuditDetailPage() {
     const [log, setLog] = useState<AuditLogDetail | null>(null);
     const [loading, setLoading] = useState(true);
     const [copied, setCopied] = useState(false);
+    const [toolsExpanded, setToolsExpanded] = useState(false);
 
     useEffect(() => {
         if (!id) return;
@@ -162,8 +170,61 @@ export default function AuditDetailPage() {
                             <span className="font-medium capitalize">{log.policy_result}</span>
                         </div>
                     </div>
+                    {log.ttft_ms != null && (
+                        <div className="space-y-1">
+                            <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                <Timer className="h-3.5 w-3.5" /> TTFT
+                            </p>
+                            <p className="text-lg font-bold font-mono text-cyan-400">{log.ttft_ms}ms</p>
+                        </div>
+                    )}
+                    {log.is_streaming != null && (
+                        <div className="space-y-1">
+                            <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                                <Radio className="h-3.5 w-3.5" /> Mode
+                            </p>
+                            <div className="flex items-center gap-2">
+                                {log.is_streaming ? (
+                                    <Badge variant="outline" className="text-xs bg-yellow-500/15 text-yellow-400 border-yellow-500/30">
+                                        <Zap className="h-3 w-3 mr-1" /> Streaming
+                                    </Badge>
+                                ) : (
+                                    <Badge variant="outline" className="text-xs">Batch</Badge>
+                                )}
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
+
+            {/* Router Debugger */}
+            {log.router_info && (
+                <Card className="glass-card">
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium flex items-center gap-2">
+                            <Activity className="h-4 w-4 text-violet-400" /> Router Translation
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="flex items-center gap-3 text-sm">
+                            <div className="flex-1 rounded-lg bg-muted/40 border border-border/50 p-3 text-center">
+                                <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">User Sent</p>
+                                <p className="font-mono font-semibold">{log.router_info.original_model || log.model || "—"}</p>
+                            </div>
+                            <div className="text-muted-foreground font-bold text-lg">→</div>
+                            <div className="flex-1 rounded-lg bg-violet-500/10 border border-violet-500/30 p-3 text-center">
+                                <p className="text-[10px] uppercase tracking-wider text-violet-400 mb-1">Gateway Sent</p>
+                                <p className="font-mono font-semibold text-violet-300">{log.router_info.translated_model || log.model || "—"}</p>
+                            </div>
+                            {log.router_info.detected_provider && (
+                                <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30 py-0.5 capitalize">
+                                    {log.router_info.detected_provider}
+                                </Badge>
+                            )}
+                        </div>
+                    </CardContent>
+                </Card>
+            )}
 
             <div className="grid md:grid-cols-3 gap-6">
                 {/* Main Content (Left, 2 cols) */}
@@ -260,6 +321,12 @@ export default function AuditDetailPage() {
                                 <span className="text-muted-foreground">User ID</span>
                                 <span className="font-mono truncate">{log.user_id ?? "—"}</span>
                             </div>
+                            {log.tenant_id && (
+                                <div className="grid grid-cols-[1fr_2fr] gap-2 items-center">
+                                    <span className="text-muted-foreground">Tenant ID</span>
+                                    <span className="font-mono truncate text-violet-400" title={log.tenant_id}>{log.tenant_id}</span>
+                                </div>
+                            )}
                             <div className="grid grid-cols-[1fr_2fr] gap-2 items-center">
                                 <span className="text-muted-foreground">Log Level</span>
                                 <Badge variant="outline" className="w-fit text-[10px]">L{log.log_level}</Badge>
@@ -288,6 +355,86 @@ export default function AuditDetailPage() {
                                         <span className="font-mono">{log.tokens_per_second.toFixed(1)} t/s</span>
                                     </div>
                                 )}
+                                {log.finish_reason && (
+                                    <div className="flex justify-between items-center bg-emerald-500/10 p-2 rounded-lg">
+                                        <span className="text-emerald-400 font-medium">Finish Reason</span>
+                                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">{log.finish_reason}</Badge>
+                                    </div>
+                                )}
+                                {log.error_type && (
+                                    <div className="flex justify-between items-center bg-rose-500/10 p-2 rounded-lg">
+                                        <span className="text-rose-400 font-medium">Error Type</span>
+                                        <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-rose-500/15 text-rose-400 border-rose-500/30">
+                                            {log.error_type.replace(/_/g, " ")}
+                                        </Badge>
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+                    )}
+
+                    {/* Session / Trace */}
+                    {(log.session_id || log.parent_span_id) && (
+                        <Card className="glass-card">
+                            <CardHeader className="pb-2">
+                                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                                    <GitBranch className="h-4 w-4 text-cyan-400" /> Session / Trace
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-3 text-xs">
+                                {log.session_id && (
+                                    <div className="grid grid-cols-[1fr_2fr] gap-2 items-center">
+                                        <span className="text-muted-foreground">Session</span>
+                                        <span className="font-mono truncate text-cyan-400" title={log.session_id}>{log.session_id}</span>
+                                    </div>
+                                )}
+                                {log.parent_span_id && (
+                                    <div className="grid grid-cols-[1fr_2fr] gap-2 items-center">
+                                        <span className="text-muted-foreground">Parent Span</span>
+                                        <span className="font-mono truncate" title={log.parent_span_id}>{log.parent_span_id}</span>
+                                    </div>
+                                )}
+                            </CardContent>
+                        </Card>
+                    )}
+
+                    {/* Tool Calls */}
+                    {log.tool_calls && Array.isArray(log.tool_calls) && log.tool_calls.length > 0 && (
+                        <Card className="glass-card">
+                            <CardHeader className="pb-2">
+                                <div className="flex items-center justify-between">
+                                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                                        <Wrench className="h-4 w-4 text-violet-400" /> Tool Calls
+                                        <Badge variant="outline" className="text-[10px] ml-1">{log.tool_call_count ?? log.tool_calls.length}</Badge>
+                                    </CardTitle>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-6 w-6 p-0"
+                                        onClick={() => setToolsExpanded(!toolsExpanded)}
+                                    >
+                                        {toolsExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                                    </Button>
+                                </div>
+                            </CardHeader>
+                            <CardContent className="space-y-2">
+                                {(log.tool_calls as Array<{ name?: string; call_id?: string; arguments?: string }>).map((tc, i) => (
+                                    <div key={i} className="bg-violet-500/10 rounded-lg p-2 space-y-1">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs font-semibold text-violet-400 font-mono">{tc.name ?? "unknown"}</span>
+                                            {tc.call_id && (
+                                                <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[100px]" title={tc.call_id}>
+                                                    {tc.call_id}
+                                                </span>
+                                            )}
+                                        </div>
+                                        {toolsExpanded && tc.arguments && (
+                                            <pre className="text-[10px] font-mono bg-muted/40 rounded p-2 overflow-auto max-h-[120px] whitespace-pre-wrap break-all border border-border/50">
+                                                {tryFormatJSON(tc.arguments)}
+                                            </pre>
+                                        )}
+                                    </div>
+                                ))}
                             </CardContent>
                         </Card>
                     )}
@@ -297,4 +444,3 @@ export default function AuditDetailPage() {
     );
 }
 
-import { AlertTriangle } from "lucide-react";

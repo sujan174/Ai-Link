@@ -114,7 +114,7 @@ export const columns: ColumnDef<Policy>[] = [
             const mode = row.getValue("mode") as string;
             return (
                 <Badge
-                    variant={mode === "blocking" ? "destructive" : mode === "shadow" ? "warning" : "secondary"}
+                    variant={mode === "enforce" ? "destructive" : mode === "shadow" ? "warning" : "secondary"}
                     dot
                     className="capitalize text-[11px]"
                 >

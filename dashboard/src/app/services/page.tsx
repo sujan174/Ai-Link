@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import useSWR, { mutate } from "swr";
 import {
-    listServices,
     createService,
     deleteService,
     listCredentials,
     Service,
     Credential,
+    swrFetcher,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,9 +28,11 @@ import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 
 export default function ServicesPage() {
-    const [services, setServices] = useState<Service[]>([]);
-    const [credentials, setCredentials] = useState<Credential[]>([]);
-    const [loading, setLoading] = useState(true);
+    const { data: services = [], mutate: mutateServices, isLoading: servicesLoading } = useSWR<Service[]>("/services", swrFetcher);
+    const { data: credentials = [], isLoading: credsLoading } = useSWR<Credential[]>("/credentials", swrFetcher);
+
+    // Derived state
+    const loading = servicesLoading || credsLoading;
     const [dialogOpen, setDialogOpen] = useState(false);
 
     // Form state
@@ -40,40 +43,45 @@ export default function ServicesPage() {
     const [credentialId, setCredentialId] = useState("");
     const [creating, setCreating] = useState(false);
 
-    const fetchData = async () => {
-        try {
-            const [svcs, creds] = await Promise.all([
-                listServices(),
-                listCredentials(),
-            ]);
-            setServices(svcs);
-            setCredentials(creds);
-        } catch (e) {
-            console.error("Failed to fetch services", e);
-            toast.error("Failed to load services");
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        fetchData();
-    }, []);
-
     const handleCreate = async () => {
         if (!name || !baseUrl) {
             toast.error("Name and Base URL are required");
             return;
         }
         setCreating(true);
+
+        const newService: Service = {
+            id: "temp-" + Date.now(),
+            project_id: "",
+            name: name.toLowerCase().replace(/\s+/g, "-"),
+            description,
+            base_url: baseUrl,
+            service_type: serviceType,
+            credential_id: credentialId || null,
+            is_active: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+        };
+
         try {
-            await createService({
-                name: name.toLowerCase().replace(/\s+/g, "-"),
-                description,
-                base_url: baseUrl,
-                service_type: serviceType,
-                credential_id: credentialId || undefined,
-            });
+            await mutateServices(
+                async () => {
+                    const created = await createService({
+                        name: newService.name,
+                        description,
+                        base_url: baseUrl,
+                        service_type: serviceType,
+                        credential_id: credentialId || undefined,
+                    });
+                    return [...services, created];
+                },
+                {
+                    optimisticData: [...services, newService],
+                    rollbackOnError: true,
+                    revalidate: true,
+                }
+            );
+
             toast.success(`Service "${name}" registered`);
             setDialogOpen(false);
             setName("");
@@ -81,7 +89,6 @@ export default function ServicesPage() {
             setBaseUrl("");
             setServiceType("generic");
             setCredentialId("");
-            fetchData();
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : "Unknown error";
             toast.error(`Failed to create service: ${msg}`);
@@ -92,10 +99,20 @@ export default function ServicesPage() {
 
     const handleDelete = async (id: string, svcName: string) => {
         if (!confirm(`Delete service "${svcName}"? This cannot be undone.`)) return;
+
         try {
-            await deleteService(id);
+            await mutateServices(
+                async () => {
+                    await deleteService(id);
+                    return services.filter(s => s.id !== id);
+                },
+                {
+                    optimisticData: services.filter(s => s.id !== id),
+                    rollbackOnError: true,
+                    revalidate: true
+                }
+            );
             toast.success(`Deleted "${svcName}"`);
-            fetchData();
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : "Unknown error";
             toast.error(`Failed to delete: ${msg}`);

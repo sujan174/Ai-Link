@@ -14,13 +14,21 @@ RUN rm -rf src
 
 # Now copy real source and rebuild (only app crate recompiles)
 COPY . .
+ENV SQLX_OFFLINE=true
 RUN touch src/main.rs && cargo build --release --bin ailink
 
 # Runtime Stage
 FROM debian:bookworm-slim
 
 # Install runtime dependencies (ca-certificates for HTTPS, libssl for reqwest)
-RUN apt-get update && apt-get install -y ca-certificates libssl-dev && rm -rf /var/lib/apt/lists/*
+# Install runtime dependencies (OpenSSL) and debug tools
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl-dev \
+    curl \
+    iputils-ping \
+    && rm -rf /var/lib/apt/lists/*
+
 
 WORKDIR /app
 

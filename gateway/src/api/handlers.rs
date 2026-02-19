@@ -8,6 +8,7 @@ use axum::{
         IntoResponse,
         sse::{Event, KeepAlive, Sse},
     },
+    Extension,
     Json,
 };
 use futures::stream::{self, Stream};
@@ -15,8 +16,12 @@ use serde_json::json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::api::{AuthContext, ApiKeyRole};
 use crate::models::approval::ApprovalStatus;
-use crate::store::postgres::{AuditLogDetailRow, AuditLogRow, CredentialMeta, PolicyRow, TokenRow};
+use crate::store::postgres::{
+    ApiKeyRow, AuditLogDetailRow, AuditLogRow, CredentialMeta, PolicyRow, TokenRow, UsageMeterRow,
+    TokenSummary, TokenVolumeStat, TokenStatusStat, TokenLatencyStat,
+};
 use crate::AppState;
 
 // ── Request / Response DTOs ──────────────────────────────────
@@ -24,7 +29,7 @@ use crate::AppState;
 #[derive(Deserialize)]
 pub struct CreateTokenRequest {
     pub name: String,
-    pub credential_id: Uuid,
+    pub credential_id: Option<Uuid>,
     pub upstream_url: String,
     pub project_id: Option<Uuid>,
     pub policy_ids: Option<Vec<Uuid>>,
@@ -77,14 +82,42 @@ fn default_project_id() -> Uuid {
     Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
 }
 
+/// Verify that `project_id` belongs to `org_id`.
+/// Returns `Err(FORBIDDEN)` if the project doesn't belong to the org,
+/// or `Err(INTERNAL_SERVER_ERROR)` on DB failure.
+async fn verify_project_ownership(
+    state: &crate::AppState,
+    org_id: Uuid,
+    project_id: Uuid,
+) -> Result<(), StatusCode> {
+    let belongs = state
+        .db
+        .project_belongs_to_org(project_id, org_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("project_belongs_to_org failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !belongs {
+        tracing::warn!(
+            org_id = %org_id,
+            project_id = %project_id,
+            "project isolation: project does not belong to org"
+        );
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(())
+}
+
 // ── Handlers ─────────────────────────────────────────────────
 
-/// GET /api/v1/projects — list projects for the default org
+/// GET /api/v1/projects — list projects for the org
 pub async fn list_projects(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<ProjectResponse>>, StatusCode> {
-    let org_id = default_org_id();
-    let projects = state.db.list_projects(org_id).await.map_err(|e| {
+    // Implicit scope check: any authenticated user can list projects
+    let projects = state.db.list_projects(auth.org_id).await.map_err(|e| {
         tracing::error!("list_projects failed: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -103,12 +136,17 @@ pub async fn list_projects(
 /// POST /api/v1/projects — create a new project
 pub async fn create_project(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreateProjectRequest>,
 ) -> Result<(StatusCode, Json<ProjectResponse>), StatusCode> {
-    let org_id = default_org_id();
+    // Only Admin/Member can create projects
+    if auth.role == ApiKeyRole::ReadOnly {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
     let id = state
         .db
-        .create_project(org_id, &payload.name)
+        .create_project(auth.org_id, &payload.name)
         .await
         .map_err(|e| {
             tracing::error!("create_project failed: {}", e);
@@ -127,9 +165,12 @@ pub async fn create_project(
 /// GET /api/v1/tokens — list all tokens for a project
 pub async fn list_tokens(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Vec<TokenRow>>, StatusCode> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    auth.require_scope("tokens:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     let tokens = state.db.list_tokens(project_id).await.map_err(|e| {
         tracing::error!("list_tokens failed: {}", e);
@@ -142,9 +183,12 @@ pub async fn list_tokens(
 /// POST /api/v1/tokens — create a new virtual token
 pub async fn create_token(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreateTokenRequest>,
 ) -> Result<(StatusCode, Json<CreateTokenResponse>), StatusCode> {
-    let project_id = payload.project_id.unwrap_or_else(default_project_id);
+    auth.require_scope("tokens:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = payload.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     // Validate upstream URL (SSRF protection — same as CLI)
     let url = reqwest::Url::parse(&payload.upstream_url).map_err(|_| {
@@ -191,12 +235,45 @@ pub async fn create_token(
     ))
 }
 
+/// DELETE /api/v1/tokens/:id — revoke a token
+pub async fn revoke_token(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    auth.require_scope("tokens:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    // Verify the token belongs to the org by looking it up first
+    let token = state.db.get_token(&id).await.map_err(|e| {
+        tracing::error!("revoke_token lookup failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    if let Some(ref t) = token {
+        verify_project_ownership(&state, auth.org_id, t.project_id).await?;
+    }
+
+    let revoked = state.db.revoke_token(&id).await.map_err(|e| {
+        tracing::error!("revoke_token failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if revoked {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+
+
 /// GET /api/v1/approvals — list pending HITL requests
 pub async fn list_approvals(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Vec<crate::models::approval::ApprovalRequest>>, StatusCode> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    auth.require_scope("approvals:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     let approvals = state
         .db
@@ -213,10 +290,13 @@ pub async fn list_approvals(
 /// POST /api/v1/approvals/:id/decision — approve or reject a request
 pub async fn decide_approval(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id_str): Path<String>,
     Query(params): Query<PaginationParams>,
     Json(payload): Json<DecisionRequest>,
 ) -> Result<Json<DecisionResponse>, StatusCode> {
+    auth.require_scope("approvals:write").map_err(|_| StatusCode::FORBIDDEN)?;
+
     let id = Uuid::parse_str(&id_str).map_err(|_| {
         tracing::warn!("decide_approval: invalid UUID: {}", id_str);
         StatusCode::BAD_REQUEST
@@ -232,7 +312,7 @@ pub async fn decide_approval(
     };
 
     // Extract project_id from query or default
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
     tracing::info!(
         "decide_approval: properties id={}, project_id={}, status={:?}",
         id,
@@ -255,6 +335,26 @@ pub async fn decide_approval(
         _ => "unknown",
     };
 
+    // ── M4: Notify waiting BLPOP in proxy handler via Redis ──────────────
+    // Push the decision to `hitl:decision:{id}` so the gateway's BLPOP
+    // unblocks instantly instead of waiting for the next poll interval.
+    // Fire-and-forget — Redis failure doesn't affect the HTTP response.
+    if updated {
+        let mut redis_conn = state.cache.redis();
+        let hitl_key = format!("hitl:decision:{}", id);
+        let _: redis::RedisResult<i64> = redis::AsyncCommands::lpush(
+            &mut redis_conn,
+            &hitl_key,
+            status_str,
+        ).await;
+        // Set a short TTL so the key doesn't linger if the gateway crashed
+        let _: redis::RedisResult<bool> = redis::AsyncCommands::expire(
+            &mut redis_conn,
+            &hitl_key,
+            60_i64,
+        ).await;
+    }
+
     Ok(Json(DecisionResponse {
         id,
         status: status_str.to_string(),
@@ -265,9 +365,13 @@ pub async fn decide_approval(
 /// GET /api/v1/audit — paginated audit logs
 pub async fn list_audit_logs(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Vec<AuditLogRow>>, StatusCode> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    // Audit logs require explicit scope or read-all
+    auth.require_scope("audit:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
     let limit = params.limit.unwrap_or(50).clamp(1, 200); // 1 <= limit <= 200
     let offset = params.offset.unwrap_or(0).max(0); // non-negative
 
@@ -286,10 +390,13 @@ pub async fn list_audit_logs(
 /// GET /api/v1/audit/:id — single audit log detail with bodies
 pub async fn get_audit_log(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id_str): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<AuditLogDetailRow>, StatusCode> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    auth.require_scope("audit:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
     let log_id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let log = state
@@ -371,9 +478,12 @@ pub struct RevokeResponse {
 /// GET /api/v1/policies — list all policies for a project
 pub async fn list_policies(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Vec<PolicyRow>>, StatusCode> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    auth.require_scope("policies:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     let policies = state.db.list_policies(project_id).await.map_err(|e| {
         tracing::error!("list_policies failed: {}", e);
@@ -386,9 +496,17 @@ pub async fn list_policies(
 /// POST /api/v1/policies — create a new policy
 pub async fn create_policy(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreatePolicyRequest>,
 ) -> impl IntoResponse {
-    let project_id = payload.project_id.unwrap_or_else(default_project_id);
+    if let Err(_) = auth.require_scope("policies:write") {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let project_id = payload.project_id.unwrap_or_else(|| auth.default_project_id());
+    // SEC: verify project isolation
+    if let Err(status) = verify_project_ownership(&state, auth.org_id, project_id).await {
+        return status.into_response();
+    }
     let mode = payload.mode.unwrap_or_else(|| "enforce".to_string());
     let phase = payload.phase.unwrap_or_else(|| "pre".to_string());
 
@@ -428,20 +546,23 @@ pub async fn create_policy(
             tracing::error!("create_policy failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
+                Json(json!({ "error": "internal server error" })),
             ).into_response()
         }
     }
+
 }
 
 /// PUT /api/v1/policies/:id — update a policy
 pub async fn update_policy(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id_str): Path<String>,
     Json(payload): Json<UpdatePolicyRequest>,
 ) -> Result<Json<PolicyResponse>, StatusCode> {
+    auth.require_scope("policies:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let project_id = default_project_id();
+    let project_id = auth.default_project_id();
 
     // Validate mode if provided
     if let Some(ref mode) = payload.mode {
@@ -488,10 +609,12 @@ pub async fn update_policy(
 /// DELETE /api/v1/policies/:id — soft-delete a policy
 pub async fn delete_policy(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id_str): Path<String>,
 ) -> Result<Json<DeleteResponse>, StatusCode> {
+    auth.require_scope("policies:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let project_id = default_project_id();
+    let project_id = auth.default_project_id();
 
     let deleted = state.db.delete_policy(id, project_id).await.map_err(|e| {
         tracing::error!("delete_policy failed: {}", e);
@@ -504,8 +627,10 @@ pub async fn delete_policy(
 /// GET /api/v1/policies/:id/versions — list policy version history
 pub async fn list_policy_versions(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id_str): Path<String>,
 ) -> Result<Json<Vec<crate::store::postgres::PolicyVersionRow>>, StatusCode> {
+    auth.require_scope("policies:read").map_err(|_| StatusCode::FORBIDDEN)?;
     let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let versions = state.db.list_policy_versions(id).await.map_err(|e| {
@@ -521,9 +646,12 @@ pub async fn list_policy_versions(
 /// GET /api/v1/credentials — list credential metadata (no secrets)
 pub async fn list_credentials(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Vec<CredentialMeta>>, StatusCode> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    auth.require_scope("credentials:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     let creds = state.db.list_credentials(project_id).await.map_err(|e| {
         tracing::error!("list_credentials failed: {}", e);
@@ -536,9 +664,12 @@ pub async fn list_credentials(
 /// POST /api/v1/credentials — create a new encrypted credential
 pub async fn create_credential(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreateCredentialRequest>,
 ) -> Result<(StatusCode, Json<CreateCredentialResponse>), StatusCode> {
-    let project_id = payload.project_id.unwrap_or_else(default_project_id);
+    auth.require_scope("credentials:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = payload.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     // Encrypt the secret using the vault
     let (encrypted_dek, dek_nonce, encrypted_secret, secret_nonce) =
@@ -604,28 +735,20 @@ pub async fn create_credential(
 
 // ── Token Revocation Handler ─────────────────────────────────
 
-/// DELETE /api/v1/tokens/:id — revoke a token
-pub async fn revoke_token(
-    State(state): State<Arc<AppState>>,
-    Path(token_id): Path<String>,
-) -> Result<Json<RevokeResponse>, StatusCode> {
-    let revoked = state.db.revoke_token(&token_id).await.map_err(|e| {
-        tracing::error!("revoke_token failed: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
 
-    Ok(Json(RevokeResponse { token_id, revoked }))
-}
 
 // ── Token Usage Handler ──────────────────────────────────────
 
 /// GET /api/v1/tokens/:id/usage — per-token usage analytics (24h)
 pub async fn get_token_usage(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Path(token_id): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<crate::models::analytics::TokenUsageStats>, StatusCode> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    auth.require_scope("tokens:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     let stats = state
         .db
@@ -644,15 +767,25 @@ pub async fn get_token_usage(
 /// GET /api/v1/audit/stream — Server-Sent Events live audit tail
 pub async fn stream_audit_logs(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    // SEC: scope check (SSE handler can't return Result, so we filter silently on auth failure)
+    let has_scope = auth.require_scope("audit:read").is_ok();
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    let project_ok = verify_project_ownership(&state, auth.org_id, project_id).await.is_ok();
+    let authorized = has_scope && project_ok;
 
     let stream = stream::unfold(
-        (state, project_id, None::<chrono::DateTime<chrono::Utc>>),
-        |(state, project_id, last_seen)| async move {
+        (state, project_id, None::<chrono::DateTime<chrono::Utc>>, authorized),
+        |(state, project_id, last_seen, authorized)| async move {
             // Poll every 2 seconds
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            // If not authorized, just send heartbeats (no data)
+            if !authorized {
+                return Some((Ok(Event::default().comment("heartbeat")), (state, project_id, last_seen, authorized)));
+            }
 
             let rows = state
                 .db
@@ -672,12 +805,12 @@ pub async fn stream_audit_logs(
 
             if new_rows.is_empty() {
                 // Send a heartbeat comment to keep connection alive
-                Some((Ok(Event::default().comment("heartbeat")), (state, project_id, next_cursor)))
+                Some((Ok(Event::default().comment("heartbeat")), (state, project_id, next_cursor, authorized)))
             } else {
                 let data = serde_json::to_string(&new_rows).unwrap_or_default();
                 Some((
                     Ok(Event::default().data(data).event("audit")),
-                    (state, project_id, next_cursor),
+                    (state, project_id, next_cursor, authorized),
                 ))
             }
         },
@@ -691,10 +824,12 @@ pub async fn stream_audit_logs(
 /// GET /api/v1/notifications — list notifications
 pub async fn list_notifications(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Vec<crate::models::notification::Notification>>, StatusCode> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
-    // Default limit 20
+    auth.require_scope("notifications:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
     let limit = 20;
 
     let notifs = state
@@ -712,9 +847,12 @@ pub async fn list_notifications(
 /// GET /api/v1/notifications/unread — count unread
 pub async fn count_unread_notifications(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    auth.require_scope("notifications:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     let count = state
         .db
@@ -731,10 +869,11 @@ pub async fn count_unread_notifications(
 /// POST /api/v1/notifications/:id/read — mark as read
 pub async fn mark_notification_read(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id_str): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let project_id = default_project_id();
+    let project_id = auth.default_project_id();
 
     let success = state
         .db
@@ -751,9 +890,10 @@ pub async fn mark_notification_read(
 /// POST /api/v1/notifications/read-all — mark all as read
 pub async fn mark_all_notifications_read(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
 
     let success = state
         .db
@@ -782,9 +922,12 @@ pub struct CreateServiceRequest {
 /// GET /api/v1/services — list all registered services for a project
 pub async fn list_services(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Vec<crate::models::service::Service>>, StatusCode> {
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    auth.require_scope("services:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
     let services = state
         .db
         .list_services(project_id)
@@ -799,9 +942,41 @@ pub async fn list_services(
 /// POST /api/v1/services — register a new external service
 pub async fn create_service(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreateServiceRequest>,
 ) -> Result<(StatusCode, Json<crate::models::service::Service>), StatusCode> {
-    let project_id = payload.project_id.unwrap_or_else(default_project_id);
+    auth.require_scope("services:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = payload.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    // SEC: Validate base_url (SSRF protection)
+    let url = reqwest::Url::parse(&payload.base_url).map_err(|_| {
+        tracing::warn!("create_service: invalid base_url: {}", payload.base_url);
+        StatusCode::BAD_REQUEST
+    })?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    // Block private/reserved IPs
+    if let Some(host) = url.host_str() {
+        let blocked_hosts = [
+            "169.254.169.254", "metadata.google.internal", "metadata.internal", "0.0.0.0",
+        ];
+        if blocked_hosts.contains(&host) {
+            tracing::warn!("create_service: base_url targets blocked host: {}", host);
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            let is_private = match ip {
+                std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+                std::net::IpAddr::V6(v6) => v6.is_loopback(),
+            };
+            if is_private {
+                tracing::warn!("create_service: base_url targets private IP: {}", host);
+                return Err(StatusCode::UNPROCESSABLE_ENTITY);
+            }
+        }
+    }
 
     let credential_id = if let Some(ref cid) = payload.credential_id {
         Some(Uuid::parse_str(cid).map_err(|_| StatusCode::BAD_REQUEST)?)
@@ -833,11 +1008,14 @@ pub async fn create_service(
 /// DELETE /api/v1/services/:id — unregister a service
 pub async fn delete_service(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id_str): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("services:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let project_id = params.project_id.unwrap_or_else(default_project_id);
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     let deleted = state
         .db
@@ -849,4 +1027,795 @@ pub async fn delete_service(
         })?;
 
     Ok(Json(json!({ "deleted": deleted })))
+}
+
+// ── API Key DTOs ─────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct CreateApiKeyRequest {
+    pub name: String,
+    pub role: String, // admin | member | readonly
+    pub scopes: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+pub struct CreateApiKeyResponse {
+    pub id: Uuid,
+    pub key: String, // Only returned once
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct WhoAmIResponse {
+    pub org_id: Uuid,
+    pub user_id: Option<Uuid>,
+    pub role: String,
+    pub scopes: Vec<String>,
+}
+
+// ── API Key Handlers ─────────────────────────────────────────
+
+/// GET /api/v1/auth/keys — list API keys for the org
+pub async fn list_api_keys(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Vec<ApiKeyRow>>, StatusCode> {
+    auth.require_scope("keys:manage").map_err(|_| StatusCode::FORBIDDEN)?;
+
+    let keys = state.db.list_api_keys(auth.org_id).await.map_err(|e| {
+        tracing::error!("list_api_keys failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(keys))
+}
+
+/// POST /api/v1/auth/keys — create a new API key
+pub async fn create_api_key(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(payload): Json<CreateApiKeyRequest>,
+) -> Result<(StatusCode, Json<CreateApiKeyResponse>), StatusCode> {
+    auth.require_scope("keys:manage").map_err(|_| StatusCode::FORBIDDEN)?;
+
+    // Generate key: ak_live_<8-char-prefix>_<32-char-hex>
+    // Prefix comes from org_id (first 8 chars)
+    let org_prefix = &auth.org_id.to_string()[..8];
+    let mut random_bytes = [0u8; 16];
+    use aes_gcm::aead::OsRng;
+    use rand::RngCore;
+    OsRng.fill_bytes(&mut random_bytes);
+    let random_hex = hex::encode(random_bytes);
+    let key = format!("ak_live_{}_{}", org_prefix, random_hex);
+
+    // Hash it
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_bytes());
+    let key_hash = hex::encode(hasher.finalize());
+
+    let scopes = payload.scopes.unwrap_or_default();
+    let scopes_json = serde_json::to_value(&scopes).unwrap();
+
+    let id = state
+        .db
+        .create_api_key(
+            auth.org_id,
+            auth.user_id,
+            &payload.name,
+            &key_hash,
+            org_prefix,
+            &payload.role,
+            scopes_json,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("create_api_key failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateApiKeyResponse {
+            id,
+            key, // Return the raw key only once!
+            message: "Save this key now. It will never be shown again.".into(),
+        }),
+    ))
+}
+
+/// DELETE /api/v1/auth/keys/:id — revoke an API key
+pub async fn revoke_api_key(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    auth.require_scope("keys:manage").map_err(|_| StatusCode::FORBIDDEN)?;
+
+    let found = state.db.revoke_api_key(id, auth.org_id).await.map_err(|e| {
+        tracing::error!("revoke_api_key failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if found {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+/// GET /api/v1/auth/whoami — current identity
+pub async fn whoami(Extension(auth): Extension<AuthContext>) -> Json<WhoAmIResponse> {
+    Json(WhoAmIResponse {
+        org_id: auth.org_id,
+        user_id: auth.user_id,
+        role: format!("{:?}", auth.role),
+        scopes: auth.scopes,
+    })
+}
+
+// ── Billing / Metering ───────────────────────────────────────
+
+/// GET /api/v1/billing/usage — get current usage
+pub async fn get_org_usage(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Option<UsageMeterRow>>, StatusCode> {
+    // Current month period (naive date YYYY-MM-01)
+    use chrono::{Datelike, Utc};
+    let now = Utc::now();
+    let period = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap();
+
+    let usage = state.db.get_usage(auth.org_id, period).await.map_err(|e| {
+        tracing::error!("get_org_usage failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(usage))
+}
+
+// ── Per-Token Analytics ──────────────────────────────────────
+
+/// GET /api/v1/analytics/tokens — summary of all tokens
+pub async fn get_token_analytics(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Vec<TokenSummary>>, StatusCode> {
+    auth.require_scope("analytics:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    let summary = state.db.get_token_summary(project_id).await.map_err(|e| {
+        tracing::error!("get_token_analytics failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(summary))
+}
+
+/// GET /api/v1/analytics/tokens/:id/volume — hourly volume for a token
+pub async fn get_token_volume(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(token_id): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Vec<TokenVolumeStat>>, StatusCode> {
+    auth.require_scope("analytics:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    let stats = state
+        .db
+        .get_token_volume_24h(project_id, &token_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("get_token_volume failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(stats))
+}
+
+/// GET /api/v1/analytics/tokens/:id/status — status distribution for a token
+pub async fn get_token_status(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(token_id): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Vec<TokenStatusStat>>, StatusCode> {
+    auth.require_scope("analytics:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    let stats = state
+        .db
+        .get_token_status_distribution_24h(project_id, &token_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("get_token_status failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(stats))
+}
+
+/// GET /api/v1/analytics/tokens/:id/latency — latency percentiles for a token
+pub async fn get_token_latency(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(token_id): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<TokenLatencyStat>, StatusCode> {
+    auth.require_scope("analytics:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    let stats = state
+        .db
+        .get_token_latency_percentiles_24h(project_id, &token_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("get_token_latency failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(stats))
+}
+
+/// GET /api/v1/health/upstreams — current status of all tracked upstreams
+pub async fn get_upstream_health(
+    State(state): State<Arc<AppState>>,
+    Extension(_auth): Extension<AuthContext>,
+) -> Json<Vec<crate::proxy::loadbalancer::UpstreamStatus>> {
+    Json(state.lb.get_all_status())
+}
+
+// ── Spend Cap Handlers ───────────────────────────────────────────
+
+/// Verify that a token exists and belongs to the caller's project.
+/// Returns the token's project_id on success.
+async fn verify_token_ownership(
+    state: &Arc<AppState>,
+    token_id: &str,
+    auth: &AuthContext,
+) -> Result<(), StatusCode> {
+    let token = state.db.get_token(token_id).await.map_err(|e| {
+        tracing::error!("verify_token_ownership DB error: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    match token {
+        Some(t) if t.project_id == auth.default_project_id() => Ok(()),
+        Some(_) => {
+            tracing::warn!(token_id, "spend cap access denied: token belongs to different project");
+            Err(StatusCode::NOT_FOUND) // Don't reveal existence to other projects
+        }
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// Validate a webhook URL: must be HTTPS (or HTTP in dev), no private/reserved IPs.
+fn validate_webhook_url(url_str: &str) -> Result<(), StatusCode> {
+    // Must be a valid URL
+    let parsed = url::Url::parse(url_str).map_err(|_| {
+        tracing::warn!(url = url_str, "invalid webhook URL");
+        StatusCode::UNPROCESSABLE_ENTITY
+    })?;
+
+    // Scheme check
+    match parsed.scheme() {
+        "https" => {},
+        "http" => {
+            // Allow HTTP only for localhost in development
+            let host = parsed.host_str().unwrap_or("");
+            if host != "localhost" && host != "127.0.0.1" && host != "[::1]" {
+                tracing::warn!(url = url_str, "webhook URL must use HTTPS");
+                return Err(StatusCode::UNPROCESSABLE_ENTITY);
+            }
+        }
+        _ => {
+            tracing::warn!(url = url_str, "webhook URL has unsupported scheme");
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+
+    // Block private/reserved hosts
+    let host = parsed.host_str().unwrap_or("");
+    let blocked_hosts = [
+        "169.254.169.254",   // Cloud metadata
+        "metadata.google.internal",
+        "metadata.internal",
+        "0.0.0.0",
+    ];
+    if blocked_hosts.contains(&host) {
+        tracing::warn!(url = url_str, "webhook URL targets blocked host");
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // Block common private IP ranges
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let is_private = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback() || v4.is_private() || v4.is_link_local()
+                    || v4.octets()[0] == 169 && v4.octets()[1] == 254 // link-local
+            }
+            std::net::IpAddr::V6(v6) => v6.is_loopback(),
+        };
+        if is_private {
+            tracing::warn!(url = url_str, "webhook URL targets private IP");
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+
+    Ok(())
+}
+
+/// GET /api/v1/tokens/:id/spend — current spend status + caps for a token
+pub async fn get_spend_caps(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(token_id): Path<String>,
+) -> Result<Json<crate::middleware::spend::SpendStatus>, StatusCode> {
+    // SEC-04: scope check
+    auth.require_scope("tokens:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    // SEC-05: ownership check
+    verify_token_ownership(&state, &token_id, &auth).await?;
+
+    crate::middleware::spend::get_spend_status(state.db.pool(), &state.cache, &token_id)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::error!("get_spend_caps failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+#[derive(Deserialize)]
+pub struct UpsertSpendCapRequest {
+    pub period: String,      // "daily" | "monthly"
+    pub limit_usd: f64,
+}
+
+/// PUT /api/v1/tokens/:id/spend — set or update a spend cap
+pub async fn upsert_spend_cap(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(token_id): Path<String>,
+    Json(payload): Json<UpsertSpendCapRequest>,
+) -> Result<StatusCode, StatusCode> {
+    // SEC-04: scope check
+    auth.require_scope("tokens:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    // SEC-05: ownership check
+    verify_token_ownership(&state, &token_id, &auth).await?;
+
+    if payload.period != "daily" && payload.period != "monthly" {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let limit = rust_decimal::Decimal::try_from(payload.limit_usd)
+        .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
+    // BUG-02: reject zero or negative limits
+    if limit <= rust_decimal::Decimal::ZERO {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let project_id = auth.default_project_id();
+
+    crate::middleware::spend::upsert_spend_cap(state.db.pool(), &token_id, project_id, &payload.period, limit)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|e| {
+            tracing::error!("upsert_spend_cap failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+/// DELETE /api/v1/tokens/:id/spend/:period — remove a spend cap
+pub async fn delete_spend_cap(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path((token_id, period)): Path<(String, String)>,
+) -> Result<StatusCode, StatusCode> {
+    // SEC-04: scope check
+    auth.require_scope("tokens:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    // SEC-05: ownership check
+    verify_token_ownership(&state, &token_id, &auth).await?;
+
+    crate::middleware::spend::delete_spend_cap(state.db.pool(), &token_id, &period)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(|e| {
+            tracing::error!("delete_spend_cap failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
+}
+
+// ── Webhook Handlers ─────────────────────────────────────────────
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct WebhookRow {
+    pub id: uuid::Uuid,
+    pub project_id: uuid::Uuid,
+    pub url: String,
+    pub events: Vec<String>,
+    pub is_active: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Deserialize)]
+pub struct CreateWebhookRequest {
+    pub url: String,
+    pub events: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+pub struct TestWebhookResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Deserialize)]
+pub struct TestWebhookRequest {
+    pub url: String,
+}
+
+/// GET /api/v1/webhooks — list all webhook configs for the project
+pub async fn list_webhooks(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Vec<WebhookRow>>, StatusCode> {
+    // SEC-04: scope check
+    auth.require_scope("webhooks:read").map_err(|_| StatusCode::FORBIDDEN)?;
+
+    let project_id = auth.default_project_id();
+    let rows = sqlx::query_as::<_, WebhookRow>(
+        "SELECT id, project_id, url, events, is_active, created_at FROM webhooks WHERE project_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(project_id)
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|e| {
+        tracing::error!("list_webhooks failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(rows))
+}
+
+/// POST /api/v1/webhooks — create a new webhook
+pub async fn create_webhook(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(payload): Json<CreateWebhookRequest>,
+) -> Result<(StatusCode, Json<WebhookRow>), StatusCode> {
+    // SEC-04: scope check
+    auth.require_scope("webhooks:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    // SEC-09: validate webhook URL
+    validate_webhook_url(&payload.url)?;
+
+    let project_id = auth.default_project_id();
+    let events = payload.events.unwrap_or_default();
+
+    let row = sqlx::query_as::<_, WebhookRow>(
+        r#"
+        INSERT INTO webhooks (project_id, url, events)
+        VALUES ($1, $2, $3)
+        RETURNING id, project_id, url, events, is_active, created_at
+        "#,
+    )
+    .bind(project_id)
+    .bind(&payload.url)
+    .bind(&events)
+    .fetch_one(state.db.pool())
+    .await
+    .map_err(|e| {
+        tracing::error!("create_webhook failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok((StatusCode::CREATED, Json(row)))
+}
+
+/// DELETE /api/v1/webhooks/:id — remove a webhook
+pub async fn delete_webhook(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    // SEC-04: scope check
+    auth.require_scope("webhooks:write").map_err(|_| StatusCode::FORBIDDEN)?;
+
+    let id = uuid::Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let project_id = auth.default_project_id();
+
+    sqlx::query("DELETE FROM webhooks WHERE id = $1 AND project_id = $2")
+        .bind(id)
+        .bind(project_id)
+        .execute(state.db.pool())
+        .await
+        .map_err(|e| {
+            tracing::error!("delete_webhook failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /api/v1/webhooks/test — send a test event to a URL
+pub async fn test_webhook(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(payload): Json<TestWebhookRequest>,
+) -> Result<Json<TestWebhookResponse>, StatusCode> {
+    // SEC-04: scope check
+    auth.require_scope("webhooks:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    // SEC-02: validate URL before making outbound request
+    validate_webhook_url(&payload.url)?;
+
+    let test_event = crate::notification::webhook::WebhookEvent::policy_violation(
+        "test-token-id",
+        "Test Token",
+        "test-project-id",
+        "test-policy",
+        "This is a test webhook delivery from AIlink Gateway",
+    );
+
+    match state.webhook.send(&payload.url, &test_event).await {
+        Ok(_) => Ok(Json(TestWebhookResponse {
+            success: true,
+            message: format!("Test event delivered to {}", payload.url),
+        })),
+        Err(e) => Ok(Json(TestWebhookResponse {
+            success: false,
+            message: format!("Delivery failed: {}", e),
+        })),
+    }
+}
+
+// ── Model Pricing Handlers ────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct UpsertPricingRequest {
+    pub provider: String,
+    pub model_pattern: String,
+    pub input_per_m: rust_decimal::Decimal,
+    pub output_per_m: rust_decimal::Decimal,
+}
+
+#[derive(Serialize)]
+pub struct PricingEntryResponse {
+    pub id: uuid::Uuid,
+    pub provider: String,
+    pub model_pattern: String,
+    pub input_per_m: rust_decimal::Decimal,
+    pub output_per_m: rust_decimal::Decimal,
+    pub is_active: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// GET /api/v1/pricing — list all active model pricing entries
+pub async fn list_pricing(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Vec<PricingEntryResponse>>, StatusCode> {
+    auth.require_scope("pricing:read").map_err(|_| StatusCode::FORBIDDEN)?;
+
+    let rows = state.db.list_model_pricing().await.map_err(|e| {
+        tracing::error!("list_pricing failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let resp = rows.into_iter().map(|r| PricingEntryResponse {
+        id: r.id,
+        provider: r.provider,
+        model_pattern: r.model_pattern,
+        input_per_m: r.input_per_m,
+        output_per_m: r.output_per_m,
+        is_active: r.is_active,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+    }).collect();
+
+    Ok(Json(resp))
+}
+
+// ── Analytics Handlers ───────────────────────────────────────
+
+/// GET /api/v1/analytics/summary — aggregated stats for a time range
+pub async fn get_analytics_summary(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<PaginationParams>,
+    Query(range): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<crate::models::analytics::AnalyticsSummary>, StatusCode> {
+    auth.require_scope("analytics:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    let hours = range.get("range").and_then(|s| s.parse().ok()).unwrap_or(24);
+
+    let summary = state.db.get_analytics_summary(project_id, hours).await.map_err(|e| {
+        tracing::error!("get_analytics_summary failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(summary))
+}
+
+/// GET /api/v1/analytics/timeseries — timeseries data for charts
+pub async fn get_analytics_timeseries(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<PaginationParams>,
+    Query(range): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Vec<crate::models::analytics::AnalyticsTimeseriesPoint>>, StatusCode> {
+    auth.require_scope("analytics:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    let hours = range.get("range").and_then(|s| s.parse().ok()).unwrap_or(24);
+
+    let points = state.db.get_analytics_timeseries(project_id, hours).await.map_err(|e| {
+        tracing::error!("get_analytics_timeseries failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(points))
+}
+
+/// PUT /api/v1/pricing — create or update a pricing entry
+pub async fn upsert_pricing(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(payload): Json<UpsertPricingRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("pricing:write").map_err(|_| StatusCode::FORBIDDEN)?;
+
+    if payload.provider.is_empty() || payload.model_pattern.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // SEC: Validate model_pattern as regex to prevent ReDoS when compiled during cost lookups
+    if regex::RegexBuilder::new(&payload.model_pattern)
+        .size_limit(1_000_000)
+        .build()
+        .is_err()
+    {
+        tracing::warn!("upsert_pricing: invalid or too complex model_pattern regex: {}", payload.model_pattern);
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    let id = state.db.upsert_model_pricing(
+        &payload.provider,
+        &payload.model_pattern,
+        payload.input_per_m,
+        payload.output_per_m,
+    ).await.map_err(|e| {
+        tracing::error!("upsert_pricing failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Reload cache so cost calculations pick up the change immediately
+    match state.db.list_model_pricing().await {
+        Ok(rows) => {
+            let entries = rows.into_iter().map(|r| crate::models::pricing_cache::PricingEntry {
+                provider: r.provider,
+                model_pattern: r.model_pattern,
+                input_per_m: r.input_per_m,
+                output_per_m: r.output_per_m,
+            }).collect();
+            state.pricing.reload(entries).await;
+        }
+        Err(e) => tracing::warn!("Failed to reload pricing cache after upsert: {}", e),
+    }
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// DELETE /api/v1/pricing/:id — soft-delete a pricing entry
+pub async fn delete_pricing(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("pricing:write").map_err(|_| StatusCode::FORBIDDEN)?;
+
+    let deleted = state.db.delete_model_pricing(id).await.map_err(|e| {
+        tracing::error!("delete_pricing failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    if deleted {
+        // Reload cache so cost calculations pick up the change immediately
+        match state.db.list_model_pricing().await {
+            Ok(rows) => {
+                let entries = rows.into_iter().map(|r| crate::models::pricing_cache::PricingEntry {
+                    provider: r.provider,
+                    model_pattern: r.model_pattern,
+                    input_per_m: r.input_per_m,
+                    output_per_m: r.output_per_m,
+                }).collect();
+                state.pricing.reload(entries).await;
+            }
+            Err(e) => tracing::warn!("Failed to reload pricing cache after delete: {}", e),
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "id": id, "deleted": deleted })))
+}
+
+// ── System Settings Handlers ─────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct UpdateSettingsRequest {
+    pub settings: std::collections::HashMap<String, serde_json::Value>,
+}
+
+pub async fn get_settings(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<std::collections::HashMap<String, serde_json::Value>>, StatusCode> {
+    auth.require_role("admin")?;
+    
+    let settings = state.db.get_all_system_settings().await
+        .map_err(|e| {
+            tracing::error!("Failed to fetch settings: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        
+    Ok(Json(settings))
+}
+
+pub async fn update_settings(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(payload): Json<UpdateSettingsRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_role("admin")?;
+    
+    for (key, value) in payload.settings {
+        state.db.set_system_setting(&key, &value, None).await
+            .map_err(|e| {
+                tracing::error!("Failed to update setting {}: {}", key, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    }
+    
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+pub async fn flush_cache(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_role("admin")?;
+    
+    // We need to use Redis directly, not the cache abstraction, or expose a flush method on Cache
+    // Since TieredCache doesn't expose flush, let's use the low-level connection if possible
+    // Or just use the cache.invalidate_all() if it existed.
+    // Looking at main.rs, TieredCache is used.
+    // Let's assume for now we can get a connection from the pool.
+    // Actually TieredCache wraps the connection manager.
+    // Let's just create a new ephemeral connection since we have the URL in config.
+    
+    let client = redis::Client::open(state.config.redis_url.as_str()).map_err(|e| {
+         tracing::error!("Failed to create Redis client: {}", e);
+         StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    
+    let mut conn = client.get_async_connection().await.map_err(|e| {
+        tracing::error!("Failed to connect to Redis: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    
+    redis::cmd("FLUSHDB")
+        .query_async::<_, ()>(&mut conn)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to flush Redis: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        
+    tracing::info!("Redis cache flushed by user {}", auth.user_id.unwrap_or_default());
+    
+    Ok(Json(serde_json::json!({ "success": true, "message": "Cache flushed successfully" })))
 }

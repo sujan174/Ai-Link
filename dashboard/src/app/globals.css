@@ -300,6 +300,18 @@
     -webkit-backdrop-filter: blur(8px);
   }
 
+  /* Scrollbar Hide */
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    /* IE and Edge */
+    scrollbar-width: none;
+    /* Firefox */
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
   /* Hover Lift */
   .hover-lift {
     transition: transform 0.2s ease, box-shadow 0.2s ease;

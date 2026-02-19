@@ -25,7 +25,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useProject } from "@/contexts/project-context";
 
-export function ProjectSwitcher({ className }: React.HTMLAttributes<HTMLDivElement>) {
+interface ProjectSwitcherProps extends React.HTMLAttributes<HTMLDivElement> {
+    collapsed?: boolean;
+}
+
+export function ProjectSwitcher({ className, collapsed }: ProjectSwitcherProps) {
     const { projects, selectedProjectId, selectProject, createProject } = useProject();
     const [open, setOpen] = React.useState(false);
     const [showNewProjectDialog, setShowNewProjectDialog] = React.useState(false);

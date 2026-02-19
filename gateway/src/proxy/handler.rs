@@ -1,3 +1,4 @@
+use rust_decimal::prelude::ToPrimitive;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -43,6 +44,7 @@ pub async fn proxy_handler(
         .map(|s| s.to_string());
 
     // TEST HOOK: Extract cost override header (only when AILINK_ENABLE_TEST_HOOKS=1)
+    // SEC: Gated by runtime env var — ensure this is NOT set in production deployments.
     let test_cost_override = if std::env::var("AILINK_ENABLE_TEST_HOOKS").unwrap_or_default() == "1" {
         headers
             .get("X-AILink-Test-Cost")
@@ -66,6 +68,19 @@ pub async fn proxy_handler(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
+    // ── Phase 5: Trace / session headers ─────────────────────
+    let session_id = headers
+        .get("x-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    let parent_span_id = headers
+        .get("x-parent-span-id")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+
+    // Detect streaming request (will be confirmed after body parse)
+    let is_streaming_req = crate::models::llm::is_streaming_request(&body);
+
     // Copy original Content-Type before consuming request
     let original_content_type = headers
         .get("content-type")
@@ -86,6 +101,18 @@ pub async fn proxy_handler(
 
     if !token.is_active {
         return Err(AppError::TokenNotFound);
+    }
+
+    // Check token expiration
+    if let Some(exp) = token.expires_at {
+        if exp < chrono::Utc::now() {
+            tracing::warn!(
+                token_id = %token.id,
+                expired_at = %exp,
+                "proxy: token rejected — expired"
+            );
+            return Err(AppError::TokenNotFound);
+        }
     }
 
     // -- 3. Load policies --
@@ -194,6 +221,7 @@ pub async fn proxy_handler(
     let mut hitl_decision = None;
     let mut hitl_timeout_str = "30m".to_string();
     let mut hitl_latency_ms = None;
+    let mut policy_rate_limited = false; // Track if any policy-based rate limit was applied
     let mut header_mutations = middleware::redact::HeaderMutations::default();
     let mut redacted_by_policy: Vec<String> = Vec::new();
 
@@ -205,42 +233,34 @@ pub async fn proxy_handler(
             }
             // ── Deny ──
             Action::Deny { status: _, message } => {
-                log_audit_entry(
-                    &state,
-                    request_id,
-                    token.project_id,
-                    token.id.clone(),
-                    agent_name,
-                    method.to_string(),
-                    path,
-                    token.upstream_url.clone(),
-                    &policies,
-                    crate::models::audit::PolicyResult::Deny {
-                        policy: triggered.policy_name.clone(),
-                        reason: message.clone(),
-                    },
-                    false,
-                    None,
-                    None,
-                    None,
-                    start.elapsed().as_millis() as u64,
-                    None,
-                    if shadow_violations.is_empty() {
-                        None
-                    } else {
-                        Some(shadow_violations)
-                    },
-                    None,
-                    // Phase 4: no body/tokens for early deny
-                    0, None, None, None, None, None, None, None, None,
+                let mut audit = base_audit(
+                    request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                    &token.upstream_url, &policies, false, None, None,
                     user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+                    session_id.clone(), parent_span_id.clone(),
                 );
+                audit.policy_result = Some(crate::models::audit::PolicyResult::Deny {
+                    policy: triggered.policy_name.clone(),
+                    reason: message.clone(),
+                });
+                audit.response_latency_ms = start.elapsed().as_millis() as u64;
+                audit.shadow_violations = if shadow_violations.is_empty() { None } else { Some(shadow_violations) };
+                audit.emit(&state);
                 
-                // Phase 5: Emit notification
+                // Phase 5: Emit notification + webhook
                 let state_clone = state.clone();
                 let project_id = token.project_id;
                 let title = format!("Policy Violation: {}", triggered.policy_name);
-                let body = message.clone();
+                let body_msg = message.clone();
+                let webhook_event = crate::notification::webhook::WebhookEvent::policy_violation(
+                    &token.id,
+                    &token.name,
+                    &token.project_id.to_string(),
+                    &triggered.policy_name,
+                    message,
+                );
+                let webhook_urls = state.config.webhook_urls.clone();
+                state.webhook.dispatch(&webhook_urls, webhook_event).await;
                 tokio::spawn(async move {
                     let _ = state_clone
                         .db
@@ -248,7 +268,7 @@ pub async fn proxy_handler(
                             project_id,
                             "policy_violation",
                             &title,
-                            Some(&body),
+                            Some(&body_msg),
                             None,
                         )
                         .await;
@@ -289,42 +309,35 @@ pub async fn proxy_handler(
                     .map_err(AppError::Internal)?;
 
                 if count > *max_requests {
-                    log_audit_entry(
-                        &state,
-                        request_id,
-                        token.project_id,
-                        token.id.clone(),
-                        agent_name,
-                        method.to_string(),
-                        path,
-                        token.upstream_url.clone(),
-                        &policies,
-                        crate::models::audit::PolicyResult::Deny {
-                            policy: triggered.policy_name.clone(),
-                            reason: "rate limit exceeded".to_string(),
-                        },
-                        false,
-                        None,
-                        None,
-                        None,
-                        start.elapsed().as_millis() as u64,
-                        None,
-                        if shadow_violations.is_empty() {
-                            None
-                        } else {
-                            Some(shadow_violations)
-                        },
-                        None,
-                        // Phase 4: no body/tokens for rate limit deny
-                        0, None, None, None, None, None, None, None, None,
+                    let mut audit = base_audit(
+                        request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                        &token.upstream_url, &policies, false, None, None,
                         user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+                        session_id.clone(), parent_span_id.clone(),
                     );
+                    audit.policy_result = Some(crate::models::audit::PolicyResult::Deny {
+                        policy: triggered.policy_name.clone(),
+                        reason: "rate limit exceeded".to_string(),
+                    });
+                    audit.response_latency_ms = start.elapsed().as_millis() as u64;
+                    audit.shadow_violations = if shadow_violations.is_empty() { None } else { Some(shadow_violations) };
+                    audit.emit(&state);
 
-                    // Phase 5: Emit notification
+                    // Phase 5: Emit notification + webhook
                     let state_clone = state.clone();
                     let project_id = token.project_id;
                     let title = format!("Rate Limit Exceeded: {}", triggered.policy_name);
-                    let body = format!("Limit of {} requests per {}s reached", max_requests, window_secs);
+                    let body_msg = format!("Limit of {} requests per {}s reached", max_requests, window_secs);
+                    let webhook_event = crate::notification::webhook::WebhookEvent::rate_limit_exceeded(
+                        &token.id,
+                        &token.name,
+                        &token.project_id.to_string(),
+                        &triggered.policy_name,
+                        *max_requests,
+                        window_secs,
+                    );
+                    let webhook_urls = state.config.webhook_urls.clone();
+                    state.webhook.dispatch(&webhook_urls, webhook_event).await;
                     tokio::spawn(async move {
                         let _ = state_clone
                             .db
@@ -332,7 +345,7 @@ pub async fn proxy_handler(
                                 project_id,
                                 "rate_limit_exceeded",
                                 &title,
-                                Some(&body),
+                                Some(&body_msg),
                                 None,
                             )
                             .await;
@@ -340,6 +353,7 @@ pub async fn proxy_handler(
 
                     return Err(AppError::RateLimitExceeded);
                 }
+                policy_rate_limited = true;
             }
 
             // ── Override (body mutation) ──
@@ -394,24 +408,61 @@ pub async fn proxy_handler(
             Action::Webhook {
                 url, timeout_ms, ..
             } => {
-                let url = url.clone();
-                let timeout_ms = *timeout_ms;
-                let summary = serde_json::json!({
-                    "policy": triggered.policy_name,
-                    "method": method.to_string(),
-                    "path": path,
-                    "agent": agent_name,
-                    "token_id": token.id,
-                });
-                tokio::spawn(async move {
-                    let client = reqwest::Client::new();
-                    let _ = client
-                        .post(&url)
-                        .timeout(Duration::from_millis(timeout_ms))
-                        .json(&summary)
-                        .send()
-                        .await;
-                });
+                // SEC: SSRF validation for policy-defined webhook URLs
+                if !is_safe_webhook_url(url) {
+                    tracing::warn!(
+                        policy = %triggered.policy_name,
+                        url = %url,
+                        "policy webhook blocked: SSRF protection"
+                    );
+                } else {
+                    let url = url.clone();
+                    let timeout_ms = *timeout_ms;
+                    let summary = serde_json::json!({
+                        "policy": triggered.policy_name,
+                        "method": method.to_string(),
+                        "path": path,
+                        "agent": agent_name,
+                        "token_id": token.id,
+                    });
+                    tokio::spawn(async move {
+                        let client = reqwest::Client::new();
+                        let _ = client
+                            .post(&url)
+                            .timeout(Duration::from_millis(timeout_ms))
+                            .json(&summary)
+                            .send()
+                            .await;
+                    });
+                }
+            }
+
+            // ── Content Filter (Prompt Guardrails) ──
+            Action::ContentFilter { .. } => {
+                if let Some(ref body_val) = parsed_body {
+                    let result = middleware::guardrail::check_content(body_val, &triggered.action);
+                    if result.blocked {
+                        let reason = result.reason.clone().unwrap_or_else(|| "Content filter blocked request".to_string());
+                        tracing::warn!(
+                            policy = %triggered.policy_name,
+                            risk_score = %result.risk_score,
+                            patterns = ?result.matched_patterns,
+                            "content filter blocked request"
+                        );
+                        return Err(AppError::PolicyDenied {
+                            policy: triggered.policy_name.clone(),
+                            reason,
+                        });
+                    } else if !result.matched_patterns.is_empty() {
+                        // Patterns matched but below threshold — log as warning
+                        tracing::info!(
+                            policy = %triggered.policy_name,
+                            risk_score = %result.risk_score,
+                            patterns = ?result.matched_patterns,
+                            "content filter: patterns matched but below threshold"
+                        );
+                    }
+                }
             }
 
             // ── Redact (pre-flight, request-side) ──
@@ -450,34 +501,68 @@ pub async fn proxy_handler(
         }
     }
 
-    // -- 3.5 Check Spend Cap (legacy, still uses old middleware) --
-    if let Err(e) = middleware::spend::check_spend_cap(&state.cache, &token.id, &policies).await {
-        log_audit_entry(
-            &state,
-            request_id,
-            token.project_id,
-            token.id.clone(),
-            agent_name,
-            method.to_string(),
-            path,
-            token.upstream_url.clone(),
-            &policies,
-            crate::models::audit::PolicyResult::Deny {
-                policy: "SpendCap".to_string(),
-                reason: e.to_string(),
-            },
-            false,
-            None,
-            None,
-            None,
-            start.elapsed().as_millis() as u64,
-            None,
-            None,
-            None,
-            // Phase 4: no body/tokens for spend cap deny
-            0, None, None, None, None, None, None, None, None,
+    // -- 3.4 Default rate limit (applied if no policy-based RateLimit was triggered) --
+    if !policy_rate_limited && state.config.default_rate_limit > 0 {
+        let rl_key = format!("rl:default:tok:{}", token.id);
+        let count = state
+            .cache
+            .increment(&rl_key, state.config.default_rate_limit_window)
+            .await
+            .map_err(AppError::Internal)?;
+
+        if count > state.config.default_rate_limit {
+            tracing::warn!(
+                token_id = %token.id,
+                count = count,
+                limit = state.config.default_rate_limit,
+                window_secs = state.config.default_rate_limit_window,
+                "default rate limit exceeded"
+            );
+            let mut audit = base_audit(
+                request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                &token.upstream_url, &policies, false, None, None,
+                user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+                session_id.clone(), parent_span_id.clone(),
+            );
+            audit.policy_result = Some(crate::models::audit::PolicyResult::Deny {
+                policy: "DefaultRateLimit".to_string(),
+                reason: format!(
+                    "default rate limit of {} req/{}s exceeded",
+                    state.config.default_rate_limit, state.config.default_rate_limit_window
+                ),
+            });
+            audit.response_latency_ms = start.elapsed().as_millis() as u64;
+            audit.shadow_violations = if shadow_violations.is_empty() { None } else { Some(shadow_violations) };
+            audit.emit(&state);
+            return Err(AppError::RateLimitExceeded);
+        }
+    }
+
+    // -- 3.5 Check Spend Cap --
+    if let Err(e) = middleware::spend::check_spend_cap(&state.cache, state.db.pool(), &token.id).await {
+        let mut audit = base_audit(
+            request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+            &token.upstream_url, &policies, false, None, None,
             user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+            session_id.clone(), parent_span_id.clone(),
         );
+        audit.policy_result = Some(crate::models::audit::PolicyResult::Deny {
+            policy: "SpendCap".to_string(),
+            reason: e.to_string(),
+        });
+        audit.response_latency_ms = start.elapsed().as_millis() as u64;
+        audit.emit(&state);
+
+        // Webhook dispatch
+        let webhook_event = crate::notification::webhook::WebhookEvent::spend_cap_exceeded(
+            &token.id,
+            &token.name,
+            &token.project_id.to_string(),
+            &e.to_string(),
+        );
+        let webhook_urls = state.config.webhook_urls.clone();
+        state.webhook.dispatch(&webhook_urls, webhook_event).await;
+
         return Err(AppError::SpendCapReached);
     }
 
@@ -547,118 +632,86 @@ pub async fn proxy_handler(
 
         let timeout_secs = middleware::policy::parse_window_secs(&hitl_timeout_str).unwrap_or(1800); // default 30m
 
-        // Poll for status
+        // ── M4: Redis BLPOP for instant HITL notification ──────────────────
+        // Instead of polling the DB every second, we block on a Redis list key.
+        // The dashboard handler pushes the decision to `hitl:decision:{id}` on approve/reject.
+        // This reduces HITL latency from ~1s to <100ms and eliminates DB polling load.
+        let mut redis_conn = state.cache.redis();
+        let hitl_key = format!("hitl:decision:{}", approval_id);
         let mut approved = false;
-        for _ in 0..timeout_secs {
-            let status = state
-                .db
-                .get_approval_status(approval_id)
-                .await
-                .map_err(AppError::Internal)?;
 
-            match status.as_str() {
-                "approved" => {
-                    approved = true;
-                    hitl_decision = Some("approved".to_string());
-                    break;
-                }
-                "rejected" => {
-                    hitl_decision = Some("rejected".to_string());
-                    log_audit_entry(
-                        &state,
-                        request_id,
-                        token.project_id,
-                        token.id.clone(),
-                        agent_name,
-                        method.to_string(),
-                        path,
-                        token.upstream_url.clone(),
-                        &policies,
-                        crate::models::audit::PolicyResult::HitlRejected,
-                        true,
-                        hitl_decision.clone(),
-                        Some(hitl_start.elapsed().as_millis() as i32),
-                        None,
-                        start.elapsed().as_millis() as u64,
-                        None,
-                        if shadow_violations.is_empty() {
-                            None
-                        } else {
-                            Some(shadow_violations.clone())
-                        },
-                        None,
-                        // Phase 4: no body/tokens for HITL rejected
-                        0, None, None, None, None, None, None, None, None,
-                        user_id.clone(), tenant_id.clone(), external_request_id.clone(),
-                    );
-                    return Err(AppError::ApprovalRejected);
-                }
-                "expired" => {
-                    hitl_decision = Some("expired".to_string());
-                    log_audit_entry(
-                        &state,
-                        request_id,
-                        token.project_id,
-                        token.id.clone(),
-                        agent_name,
-                        method.to_string(),
-                        path,
-                        token.upstream_url.clone(),
-                        &policies,
-                        crate::models::audit::PolicyResult::HitlTimeout,
-                        true,
-                        hitl_decision.clone(),
-                        Some(hitl_start.elapsed().as_millis() as i32),
-                        None,
-                        start.elapsed().as_millis() as u64,
-                        None,
-                        if shadow_violations.is_empty() {
-                            None
-                        } else {
-                            Some(shadow_violations.clone())
-                        },
-                        None,
-                        // Phase 4: no body/tokens for HITL expired
-                        0, None, None, None, None, None, None, None, None,
-                        user_id.clone(), tenant_id.clone(), external_request_id.clone(),
-                    );
-                    return Err(AppError::ApprovalTimeout);
-                }
-                _ => {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                }
+        // BLPOP with the full timeout — returns (key, value) or nil on timeout
+        let blpop_result: redis::RedisResult<Option<(String, String)>> = redis::AsyncCommands::blpop(
+            &mut redis_conn,
+            &hitl_key,
+            timeout_secs as f64,
+        ).await;
+
+        let decision = match blpop_result {
+            Ok(Some((_key, value))) => value,
+            Ok(None) => {
+                // BLPOP timed out — fall back to a single DB check
+                state.db.get_approval_status(approval_id).await
+                    .map_err(AppError::Internal)?
+            }
+            Err(e) => {
+                // Redis error — fall back to DB polling (graceful degradation)
+                tracing::warn!("HITL Redis BLPOP failed, falling back to DB: {}", e);
+                state.db.get_approval_status(approval_id).await
+                    .map_err(AppError::Internal)?
+            }
+        };
+
+        match decision.as_str() {
+            "approved" => {
+                approved = true;
+                hitl_decision = Some("approved".to_string());
+            }
+            "rejected" => {
+                hitl_decision = Some("rejected".to_string());
+                let mut audit = base_audit(
+                    request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                    &token.upstream_url, &policies, true, hitl_decision.clone(),
+                    Some(hitl_start.elapsed().as_millis() as i32),
+                    user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+                    session_id.clone(), parent_span_id.clone(),
+                );
+                audit.policy_result = Some(crate::models::audit::PolicyResult::HitlRejected);
+                audit.response_latency_ms = start.elapsed().as_millis() as u64;
+                audit.shadow_violations = if shadow_violations.is_empty() { None } else { Some(shadow_violations.clone()) };
+                audit.emit(&state);
+                return Err(AppError::ApprovalRejected);
+            }
+            "expired" | _ => {
+                hitl_decision = Some("expired".to_string());
+                let mut audit = base_audit(
+                    request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                    &token.upstream_url, &policies, true, hitl_decision.clone(),
+                    Some(hitl_start.elapsed().as_millis() as i32),
+                    user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+                    session_id.clone(), parent_span_id.clone(),
+                );
+                audit.policy_result = Some(crate::models::audit::PolicyResult::HitlTimeout);
+                audit.response_latency_ms = start.elapsed().as_millis() as u64;
+                audit.shadow_violations = if shadow_violations.is_empty() { None } else { Some(shadow_violations.clone()) };
+                audit.emit(&state);
+                return Err(AppError::ApprovalTimeout);
             }
         }
 
         if !approved {
             hitl_decision = Some("timeout".to_string());
-            log_audit_entry(
-                &state,
-                request_id,
-                token.project_id,
-                token.id.clone(),
-                agent_name,
-                method.to_string(),
-                path,
-                token.upstream_url.clone(),
-                &policies,
-                crate::models::audit::PolicyResult::HitlTimeout,
-                true,
-                hitl_decision.clone(),
+            let mut audit = base_audit(
+                request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                &token.upstream_url, &policies, true, hitl_decision.clone(),
                 Some(hitl_start.elapsed().as_millis() as i32),
-                None,
-                start.elapsed().as_millis() as u64,
-                None,
-                if shadow_violations.is_empty() {
-                    None
-                } else {
-                    Some(shadow_violations.clone())
-                },
-                None,
-                // Phase 4: no body/tokens for HITL timeout
-                0, None, None, None, None, None, None, None, None,
                 user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+                session_id.clone(), parent_span_id.clone(),
             );
+            audit.policy_result = Some(crate::models::audit::PolicyResult::HitlTimeout);
+            audit.response_latency_ms = start.elapsed().as_millis() as u64;
+            audit.shadow_violations = if shadow_violations.is_empty() { None } else { Some(shadow_violations.clone()) };
+            audit.emit(&state);
             return Err(AppError::ApprovalTimeout);
         }
 
@@ -686,73 +739,211 @@ pub async fn proxy_handler(
                     AppError::Upstream(format!("Service not found: {}", svc_name))
                 })?;
 
-            let cred_id = service.credential_id.ok_or_else(|| {
-                AppError::Internal(anyhow::anyhow!(
-                    "Service '{}' has no credential configured",
-                    svc_name
-                ))
-            })?;
-
-            (cred_id, service.base_url.clone(), remaining_path.to_string())
+            // Service may or may not have a credential — passthrough is allowed
+            (service.credential_id, service.base_url.clone(), remaining_path.to_string())
         } else {
-            // Legacy path: use token's credential + upstream_url
-            (token.credential_id, token.upstream_url.clone(), path.clone())
+            // Loadbalancer: use weighted routing. Fallback to upstream_url if JSONB is empty.
+            let mut lb_upstreams = proxy::loadbalancer::parse_upstreams(token.upstreams.as_ref());
+
+            if lb_upstreams.is_empty() {
+                // Legacy/Single upstream mode: create a single target from upstream_url
+                lb_upstreams.push(proxy::loadbalancer::UpstreamTarget {
+                    url: token.upstream_url.clone(),
+                    weight: 100,
+                    priority: 1,
+                    credential_id: None, // Will fallback to token.credential_id below
+                });
+            }
+
+            // DEBUG LOGGING
+            tracing::info!(token_id = %token.id, upstream_count = lb_upstreams.len(), "Calling LB select");
+
+            // Always route through LB to ensure health tracking
+            if let Some(idx) = state.lb.select(&token.id, &lb_upstreams) {
+                let target = &lb_upstreams[idx];
+                tracing::info!(token_id = %token.id, selected_url = %target.url, "LB selected target");
+                // Use target-specific credential if set, otherwise token default
+                let effective_cred_id = target.credential_id.or(token.credential_id);
+                (effective_cred_id, target.url.clone(), path.clone())
+            } else {
+                // All upstreams unhealthy — fall back to primary as last resort
+                tracing::error!("all upstreams unhealthy, falling back to primary");
+                (token.credential_id, token.upstream_url.clone(), path.clone())
+            }
         };
 
-    let (mut real_key, _provider, injection_mode, injection_header) = state
-        .vault
-        .retrieve(&effective_credential_id.to_string())
-        .await
-        .map_err(AppError::Internal)?;
+    // -- 4.1 Credential injection vs passthrough --
+    // If credential_id is Some, decrypt from vault and inject.
+    // If None, operate in passthrough mode: forward X-Real-Authorization from the agent.
+    struct InjectedCredential {
+        key: String,
+        mode: String,
+        header: String,
+    }
+
+    let injected_cred = if let Some(cred_id) = effective_credential_id {
+        let (real_key, _provider, injection_mode, injection_header) = state
+            .vault
+            .retrieve(&cred_id.to_string())
+            .await
+            .map_err(AppError::Internal)?;
+        Some(InjectedCredential {
+            key: real_key,
+            mode: injection_mode,
+            header: injection_header,
+        })
+    } else {
+        None // Passthrough mode
+    };
 
     // -- 5. Build upstream request --
     let upstream_url = proxy::transform::rewrite_url(&effective_upstream_url, &effective_path);
 
+    // ── Response Cache: check for cache hit BEFORE upstream call ──
+    let skip_cache = proxy::response_cache::should_skip_cache(&headers)
+        || is_streaming_req
+        || method != Method::POST;
+    let cache_key = if !skip_cache {
+        parsed_body.as_ref().and_then(|b| {
+            proxy::response_cache::compute_cache_key(&token.id, b)
+        })
+    } else {
+        None
+    };
+
+    if let Some(ref key) = cache_key {
+        if let Some(cached) = proxy::response_cache::get_cached(&state.cache, key).await {
+            tracing::info!(cache_key = %key, "response cache HIT");
+            let mut audit = base_audit(
+                request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
+                user_id, tenant_id, external_request_id,
+                session_id, parent_span_id,
+            );
+            audit.policy_result = Some(crate::models::audit::PolicyResult::Allow);
+            audit.upstream_status = Some(cached.status);
+            audit.response_latency_ms = start.elapsed().as_millis() as u64;
+            audit.cache_hit = true;
+            audit.model = cached.model;
+            audit.prompt_tokens = cached.prompt_tokens;
+            audit.completion_tokens = cached.completion_tokens;
+            audit.shadow_violations = if shadow_violations.is_empty() { None } else { Some(shadow_violations) };
+            audit.emit(&state);
+
+            let axum_status = StatusCode::from_u16(cached.status)
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            return Response::builder()
+                .status(axum_status)
+                .header("content-type", cached.content_type)
+                .header("x-ailink-cache", "HIT")
+                .body(Body::from(cached.body))
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("cached response build failed: {}", e)));
+        }
+    }
+
+    // ── Universal Model Router: translate request for non-OpenAI providers ──
+    let detected_model = parsed_body.as_ref()
+        .and_then(|b| b.get("model"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    let detected_provider = if !detected_model.is_empty() {
+        proxy::model_router::detect_provider(&detected_model, &effective_upstream_url)
+    } else {
+        proxy::model_router::Provider::Unknown
+    };
+
+    // Translate request body if needed (OpenAI → Anthropic/Gemini)
+    let router_translated = if let Some(ref body_val) = parsed_body {
+        proxy::model_router::translate_request(detected_provider, body_val)
+    } else {
+        None
+    };
+
+    // Rewrite upstream URL for the target provider
+    let upstream_url = if detected_provider != proxy::model_router::Provider::OpenAI
+        && detected_provider != proxy::model_router::Provider::Unknown
+    {
+        proxy::model_router::rewrite_upstream_url(detected_provider, &upstream_url, &detected_model)
+    } else {
+        upstream_url
+    };
+
     // Use modified body if overrides were applied, otherwise original
-    let final_body = if let Some(ref modified) = parsed_body {
+    let final_body = if let Some(ref translated) = router_translated {
+        // Model router translated the body — use translated version
+        serde_json::to_vec(translated).unwrap_or_else(|_| body.to_vec())
+    } else if let Some(ref modified) = parsed_body {
         // Check if body was modified by Override action
         serde_json::to_vec(modified).unwrap_or_else(|_| body.to_vec())
     } else {
         body.to_vec()
     };
 
-    // Build upstream headers: strip Authorization, inject real key based on injection_mode
+    // Build upstream headers
     let mut upstream_headers = reqwest::header::HeaderMap::new();
 
-    let header_name: reqwest::header::HeaderName = injection_header.parse().map_err(|_| {
-        AppError::Internal(anyhow::anyhow!(
-            "invalid injection_header: {}",
-            injection_header
-        ))
-    })?;
+    // Track injection mode for audit logging
+    let _injection_mode_str: String;
 
-    match injection_mode.as_str() {
-        "basic" => {
-            use base64::Engine;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&real_key);
+    if let Some(ref cred) = injected_cred {
+        // === Credential injection mode ===
+        _injection_mode_str = cred.mode.clone();
+
+        let header_name: reqwest::header::HeaderName = cred.header.parse().map_err(|_| {
+            AppError::Internal(anyhow::anyhow!(
+                "invalid injection_header: {}",
+                cred.header
+            ))
+        })?;
+
+        match cred.mode.as_str() {
+            "basic" => {
+                use base64::Engine;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&cred.key);
+                upstream_headers.insert(
+                    header_name,
+                    reqwest::header::HeaderValue::from_str(&format!("Basic {}", encoded))
+                        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid key format")))?,
+                );
+            }
+            "header" => {
+                upstream_headers.insert(
+                    header_name,
+                    reqwest::header::HeaderValue::from_str(&cred.key)
+                        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid key format")))?,
+                );
+            }
+            "query" => {
+                // Don't inject a header — we'll append to the URL below
+            }
+            _ => {
+                upstream_headers.insert(
+                    header_name,
+                    reqwest::header::HeaderValue::from_str(&format!("Bearer {}", cred.key))
+                        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid key format")))?,
+                );
+            }
+        }
+    } else {
+        // === Passthrough mode ===
+        // Forward the agent's own authorization via X-Real-Authorization or X-Upstream-Authorization
+        _injection_mode_str = "passthrough".to_string();
+
+        let real_auth = headers
+            .get("X-Real-Authorization")
+            .or_else(|| headers.get("X-Upstream-Authorization"))
+            .and_then(|v| v.to_str().ok());
+
+        if let Some(auth_value) = real_auth {
             upstream_headers.insert(
-                header_name,
-                reqwest::header::HeaderValue::from_str(&format!("Basic {}", encoded))
-                    .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid key format")))?,
+                "authorization",
+                reqwest::header::HeaderValue::from_str(auth_value)
+                    .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid auth header in X-Real-Authorization")))?,
             );
         }
-        "header" => {
-            upstream_headers.insert(
-                header_name,
-                reqwest::header::HeaderValue::from_str(&real_key)
-                    .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid key format")))?,
-            );
-        }
-        "query" => {
-            // Don't inject a header — we'll append to the URL below
-        }
-        _ => {
-            upstream_headers.insert(
-                header_name,
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", real_key))
-                    .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid key format")))?,
-            );
-        }
+        // If no real auth header provided, forward without Authorization.
+        // This supports upstream APIs that don't require auth (e.g., public endpoints).
     }
 
     upstream_headers.insert(
@@ -781,24 +972,28 @@ pub async fn proxy_handler(
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid method: {}", e)))?;
 
-    // Handle query param injection by appending to the URL
-    let final_upstream_url = if injection_mode == "query" {
-        let separator = if upstream_url.contains('?') { "&" } else { "?" };
-        format!(
-            "{}{}{}={}",
-            upstream_url,
-            separator,
-            injection_header,
-            urlencoding::encode(&real_key)
-        )
+    // Handle query param injection by appending to the URL (only in credential injection mode)
+    let final_upstream_url = if let Some(ref cred) = injected_cred {
+        if cred.mode == "query" {
+            let separator = if upstream_url.contains('?') { "&" } else { "?" };
+            format!(
+                "{}{}{}={}",
+                upstream_url,
+                separator,
+                cred.header,
+                urlencoding::encode(&cred.key)
+            )
+        } else {
+            upstream_url.clone()
+        }
     } else {
         upstream_url.clone()
     };
 
-    // Zero the decrypted key from memory
-    {
+    // Zero the decrypted key from memory (if credential was injected)
+    if let Some(mut cred) = injected_cred {
         use zeroize::Zeroize;
-        real_key.zeroize();
+        cred.key.zeroize();
     }
 
     // -- 5.1 Resolve Retry Config --
@@ -809,94 +1004,256 @@ pub async fn proxy_handler(
         .unwrap_or_default();
 
     // Forward with explicit timeout safety — scale for retries
+    // For streaming requests, use forward_raw (no retry, returns raw response for piping)
     let safety_secs = 65 + (retry_config.max_retries as u64 * (retry_config.max_backoff_ms / 1000 + 65));
-    let upstream_resp = match tokio::time::timeout(
-        Duration::from_secs(safety_secs),
-        state.upstream_client.forward(
-            reqwest_method,
-            &final_upstream_url,
-            upstream_headers,
-            bytes::Bytes::from(final_body),
-            &retry_config,
-        ),
-    )
-    .await
-    {
-        Ok(Ok(res)) => res,
-        Ok(Err(e)) => {
-            tracing::error!("Upstream request failed: {}", e);
-            log_audit_entry(
-                &state,
-                request_id,
-                token.project_id,
-                token.id.clone(),
-                agent_name,
-                method.to_string(),
-                path,
-                upstream_url,
-                &policies,
-                if hitl_required {
-                    crate::models::audit::PolicyResult::HitlApproved
-                } else {
-                    crate::models::audit::PolicyResult::Allow
-                },
-                hitl_required,
-                hitl_decision,
-                hitl_latency_ms,
-                Some(502),
-                start.elapsed().as_millis() as u64,
-                None,
-                if shadow_violations.is_empty() {
-                    None
-                } else {
-                    Some(shadow_violations)
-                },
-                None,
-                // Phase 4: no body/tokens for upstream failure
-                0, None, None, None, None, None, None, None, None,
-                user_id.clone(), tenant_id.clone(), external_request_id.clone(),
-            );
-            return Err(e);
+    let upstream_resp = if is_streaming_req {
+        // Streaming: no retry, direct connection
+        match tokio::time::timeout(
+            Duration::from_secs(safety_secs),
+            state.upstream_client.forward_raw(
+                reqwest_method,
+                &final_upstream_url,
+                upstream_headers,
+                bytes::Bytes::from(final_body),
+            ),
+        )
+        .await
+        {
+            Ok(Ok(res)) => {
+                state.lb.mark_healthy(&token.id, &final_upstream_url);
+                res
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Upstream streaming request failed: {}", e);
+                state.lb.mark_failed(&token.id, &final_upstream_url);
+                let mut audit = base_audit(
+                    request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                    &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
+                    user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+                    session_id.clone(), parent_span_id.clone(),
+                );
+                audit.upstream_status = Some(502);
+                audit.response_latency_ms = start.elapsed().as_millis() as u64;
+                audit.is_streaming = true;
+                audit.emit(&state);
+                return Err(e);
+            }
+            Err(_) => {
+                tracing::error!("Upstream streaming request timed out (safety net)");
+                state.lb.mark_failed(&token.id, &final_upstream_url);
+                let mut audit = base_audit(
+                    request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                    &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
+                    user_id, tenant_id, external_request_id,
+                    session_id, parent_span_id,
+                );
+                audit.upstream_status = Some(504);
+                audit.response_latency_ms = start.elapsed().as_millis() as u64;
+                audit.is_streaming = true;
+                audit.emit(&state);
+                return Err(AppError::Upstream("Upstream streaming request timed out".to_string()));
+            }
         }
-        Err(_) => {
-            tracing::error!("Upstream request timed out (safety net)");
-            log_audit_entry(
-                &state,
-                request_id,
-                token.project_id,
-                token.id.clone(),
-                agent_name,
-                method.to_string(),
-                path,
-                upstream_url,
-                &policies,
-                if hitl_required {
+    } else {
+        match tokio::time::timeout(
+            Duration::from_secs(safety_secs),
+            state.upstream_client.forward(
+                reqwest_method,
+                &final_upstream_url,
+                upstream_headers,
+                bytes::Bytes::from(final_body),
+                &retry_config,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(res)) => {
+                // Loadbalancer: mark upstream as healthy
+                state.lb.mark_healthy(&token.id, &final_upstream_url);
+                res
+            }
+            Ok(Err(e)) => {
+                tracing::error!("Upstream request failed: {}", e);
+                // Loadbalancer: mark upstream as failed
+                state.lb.mark_failed(&token.id, &final_upstream_url);
+                let mut audit = base_audit(
+                    request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                    &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
+                    user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+                    session_id.clone(), parent_span_id.clone(),
+                );
+                audit.policy_result = Some(if hitl_required {
                     crate::models::audit::PolicyResult::HitlApproved
                 } else {
                     crate::models::audit::PolicyResult::Allow
-                },
-                hitl_required,
-                hitl_decision,
-                hitl_latency_ms,
-                Some(504),
-                start.elapsed().as_millis() as u64,
-                None,
-                if shadow_violations.is_empty() {
-                    None
+                });
+                audit.upstream_status = Some(502);
+                audit.response_latency_ms = start.elapsed().as_millis() as u64;
+                audit.shadow_violations = if shadow_violations.is_empty() { None } else { Some(shadow_violations) };
+                audit.is_streaming = is_streaming_req;
+                audit.emit(&state);
+                return Err(e);
+            }
+            Err(_) => {
+                tracing::error!("Upstream request timed out (safety net)");
+                // Loadbalancer: mark upstream as failed
+                state.lb.mark_failed(&token.id, &final_upstream_url);
+                let mut audit = base_audit(
+                    request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                    &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
+                    user_id, tenant_id, external_request_id,
+                    session_id, parent_span_id,
+                );
+                audit.policy_result = Some(if hitl_required {
+                    crate::models::audit::PolicyResult::HitlApproved
                 } else {
-                    Some(shadow_violations)
-                },
-                None,
-                // Phase 4: no body/tokens for upstream timeout
-                0, None, None, None, None, None, None, None, None,
-                user_id, tenant_id, external_request_id,
-            );
-            return Err(AppError::Upstream("Upstream request timed out".to_string()));
+                    crate::models::audit::PolicyResult::Allow
+                });
+                audit.upstream_status = Some(504);
+                audit.response_latency_ms = start.elapsed().as_millis() as u64;
+                audit.shadow_violations = if shadow_violations.is_empty() { None } else { Some(shadow_violations) };
+                audit.is_streaming = is_streaming_req;
+                audit.emit(&state);
+                return Err(AppError::Upstream("Upstream request timed out".to_string()));
+            }
         }
     };
 
     let status = upstream_resp.status();
     let resp_headers = upstream_resp.headers().clone();
+
+    // ── STREAMING FAST PATH: zero-copy SSE passthrough ──────────────────────
+    // For successful streaming responses, pipe bytes directly to the client.
+    // Audit, cost tracking, and sanitization happen in a background task.
+    if is_streaming_req && status.is_success() {
+        let (stream_body, result_slot) =
+            proxy::stream_bridge::tee_sse_stream(upstream_resp, start);
+
+        // Build the SSE response immediately — this starts streaming to the client
+        let mut sse_response = axum::response::Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/event-stream")
+            .header("cache-control", "no-cache")
+            .header("x-accel-buffering", "no") // Disable nginx buffering
+            .body(stream_body)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("stream response build: {}", e)))?;
+
+        // Forward safe upstream headers (skip hop-by-hop headers)
+        for (key, value) in resp_headers.iter() {
+            let name_str = key.as_str();
+            if matches!(name_str, "content-length" | "transfer-encoding" | "connection") {
+                continue;
+            }
+            if let Ok(name) = axum::http::HeaderName::from_bytes(name_str.as_bytes()) {
+                if let Ok(val) = axum::http::HeaderValue::from_bytes(value.as_bytes()) {
+                    sse_response.headers_mut().insert(name, val);
+                }
+            }
+        }
+
+        // Spawn background task: wait for stream to finish, then audit + cost
+        let state_bg = state.clone();
+        // Extract needed token fields (TokenRow doesn't implement Clone)
+        let token_bg_id = token.id.clone();
+        let token_bg_project_id = token.project_id;
+        let token_bg_upstream_url = token.upstream_url.clone();
+        let policies_bg = policies.clone();
+        let shadow_violations_bg = shadow_violations.clone();
+        let upstream_url_bg = upstream_url.clone();
+        let path_bg = path.clone();
+        let user_id_bg = user_id.clone();
+        let tenant_id_bg = tenant_id.clone();
+        let ext_req_id_bg = external_request_id.clone();
+        let session_id_bg = session_id.clone();
+        let parent_span_id_bg = parent_span_id.clone();
+
+        tokio::spawn(async move {
+            // Wait up to 5 minutes for the stream to complete
+            let sr = proxy::stream_bridge::wait_for_stream_result(
+                &result_slot,
+                Duration::from_secs(300),
+            ).await;
+
+            let (prompt_tokens, completion_tokens, model_name, finish_reason, tool_calls, ttft_ms) =
+                if let Some(ref r) = sr {
+                    (r.prompt_tokens, r.completion_tokens, r.model.clone(),
+                     r.finish_reason.clone(), r.tool_calls.clone(), r.ttft_ms)
+                } else {
+                    (None, None, None, None, vec![], None)
+                };
+
+            // Cost tracking
+            let mut estimated_cost_usd: Option<rust_decimal::Decimal> = None;
+            if let (Some(inp), Some(out)) = (prompt_tokens, completion_tokens) {
+                let provider = if token_bg_upstream_url.contains("anthropic") {
+                    "anthropic"
+                } else if token_bg_upstream_url.contains("generativelanguage") {
+                    "google"
+                } else {
+                    "openai"
+                };
+                let model = model_name.as_deref().unwrap_or("unknown");
+                let final_cost = cost::calculate_cost(provider, model, inp, out);
+                if !final_cost.is_zero() {
+                    estimated_cost_usd = Some(final_cost);
+                    let cost_f64 = final_cost.to_f64().unwrap_or(0.0);
+                    if let Err(e) = middleware::spend::check_and_increment_spend(
+                        &state_bg.cache,
+                        state_bg.db.pool(),
+                        &token_bg_id,
+                        cost_f64,
+                    ).await {
+                        tracing::error!("Streaming: spend cap exceeded or tracking failed: {}", e);
+                    }
+                }
+            }
+
+            // Sanitize accumulated content for audit log
+            let full_content = sr.as_ref().map(|r| r.content.clone()).unwrap_or_default();
+            let sanitized_content = middleware::sanitize::sanitize_stream_content(&full_content);
+
+            // Emit audit log
+            let mut audit = base_audit(
+                request_id, token_bg_project_id, &token_bg_id, agent_name,
+                method.as_str(), &path_bg, &upstream_url_bg, &policies_bg,
+                hitl_required, hitl_decision, hitl_latency_ms,
+                user_id_bg, tenant_id_bg, ext_req_id_bg, session_id_bg, parent_span_id_bg,
+            );
+            audit.policy_result = Some(if hitl_required {
+                crate::models::audit::PolicyResult::HitlApproved
+            } else {
+                crate::models::audit::PolicyResult::Allow
+            });
+            audit.upstream_status = Some(200);
+            audit.response_latency_ms = start.elapsed().as_millis() as u64;
+            audit.is_streaming = true;
+            audit.prompt_tokens = prompt_tokens;
+            audit.completion_tokens = completion_tokens;
+            audit.model = model_name;
+            audit.finish_reason = finish_reason;
+            // Serialize tool calls to JSON Value for audit storage
+            let tool_calls_json = if tool_calls.is_empty() {
+                None
+            } else {
+                serde_json::to_value(&tool_calls).ok()
+            };
+            audit.tool_calls = tool_calls_json;
+            audit.tool_call_count = tool_calls.len() as u16;
+            audit.ttft_ms = ttft_ms;
+            audit.estimated_cost_usd = estimated_cost_usd;
+            audit.fields_redacted = if sanitized_content.redacted_types.is_empty() {
+                None
+            } else {
+                Some(sanitized_content.redacted_types)
+            };
+            audit.shadow_violations = if shadow_violations_bg.is_empty() { None } else { Some(shadow_violations_bg) };
+            audit.emit(&state_bg);
+        });
+
+        return Ok(sse_response);
+    }
+
+    // ── NON-STREAMING PATH (buffered) ────────────────────────────────────────
     let resp_body = upstream_resp
         .bytes()
         .await
@@ -904,7 +1261,31 @@ pub async fn proxy_handler(
 
     // -- 5.5 Post-flight policy evaluation --
     let mut resp_body_vec = resp_body.to_vec();
-    let parsed_resp_body: Option<serde_json::Value> = serde_json::from_slice(&resp_body_vec).ok();
+
+    // ── Universal Model Router: translate SSE streams or JSON responses ──
+    if status.is_success() && is_streaming_req {
+        // SSE stream: translate entire body from Anthropic/Gemini SSE → OpenAI SSE
+        if let Some(translated_sse) = proxy::model_router::translate_sse_body(
+            detected_provider,
+            &resp_body_vec,
+            &detected_model,
+        ) {
+            resp_body_vec = translated_sse;
+        }
+    } else if status.is_success() {
+        // Non-streaming JSON response: translate as before
+        if let Some(parsed) = serde_json::from_slice::<serde_json::Value>(&resp_body_vec).ok() {
+            if let Some(translated) = proxy::model_router::translate_response(
+                detected_provider,
+                &parsed,
+                &detected_model,
+            ) {
+                resp_body_vec = serde_json::to_vec(&translated).unwrap_or(resp_body_vec);
+            }
+        }
+    }
+
+    let mut parsed_resp_body: Option<serde_json::Value> = serde_json::from_slice(&resp_body_vec).ok();
 
     // Convert reqwest headers to axum headers for RequestContext
     let axum_resp_headers = {
@@ -996,22 +1377,31 @@ pub async fn proxy_handler(
                 Action::Webhook {
                     url, timeout_ms, ..
                 } => {
-                    let url = url.clone();
-                    let timeout_ms = *timeout_ms;
-                    let summary = serde_json::json!({
-                        "phase": "post",
-                        "policy": triggered.policy_name,
-                        "response_status": status.as_u16(),
-                    });
-                    tokio::spawn(async move {
-                        let client = reqwest::Client::new();
-                        let _ = client
-                            .post(&url)
-                            .timeout(Duration::from_millis(timeout_ms))
-                            .json(&summary)
-                            .send()
-                            .await;
-                    });
+                    // SEC: SSRF validation for policy-defined webhook URLs
+                    if !is_safe_webhook_url(url) {
+                        tracing::warn!(
+                            policy = %triggered.policy_name,
+                            url = %url,
+                            "post-flight policy webhook blocked: SSRF protection"
+                        );
+                    } else {
+                        let url = url.clone();
+                        let timeout_ms = *timeout_ms;
+                        let summary = serde_json::json!({
+                            "phase": "post",
+                            "policy": triggered.policy_name,
+                            "response_status": status.as_u16(),
+                        });
+                        tokio::spawn(async move {
+                            let client = reqwest::Client::new();
+                            let _ = client
+                                .post(&url)
+                                .timeout(Duration::from_millis(timeout_ms))
+                                .json(&summary)
+                                .send()
+                                .await;
+                        });
+                    }
                 }
                 _ => {
                     tracing::debug!(
@@ -1046,13 +1436,12 @@ pub async fn proxy_handler(
     // TEST HOOK: Allow forcing cost via header for deterministic testing
     if let Some(cost_val) = test_cost_override {
         estimated_cost_usd = Some(cost_val);
-        let _ = middleware::spend::track_spend(
+        let cost_f64 = cost_val.to_f64().unwrap_or(0.0);
+        let _ = middleware::spend::check_and_increment_spend(
             &state.cache,
             state.db.pool(),
             &token.id,
-            token.project_id,
-            cost_val,
-            &policies,
+            cost_f64,
         )
         .await;
     }
@@ -1073,17 +1462,16 @@ pub async fn proxy_handler(
 
                 if !final_cost.is_zero() {
                     estimated_cost_usd = Some(final_cost);
-                    if let Err(e) = middleware::spend::track_spend(
+                    let cost_f64 = final_cost.to_f64().unwrap_or(0.0);
+                    if let Err(e) = middleware::spend::check_and_increment_spend(
                         &state.cache,
                         state.db.pool(),
                         &token.id,
-                        token.project_id,
-                        final_cost,
-                        &policies,
+                        cost_f64,
                     )
                     .await
                     {
-                        tracing::error!("Failed to track spend: {}", e);
+                        tracing::error!("Spend cap exceeded or tracking failed: {}", e);
                     }
                 }
             }
@@ -1119,52 +1507,95 @@ pub async fn proxy_handler(
         _ => (None, None, None, None),
     };
 
+    // ── Phase 5: LLM Observability extraction ─────────────────
+    let llm_tool_calls = parsed_resp_body.as_ref()
+        .map(|body| crate::models::llm::extract_tool_calls_from_value(body))
+        .unwrap_or_default();
+    let llm_finish_reason = parsed_resp_body.as_ref()
+        .and_then(|body| crate::models::llm::extract_finish_reason_from_value(body));
+    let llm_error_type = if !status.is_success() {
+        let body_str = parsed_resp_body.as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        crate::models::llm::classify_error_from_str(status.as_u16(), &body_str)
+    } else {
+        None
+    };
+    let tool_call_count = llm_tool_calls.len() as u16;
+    let tool_calls_json = if llm_tool_calls.is_empty() {
+        None
+    } else {
+        serde_json::to_value(&llm_tool_calls).ok()
+    };
+
     // -- 7. Emit audit log --
-    log_audit_entry(
-        &state,
-        request_id,
-        token.project_id,
-        token.id.clone(),
-        agent_name,
-        method.to_string(),
-        path,
-        upstream_url,
-        &policies,
-        if hitl_required {
-            crate::models::audit::PolicyResult::HitlApproved
-        } else {
-            crate::models::audit::PolicyResult::Allow
-        },
-        hitl_required,
-        hitl_decision,
-        hitl_latency_ms,
-        Some(status.as_u16()),
-        start.elapsed().as_millis() as u64,
-        if sanitization_result.redacted_types.is_empty() {
-            None
-        } else {
-            Some(sanitization_result.redacted_types)
-        },
-        if shadow_violations.is_empty() {
-            None
-        } else {
-            Some(shadow_violations)
-        },
-        estimated_cost_usd,
-        // Phase 4 fields
-        log_level,
-        logged_req_body,
-        logged_resp_body,
-        logged_req_headers,
-        logged_resp_headers,
-        audit_prompt_tokens,
-        audit_completion_tokens,
-        audit_model,
-        tokens_per_second,
-        user_id,
-        tenant_id,
-        external_request_id,
+    let mut audit = base_audit(
+        request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+        &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
+        user_id, tenant_id, external_request_id,
+        session_id, parent_span_id,
     );
+    audit.policy_result = Some(if hitl_required {
+        crate::models::audit::PolicyResult::HitlApproved
+    } else {
+        crate::models::audit::PolicyResult::Allow
+    });
+    audit.upstream_status = Some(status.as_u16());
+    audit.response_latency_ms = start.elapsed().as_millis() as u64;
+    audit.fields_redacted = if sanitization_result.redacted_types.is_empty() {
+        None
+    } else {
+        Some(sanitization_result.redacted_types)
+    };
+    audit.shadow_violations = if shadow_violations.is_empty() {
+        None
+    } else {
+        Some(shadow_violations)
+    };
+    audit.estimated_cost_usd = estimated_cost_usd;
+    // Phase 4
+    audit.log_level = log_level;
+    audit.request_body = logged_req_body;
+    audit.response_body = logged_resp_body;
+    audit.request_headers = logged_req_headers;
+    audit.response_headers = logged_resp_headers;
+    audit.prompt_tokens = audit_prompt_tokens;
+    audit.completion_tokens = audit_completion_tokens;
+    let audit_model_for_cache = audit_model.clone();
+    audit.model = audit_model;
+    audit.tokens_per_second = tokens_per_second;
+    // Phase 5
+    audit.tool_calls = tool_calls_json;
+    audit.tool_call_count = tool_call_count;
+    audit.finish_reason = llm_finish_reason;
+    audit.error_type = llm_error_type;
+    audit.is_streaming = is_streaming_req;
+    audit.cache_hit = false; // not a cache hit — we went to upstream
+    audit.emit(&state);
+
+    // ── Response Cache: store successful, non-streaming responses ──
+    if let Some(ref key) = cache_key {
+        if status.is_success() {
+            let cached = proxy::response_cache::CachedResponse {
+                status: status.as_u16(),
+                body: sanitized_body.clone(),
+                content_type: content_type.to_string(),
+                model: audit_model_for_cache,
+                prompt_tokens: audit_prompt_tokens,
+                completion_tokens: audit_completion_tokens,
+            };
+            let state_ref = state.clone();
+            let key = key.clone();
+            tokio::spawn(async move {
+                proxy::response_cache::set_cached(
+                    &state_ref.cache,
+                    &key,
+                    &cached,
+                    proxy::response_cache::DEFAULT_CACHE_TTL_SECS,
+                ).await;
+            });
+        }
+    }
 
     // -- Build response --
     let axum_status =
@@ -1194,18 +1625,18 @@ pub async fn proxy_handler(
         .map_err(|e| AppError::Internal(anyhow::anyhow!("response build failed: {}", e)))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn log_audit_entry(
-    state: &AppState,
-    req_id: Uuid,
-    project_id: Uuid,
+/// Builder for audit log entries. Avoids 25+ positional arguments.
+#[derive(Default)]
+struct AuditBuilder {
+    req_id: Option<Uuid>,
+    project_id: Option<Uuid>,
     token_id: String,
     agent_name: Option<String>,
     method: String,
     path: String,
     upstream_url: String,
-    policies: &[crate::models::policy::Policy],
-    policy_result: crate::models::audit::PolicyResult,
+    policies: Vec<String>,
+    policy_result: Option<crate::models::audit::PolicyResult>,
     hitl_required: bool,
     hitl_decision: Option<String>,
     hitl_latency_ms: Option<i32>,
@@ -1214,7 +1645,7 @@ fn log_audit_entry(
     fields_redacted: Option<Vec<String>>,
     shadow_violations: Option<Vec<String>>,
     estimated_cost_usd: Option<rust_decimal::Decimal>,
-    // Phase 4 fields
+    // Phase 4
     log_level: u8,
     request_body: Option<String>,
     response_body: Option<String>,
@@ -1227,45 +1658,104 @@ fn log_audit_entry(
     user_id: Option<String>,
     tenant_id: Option<String>,
     external_request_id: Option<String>,
-) {
-    let entry = crate::models::audit::AuditEntry {
-        request_id: req_id,
-        project_id,
-        token_id,
+    // Phase 5: LLM Observability
+    tool_calls: Option<serde_json::Value>,
+    tool_call_count: u16,
+    finish_reason: Option<String>,
+    session_id: Option<String>,
+    parent_span_id: Option<String>,
+    error_type: Option<String>,
+    is_streaming: bool,
+    ttft_ms: Option<u64>,
+    cache_hit: bool,
+}
+
+impl AuditBuilder {
+    fn emit(self, state: &AppState) {
+        let entry = crate::models::audit::AuditEntry {
+            request_id: self.req_id.unwrap_or_else(Uuid::new_v4),
+            project_id: self.project_id.unwrap_or_default(),
+            token_id: self.token_id,
+            agent_name: self.agent_name,
+            method: self.method,
+            path: self.path,
+            upstream_url: self.upstream_url,
+            request_body_hash: None,
+            policies_evaluated: Some(serde_json::json!(self.policies)),
+            policy_result: self.policy_result.unwrap_or(crate::models::audit::PolicyResult::Allow),
+            hitl_required: self.hitl_required,
+            hitl_decision: self.hitl_decision,
+            hitl_latency_ms: self.hitl_latency_ms,
+            upstream_status: self.upstream_status,
+            response_latency_ms: self.response_latency_ms,
+            fields_redacted: self.fields_redacted,
+            shadow_violations: self.shadow_violations,
+            estimated_cost_usd: self.estimated_cost_usd,
+            timestamp: chrono::Utc::now(),
+            log_level: self.log_level,
+            request_body: self.request_body,
+            response_body: self.response_body,
+            request_headers: self.request_headers,
+            response_headers: self.response_headers,
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            model: self.model,
+            tokens_per_second: self.tokens_per_second,
+            user_id: self.user_id,
+            tenant_id: self.tenant_id,
+            external_request_id: self.external_request_id,
+            tool_calls: self.tool_calls,
+            tool_call_count: self.tool_call_count,
+            finish_reason: self.finish_reason,
+            session_id: self.session_id,
+            parent_span_id: self.parent_span_id,
+            error_type: self.error_type,
+            is_streaming: self.is_streaming,
+            ttft_ms: self.ttft_ms,
+            cache_hit: self.cache_hit,
+        };
+        middleware::audit::log_async(state.db.pool().clone(), entry);
+    }
+}
+
+/// Helper to create a pre-populated AuditBuilder from shared request context.
+fn base_audit(
+    req_id: Uuid,
+    project_id: Uuid,
+    token_id: &str,
+    agent_name: Option<String>,
+    method: &str,
+    path: &str,
+    upstream_url: &str,
+    policies: &[crate::models::policy::Policy],
+    hitl_required: bool,
+    hitl_decision: Option<String>,
+    hitl_latency_ms: Option<i32>,
+    user_id: Option<String>,
+    tenant_id: Option<String>,
+    external_request_id: Option<String>,
+    session_id: Option<String>,
+    parent_span_id: Option<String>,
+) -> AuditBuilder {
+    AuditBuilder {
+        req_id: Some(req_id),
+        project_id: Some(project_id),
+        token_id: token_id.to_string(),
         agent_name,
-        method,
-        path,
-        upstream_url,
-        request_body_hash: None,
-        policies_evaluated: Some(serde_json::json!(policies
-            .iter()
-            .map(|p| &p.name)
-            .collect::<Vec<_>>())),
-        policy_result,
+        method: method.to_string(),
+        path: path.to_string(),
+        upstream_url: upstream_url.to_string(),
+        policies: policies.iter().map(|p| p.name.clone()).collect(),
         hitl_required,
         hitl_decision,
         hitl_latency_ms,
-        upstream_status,
-        response_latency_ms,
-        fields_redacted,
-        shadow_violations,
-        estimated_cost_usd,
-        timestamp: chrono::Utc::now(),
-        // Phase 4 observability
-        log_level,
-        request_body,
-        response_body,
-        request_headers,
-        response_headers,
-        prompt_tokens,
-        completion_tokens,
-        model,
-        tokens_per_second,
         user_id,
         tenant_id,
         external_request_id,
-    };
-    middleware::audit::log_async(state.db.pool().clone(), entry);
+        session_id,
+        parent_span_id,
+        ..Default::default()
+    }
 }
 
 /// Convert axum HeaderMap to JSON object for Level 2 logging.
@@ -1309,4 +1799,52 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, AppError> {
         return Err(AppError::TokenNotFound);
     }
     Ok(token)
+}
+
+/// SEC: Validate that a webhook URL from a policy definition is safe to call.
+/// Blocks private IPs, cloud metadata endpoints, and non-HTTP(S) schemes.
+fn is_safe_webhook_url(url_str: &str) -> bool {
+    let parsed = match reqwest::Url::parse(url_str) {
+        Ok(u) => u,
+        Err(_) => return false,
+    };
+
+    // Only allow HTTP(S)
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return false;
+    }
+
+    let host = match parsed.host_str() {
+        Some(h) => h,
+        None => return false,
+    };
+
+    // Block known cloud metadata endpoints
+    let blocked_hosts = [
+        "169.254.169.254",
+        "metadata.google.internal",
+        "metadata.internal",
+        "0.0.0.0",
+    ];
+    if blocked_hosts.contains(&host) {
+        return false;
+    }
+
+    // Block private/reserved IP ranges
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let is_private = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.octets()[0] == 169 && v4.octets()[1] == 254
+            }
+            std::net::IpAddr::V6(v6) => v6.is_loopback(),
+        };
+        if is_private {
+            return false;
+        }
+    }
+
+    true
 }

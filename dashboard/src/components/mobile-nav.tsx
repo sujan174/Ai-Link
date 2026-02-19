@@ -16,6 +16,13 @@ import {
     Moon,
     Sun,
     Menu,
+    FlaskConical,
+    CreditCard,
+    Activity,
+    Plug,
+    LockKeyhole,
+    Webhook,
+    Settings,
 } from "lucide-react";
 import { ProjectSwitcher } from "@/components/project-switcher";
 import { Button } from "@/components/ui/button";
@@ -40,14 +47,41 @@ export function MobileNav() {
         setOpen(false);
     }, [pathname]);
 
-    const routes = [
-        { href: "/", label: "Overview", icon: LayoutDashboard },
-        { href: "/audit", label: "Audit Logs", icon: ClipboardList },
-        { href: "/analytics", label: "Analytics", icon: BarChart3 },
-        { href: "/tokens", label: "Tokens", icon: Key },
-        { href: "/credentials", label: "Credentials", icon: Fingerprint },
-        { href: "/policies", label: "Policies", icon: ShieldAlert },
-        { href: "/approvals", label: "Approvals", icon: CheckCircle },
+    const groups = [
+        {
+            label: "Platform",
+            routes: [
+                { href: "/", label: "Overview", icon: LayoutDashboard },
+                { href: "/playground", label: "Playground", icon: FlaskConical },
+                { href: "/audit", label: "Traces & Logs", icon: ClipboardList },
+                { href: "/analytics", label: "Analytics", icon: BarChart3 },
+                { href: "/billing", label: "Usage & Billing", icon: CreditCard },
+            ]
+        },
+        {
+            label: "Gateway",
+            routes: [
+                { href: "/upstreams", label: "Upstreams", icon: Activity },
+                { href: "/services", label: "Services", icon: Plug },
+                { href: "/policies", label: "Policies", icon: ShieldAlert },
+                { href: "/credentials", label: "Credentials", icon: Fingerprint },
+            ]
+        },
+        {
+            label: "Security",
+            routes: [
+                { href: "/tokens", label: "Agent Tokens", icon: Key },
+                { href: "/keys", label: "API Keys", icon: LockKeyhole },
+                { href: "/approvals", label: "Approvals", icon: CheckCircle },
+            ]
+        },
+        {
+            label: "Developers",
+            routes: [
+                { href: "/webhooks", label: "Webhooks", icon: Webhook },
+                { href: "/settings", label: "Settings", icon: Settings },
+            ]
+        }
     ];
 
     return (
@@ -72,27 +106,34 @@ export function MobileNav() {
 
                     <ProjectSwitcher />
 
-                    <nav className="flex flex-col gap-1 flex-1">
-                        {routes.map((route) => {
-                            const isActive = route.href === "/"
-                                ? pathname === "/"
-                                : pathname.startsWith(route.href);
-                            return (
-                                <Link
-                                    key={route.href}
-                                    href={route.href}
-                                    className={cn(
-                                        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                                        isActive
-                                            ? "bg-primary/10 text-primary"
-                                            : "hover:bg-muted"
-                                    )}
-                                >
-                                    <route.icon className={cn("h-4 w-4", isActive && "text-primary")} />
-                                    {route.label}
-                                </Link>
-                            );
-                        })}
+                    <nav className="flex flex-col gap-6 flex-1">
+                        {groups.map((group) => (
+                            <div key={group.label} className="flex flex-col gap-1">
+                                <h4 className="px-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                                    {group.label}
+                                </h4>
+                                {group.routes.map((route) => {
+                                    const isActive = route.href === "/"
+                                        ? pathname === "/"
+                                        : pathname.startsWith(route.href);
+                                    return (
+                                        <Link
+                                            key={route.href}
+                                            href={route.href}
+                                            className={cn(
+                                                "flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium transition-colors",
+                                                isActive
+                                                    ? "bg-primary/10 text-primary"
+                                                    : "hover:bg-muted text-muted-foreground hover:text-foreground"
+                                            )}
+                                        >
+                                            <route.icon className={cn("h-4 w-4", isActive && "text-primary")} />
+                                            {route.label}
+                                        </Link>
+                                    );
+                                })}
+                            </div>
+                        ))}
                     </nav>
 
                     {/* Footer */}

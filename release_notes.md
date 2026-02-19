@@ -1,5 +1,21 @@
 # AIlink Release Notes
 
+## v0.7.0 — Dashboard UX Overhaul
+
+### New
+
+- **Settings Page Redesign** — Clean 2-column layout with vertical navigation and clear distinction between General, Security, and Advanced settings.
+- **Theme Toggle** — Light/Dark/System mode support via `next-themes`.
+- **Collapsible Sidebar** — Smooth animations using `framer-motion` to maximize screen real estate; icon-only mode when collapsed.
+- **Improved Header Layout** — Project switcher moved to the header for better accessibility.
+
+### Fixed
+
+- **Sidebar Scrollbar** — Removed unsightly scrollbar from the navigation sidebar.
+- **Next.js Lock** — Resolved development server lock issues during rapid restarts.
+
+---
+
 ## v0.6.0 — Resilience Layer
 
 ### New

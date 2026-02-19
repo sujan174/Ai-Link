@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
+import useSWR, { mutate } from "swr";
 import {
   listTokens,
   createToken,
@@ -8,7 +9,8 @@ import {
   listCredentials,
   Token,
   Credential,
-  CreateTokenRequest
+  CreateTokenRequest,
+  swrFetcher,
 } from "@/lib/api";
 import {
   Plus, RefreshCw, Key, Shield, Trash2, Loader2, AlertTriangle, Blocks
@@ -40,43 +42,62 @@ import { cn } from "@/lib/utils";
 
 export default function TokensPage() {
   const router = useRouter();
-  const [tokens, setTokens] = useState<Token[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data: rawTokens = [], mutate: mutateTokens, isLoading: loading } = useSWR<Token[]>("/tokens", swrFetcher);
   const [createOpen, setCreateOpen] = useState(false);
   const [revokeTokenData, setRevokeTokenData] = useState<Token | null>(null);
 
-  const fetchTokens = useCallback(async () => {
-    try {
-      setLoading(true);
-      const data = await listTokens();
-      // Sort active first, then by date
-      const sorted = data.sort((a, b) => {
-        if (a.is_active && !b.is_active) return -1;
-        if (!a.is_active && b.is_active) return 1;
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      });
-      setTokens(sorted);
-    } catch {
-      toast.error("Failed to load tokens");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchTokens();
-  }, [fetchTokens]);
+  const tokens = [...rawTokens].sort((a, b) => {
+    if (a.is_active && !b.is_active) return -1;
+    if (!a.is_active && b.is_active) return 1;
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
 
   const handleRevoke = async () => {
     if (!revokeTokenData) return;
     try {
-      await revokeToken(revokeTokenData.id);
+      await mutateTokens(
+        async () => {
+          await revokeToken(revokeTokenData.id);
+          return rawTokens.map(t => t.id === revokeTokenData.id ? { ...t, is_active: false } : t);
+        },
+        {
+          optimisticData: rawTokens.map(t => t.id === revokeTokenData.id ? { ...t, is_active: false } : t),
+          rollbackOnError: true,
+          revalidate: true
+        }
+      );
       toast.success("Token revoked successfully");
       setRevokeTokenData(null);
-      fetchTokens();
     } catch {
       toast.error("Failed to revoke token");
     }
+  };
+
+  const handleCreateToken = async (data: CreateTokenRequest) => {
+    const tempToken: Token = {
+      id: "temp-" + Date.now(),
+      project_id: "",
+      name: data.name,
+      credential_id: data.credential_id || "",
+      upstream_url: data.upstream_url,
+      scopes: [],
+      policy_ids: [],
+      is_active: true,
+      created_at: new Date().toISOString(),
+    };
+
+    await mutateTokens(
+      async () => {
+        await createToken(data);
+        // Trigger revalidation to get the real token
+        return [...rawTokens, tempToken];
+      },
+      {
+        optimisticData: [...rawTokens, tempToken],
+        rollbackOnError: true,
+        revalidate: true
+      }
+    );
   };
 
   const activeCount = tokens.filter((t) => t.is_active).length;
@@ -93,7 +114,7 @@ export default function TokensPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={fetchTokens} disabled={loading}>
+          <Button variant="outline" size="sm" onClick={() => mutateTokens()} disabled={loading}>
             <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", loading && "animate-spin")} />
             Refresh
           </Button>
@@ -104,10 +125,10 @@ export default function TokensPage() {
               </Button>
             </DialogTrigger>
             <DialogContent className="sm:max-w-[480px]">
-              <CreateTokenForm onSuccess={() => {
-                setCreateOpen(false);
-                fetchTokens();
-              }} />
+              <CreateTokenForm
+                onSuccess={() => setCreateOpen(false)}
+                onCreate={handleCreateToken}
+              />
             </DialogContent>
           </Dialog>
         </div>
@@ -201,16 +222,23 @@ export default function TokensPage() {
 
 // ── Create Token Form ─────────────────────────────
 
-function CreateTokenForm({ onSuccess }: { onSuccess: () => void }) {
+function CreateTokenForm({ onSuccess, onCreate }: { onSuccess: () => void; onCreate: (data: CreateTokenRequest) => Promise<void> }) {
   const [loading, setLoading] = useState(false);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [fetchingCreds, setFetchingCreds] = useState(true);
+  const [mode, setMode] = useState<"managed" | "passthrough">("managed");
+  const [upstreamMode, setUpstreamMode] = useState<"single" | "multi">("single");
 
   const [formData, setFormData] = useState<CreateTokenRequest>({
     name: "",
     credential_id: "",
     upstream_url: "https://api.openai.com/v1", // Default good DX
   });
+
+  // Multi-upstream entries
+  const [upstreams, setUpstreams] = useState<Array<{ url: string; weight: string; priority: string }>>([
+    { url: "https://api.openai.com/v1", weight: "1", priority: "1" },
+  ]);
 
   useEffect(() => {
     listCredentials()
@@ -219,11 +247,38 @@ function CreateTokenForm({ onSuccess }: { onSuccess: () => void }) {
       .finally(() => setFetchingCreds(false));
   }, []);
 
+  const addUpstream = () =>
+    setUpstreams((prev) => [...prev, { url: "", weight: "1", priority: String(prev.length + 1) }]);
+
+  const removeUpstream = (i: number) =>
+    setUpstreams((prev) => prev.filter((_, idx) => idx !== i));
+
+  const updateUpstream = (i: number, field: "url" | "weight" | "priority", value: string) =>
+    setUpstreams((prev) => prev.map((u, idx) => idx === i ? { ...u, [field]: value } : u));
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       setLoading(true);
-      await createToken(formData);
+      const payload: CreateTokenRequest = { ...formData };
+      if (mode === "passthrough") {
+        delete (payload as any).credential_id;
+      }
+      if (upstreamMode === "multi") {
+        // Validate all URLs are filled
+        if (upstreams.some((u) => !u.url.trim())) {
+          toast.error("All upstream URLs must be filled in");
+          return;
+        }
+        payload.upstreams = upstreams.map((u) => ({
+          url: u.url.trim(),
+          weight: u.weight ? parseFloat(u.weight) : undefined,
+          priority: u.priority ? parseInt(u.priority) : undefined,
+        }));
+        // Use first upstream as the primary URL for backward compat
+        payload.upstream_url = upstreams[0].url.trim();
+      }
+      await onCreate(payload);
       toast.success("Token created successfully");
       onSuccess();
     } catch (e) {
@@ -238,10 +293,48 @@ function CreateTokenForm({ onSuccess }: { onSuccess: () => void }) {
       <DialogHeader>
         <DialogTitle>Create Token</DialogTitle>
         <DialogDescription>
-          Issue a new virtual token mapping to a credential.
+          Issue a new virtual token for agent authentication.
         </DialogDescription>
       </DialogHeader>
       <div className="grid gap-4 py-4">
+        {/* Credential Mode Selector */}
+        <div className="space-y-1.5">
+          <Label className="text-xs">Credential Mode</Label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setMode("managed")}
+              className={cn(
+                "rounded-md border px-3 py-2 text-xs font-medium transition-all",
+                mode === "managed"
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-muted bg-muted/30 text-muted-foreground hover:bg-muted/50"
+              )}
+            >
+              <Shield className="h-3.5 w-3.5 mx-auto mb-1" />
+              Managed Credentials
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("passthrough")}
+              className={cn(
+                "rounded-md border px-3 py-2 text-xs font-medium transition-all",
+                mode === "passthrough"
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-muted bg-muted/30 text-muted-foreground hover:bg-muted/50"
+              )}
+            >
+              <Key className="h-3.5 w-3.5 mx-auto mb-1" />
+              Passthrough / BYOK
+            </button>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            {mode === "managed"
+              ? "AIlink injects credentials from the vault. Agents never see real API keys."
+              : "Agents provide their own API key via X-Real-Authorization header. AIlink provides observability, analytics, and policies."}
+          </p>
+        </div>
+
         <div className="space-y-1.5">
           <Label htmlFor="name" className="text-xs">
             Token Name
@@ -255,51 +348,154 @@ function CreateTokenForm({ onSuccess }: { onSuccess: () => void }) {
           />
         </div>
 
+        {/* Upstream Mode Selector */}
         <div className="space-y-1.5">
-          <Label htmlFor="upstream" className="text-xs">
-            Upstream API URL
-          </Label>
-          <Input
-            id="upstream"
-            value={formData.upstream_url}
-            onChange={(e) => setFormData({ ...formData, upstream_url: e.target.value })}
-            placeholder="https://api.openai.com/v1"
-            required
-          />
+          <Label className="text-xs">Upstream Configuration</Label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setUpstreamMode("single")}
+              className={cn(
+                "rounded-md border px-3 py-2 text-xs font-medium transition-all",
+                upstreamMode === "single"
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-muted bg-muted/30 text-muted-foreground hover:bg-muted/50"
+              )}
+            >
+              Single Upstream
+            </button>
+            <button
+              type="button"
+              onClick={() => setUpstreamMode("multi")}
+              className={cn(
+                "rounded-md border px-3 py-2 text-xs font-medium transition-all",
+                upstreamMode === "multi"
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-muted bg-muted/30 text-muted-foreground hover:bg-muted/50"
+              )}
+            >
+              <Blocks className="h-3.5 w-3.5 mx-auto mb-1" />
+              Load Balancer
+            </button>
+          </div>
         </div>
 
-        <div className="space-y-1.5">
-          <Label htmlFor="cred_id" className="text-xs">
-            Backing Credential
-          </Label>
-          {fetchingCreds ? (
-            <div className="h-10 w-full animate-pulse bg-muted rounded-md" />
-          ) : (
-            <Select
-              value={formData.credential_id}
-              onChange={(e) => setFormData({ ...formData, credential_id: e.target.value })}
+        {upstreamMode === "single" ? (
+          <div className="space-y-1.5">
+            <Label htmlFor="upstream" className="text-xs">
+              Upstream API URL
+            </Label>
+            <Input
+              id="upstream"
+              value={formData.upstream_url}
+              onChange={(e) => setFormData({ ...formData, upstream_url: e.target.value })}
+              placeholder="https://api.openai.com/v1"
               required
-            >
-              <option value="" disabled>Select a credential...</option>
-              {credentials.filter(c => c.is_active).map((cred) => (
-                <option key={cred.id} value={cred.id}>
-                  {cred.name} ({cred.provider})
-                </option>
-              ))}
-            </Select>
-          )}
-          {credentials.length === 0 && !fetchingCreds && (
-            <p className="text-[10px] text-muted-foreground mt-1">
-              No active credentials found. Create one first.
+            />
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">Upstream Endpoints</Label>
+              <button
+                type="button"
+                onClick={addUpstream}
+                className="text-[10px] text-primary hover:text-primary/80 flex items-center gap-1 transition-colors"
+              >
+                <Plus className="h-3 w-3" /> Add endpoint
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Requests are distributed by weight. Higher priority endpoints are tried first on failover.
             </p>
-          )}
-        </div>
+            <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+              {upstreams.map((u, i) => (
+                <div key={i} className="rounded-lg border border-border/60 bg-muted/20 p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                      Endpoint {i + 1}
+                    </span>
+                    {upstreams.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removeUpstream(i)}
+                        className="text-rose-400 hover:text-rose-300 transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  <Input
+                    value={u.url}
+                    onChange={(e) => updateUpstream(i, "url", e.target.value)}
+                    placeholder="https://api.openai.com/v1"
+                    className="h-8 text-xs font-mono"
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-[10px] text-muted-foreground">Weight</Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={u.weight}
+                        onChange={(e) => updateUpstream(i, "weight", e.target.value)}
+                        placeholder="1"
+                        className="h-7 text-xs"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-[10px] text-muted-foreground">Priority</Label>
+                      <Input
+                        type="number"
+                        min="1"
+                        value={u.priority}
+                        onChange={(e) => updateUpstream(i, "priority", e.target.value)}
+                        placeholder="1"
+                        className="h-7 text-xs"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {mode === "managed" && (
+          <div className="space-y-1.5">
+            <Label htmlFor="cred_id" className="text-xs">
+              Backing Credential
+            </Label>
+            {fetchingCreds ? (
+              <div className="h-10 w-full animate-pulse bg-muted rounded-md" />
+            ) : (
+              <Select
+                value={formData.credential_id}
+                onChange={(e) => setFormData({ ...formData, credential_id: e.target.value })}
+                required
+              >
+                <option value="" disabled>Select a credential...</option>
+                {credentials.filter(c => c.is_active).map((cred) => (
+                  <option key={cred.id} value={cred.id}>
+                    {cred.name} ({cred.provider})
+                  </option>
+                ))}
+              </Select>
+            )}
+            {credentials.length === 0 && !fetchingCreds && (
+              <p className="text-[10px] text-muted-foreground mt-1">
+                No active credentials found. Create one first.
+              </p>
+            )}
+          </div>
+        )}
       </div>
       <DialogFooter>
         <DialogClose asChild>
           <Button variant="outline" type="button">Cancel</Button>
         </DialogClose>
-        <Button type="submit" disabled={loading || !formData.credential_id}>
+        <Button type="submit" disabled={loading || (mode === "managed" && !formData.credential_id)}>
           {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           {loading ? "Creating..." : "Create Token"}
         </Button>

@@ -11,7 +11,7 @@ pub struct Token {
     pub id: String,
     pub project_id: Uuid,
     pub name: String,
-    pub credential_id: Uuid,
+    pub credential_id: Option<Uuid>,
     pub upstream_url: String,
     pub scopes: Vec<String>,
     pub policy_ids: Vec<Uuid>,

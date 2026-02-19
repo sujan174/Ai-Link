@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "AIlink — Secure API Gateway for AI Agents"
 
+[lib]
+name = "gateway"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ailink"
 path = "src/main.rs"
@@ -50,6 +54,9 @@ dotenvy = "0.15"
 hex = "0.4"
 urlencoding = "2"
 zeroize = "1"
+sha2 = "0.10"
+subtle = "2"
+url = "2"
 
 # upstream proxy
 reqwest = { version = "0.11", features = ["json", "rustls-tls", "stream"] }

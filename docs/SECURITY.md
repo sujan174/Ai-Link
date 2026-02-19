@@ -22,13 +22,15 @@ All agent credentials are virtual tokens (`ailink_v1_...`) that only work throug
 | T2 | **Stolen Virtual Token** | High | Tokens are scoped (methods, paths, rate limits). Instantly revocable. IP allowlisting available. Short TTLs optional |
 | T3 | **Replay Attack** | Medium | Idempotency keys, request timestamping, rate limiting |
 | T4 | **Man-in-the-Middle** | High | TLS 1.3 enforced on all connections. mTLS available for enterprise |
-| T5 | **Runaway Agent Costs** | High | Per-token spend caps. Per-window rate limits. HITL for high-value operations |
+| T5 | **Runaway Agent Costs** | High | Per-token spend caps (atomic checks via Redis Lua). Per-window rate limits. HITL for high-value operations |
 | T6 | **Accidental Destructive Operations** | High | Method + path whitelists (e.g., GET only). HITL for write operations. Shadow mode for safe rollout |
 | T7 | **Gateway Infrastructure Compromise** | Critical | Secrets encrypted at rest (AES-256-GCM). DEKs held in memory only during request. Master key in environment variable or external KMS, never in database |
 | T8 | **Insider Threat (AIlink Operator)** | High | Envelope encryption — operators can access encrypted blobs but not plaintext. Master keys in HSM/KMS for enterprise |
 | T9 | **Stale Compromised Credentials** | Medium | Automatic key rotation — real API keys rotated every 24h. A stolen key expires in hours |
 | T10 | **Supply Chain Attack (SDK)** | Medium | SDKs published with SLSA provenance. Dependencies pinned and audited |
 | T11 | **Database Breach** | High | All credentials encrypted at rest. Audit logs contain request hashes, not request bodies. PII redacted before storage |
+| T12 | **SSRF (Server-Side Request Forgery)** | High | Webhook URLs validated: HTTPS-only, no private/reserved IPs (RFC 1918), no cloud metadata access |
+| T13 | **Timing Attacks** | Medium | Constant-time string comparison for all API key and token validations |
 
 ---
 
@@ -115,6 +117,7 @@ AIlink implements envelope encryption, following the pattern used by AWS KMS and
 | Gateway → Upstream | TLS (uses upstream API's certificate) |
 | Gateway → PostgreSQL | TLS or Unix socket |
 | Gateway → Redis | TLS or private network |
+| Dashboard → Gateway | Shared secret auth (`DASHBOARD_SECRET`) + Strict CORS (`DASHBOARD_ORIGIN`) |
 
 ### IP Allowlisting
 

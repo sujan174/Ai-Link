@@ -50,6 +50,10 @@ Create a new virtual token linked to a real credential.
   "name": "billing-agent-prod",
   "credential_id": "stripe-live-sk",
   "upstream_url": "https://api.stripe.com",
+  "upstreams": [
+    { "url": "https://api.primary.com", "weight": 70, "priority": 1 },
+    { "url": "https://api.backup.com", "weight": 30, "priority": 1 }
+  ],
   "policies": ["policy-uuid-1", "policy-uuid-2"],
   "scopes": ["read", "write"]
 }
@@ -72,6 +76,36 @@ Immediately invalidates the token. Active connections are terminated.
 `POST /tokens/{token_id}/rotate`
 
 Triggers an immediate rotation of the *real* credential associated with this token. The virtual token ID (`ailink_v1_...`) remains unchanged, so the agent doesn't need a restart.
+
+---
+
+### Spend Caps
+
+Manage monetary limits for tokens.
+
+#### Get Spend Caps
+`GET /tokens/{token_id}/spend`
+
+Returns current configuration and usage.
+
+#### Upsert Spend Cap
+`PUT /tokens/{token_id}/spend`
+
+Sets a daily or monthly limit.
+
+```json
+{
+  "period": "daily", // or "monthly"
+  "limit_usd": 50.00
+}
+```
+
+**Note**: `limit_usd` must be positive. Zero or negative values return `422 Unprocessable Entity`.
+
+#### Remove Spend Cap
+`DELETE /tokens/{token_id}/spend/{period}`
+
+Removes the limit for the specified period (`daily` or `monthly`).
 
 ---
 

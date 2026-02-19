@@ -231,6 +231,28 @@ pub enum Action {
         #[serde(default)]
         on_fail: OnFail,
     },
+    /// Content safety guardrail — block jailbreak/harmful/off-topic prompts.
+    ContentFilter {
+        /// Block known jailbreak patterns (DAN, prompt injection, etc.).
+        #[serde(default = "default_true")]
+        block_jailbreak: bool,
+        /// Block CSAM and other categorically harmful content.
+        #[serde(default = "default_true")]
+        block_harmful: bool,
+        /// If set, only allow prompts that mention at least one of these topics.
+        #[serde(default)]
+        topic_allowlist: Vec<String>,
+        /// Block prompts that mention any of these topics.
+        #[serde(default)]
+        topic_denylist: Vec<String>,
+        /// Additional custom regex patterns to block.
+        #[serde(default)]
+        custom_patterns: Vec<String>,
+        /// Risk score threshold (0.0–1.0) above which the request is blocked.
+        /// Default 0.5 — a single jailbreak match scores 0.5.
+        #[serde(default = "default_risk_threshold")]
+        risk_threshold: f32,
+    },
 }
 
 // ── Action Sub-types ─────────────────────────────────────────
@@ -300,6 +322,9 @@ fn default_log_level() -> String {
 }
 fn default_webhook_timeout() -> u64 {
     5000
+}
+fn default_risk_threshold() -> f32 {
+    0.5
 }
 
 // ── Serde Helpers ────────────────────────────────────────────

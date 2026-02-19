@@ -1,209 +1,211 @@
-# AIlink — Technical Architecture
+# AIlink — System Architecture
 
-> For the product overview, see [VISION.md](VISION.md). This document covers the technical design.
-
----
-
-## System Overview
-
-AIlink is a Rust-based reverse proxy that intercepts HTTP requests, enforces policies, injects credentials, and forwards requests to upstream APIs. Agents do not access real API keys.
-
-### Request Lifecycle
-
-```
-Agent → TLS → Cache Lookup → Auth → Policy Engine → [HITL] → Key Inject → Upstream Proxy → Sanitize → Audit → Agent
-```
-
-Every request flows through this pipeline. Each stage is a composable Tower middleware layer in Axum.
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                       REQUEST PIPELINE                           │
-├─────────┬──────────┬──────────┬──────────┬──────────┬───────────┤
-│  TLS    │  Cache   │  Auth &  │  Policy  │  Key     │ Upstream  │
-│  Term   │  Lookup  │  Token   │  Engine  │  Inject  │ Proxy     │
-│         │          │  Resolve │  [+HITL] │          │           │
-├─────────┴──────────┴──────────┴──────────┴──────────┴───────────┤
-│                       RESPONSE PIPELINE                          │
-├─────────┬──────────┬──────────┬──────────────────────────────────┤
-│ Receive │ Sanitize │  Audit   │ Return to Agent                 │
-│         │ (stream) │  (async) │                                 │
-└─────────┴──────────┴──────────┴──────────────────────────────────┘
-```
+> **Comprehensive Technical Reference**
+>
+> This document details the internal architecture, data flows, and component design of AIlink. It is intended for core contributors and system architects.
 
 ---
 
-## Technology Choices
+## 1. High-Level Design
 
-| Component | Choice | Rationale |
-|---|---|---|
-| **Language** | Rust | Memory safety and consistent latency (no GC). |
-| **Web Framework** | Axum (+ Towers) | Composable middleware and async I/O. |
-| **Primary DB** | PostgreSQL 16 | ACID compliance and JSONB support for policies. |
-| **Cache / Queue** | Redis 7 | In-memory caching and streams for HITL. |
-| **Encryption** | AES-256-GCM | Authenticated envelope encryption. |
-| **Observability** | OpenTelemetry | Vendor-neutral tracing and metrics. |
+AIlink is a high-performance, security-focused reverse proxy for LLM and API traffic. It sits between AI agents and upstream providers (OpenAI, Anthropic, internal APIs), acting as a centralized control plane for observability, security, and cost management.
 
----
-
-## Component Architecture
-
-### 1. Tiered Caching
-
-The gateway resolves token → credential + policies on every request. Without caching, this hits PostgreSQL twice per request (~5–10ms). The tiered cache eliminates this:
-
-| Tier | Store | Latency | TTL | Invalidation |
-|---|---|---|---|---|
-| **1** | In-memory (DashMap) | <0.01ms | 30s | Redis pub/sub event |
-| **2** | Redis | <1ms | 5min | On token/policy update |
-| **3** | PostgreSQL | ~5ms | — | Source of truth |
-
-**Invalidation flow:** Management API updates PG → deletes Redis key → publishes to `ailink:cache:invalidate` channel → all gateway instances evict from DashMap.
-
-### 2. Virtual Token System
-
-Tokens are the primary identity mechanism for agents. Each token maps to:
-- An upstream URL (e.g., `https://api.stripe.com`)
-- An encrypted credential in the vault
-- A set of policies (method whitelists, rate limits, etc.)
-
-Token format: `ailink_v1_proj_{project_id}_tok_{token_id}`
-
-### 3. Policy Engine
-
-Policies are JSON documents evaluated in a fixed order:
-
-1. Token Validity → 2. IP Allowlist → 3. Time Window → 4. Method + Path → 5. Rate Limit → 6. Spend Cap → 7. HITL → 8. Pass
-
-Each rule is an independent evaluator. First `deny` short-circuits. HITL causes a `pause`. In `shadow` mode, denials are logged but not enforced.
-
-### 4. HITL Approval (Redis Streams)
-
-When a policy triggers HITL:
-1. Gateway publishes to `stream:approvals` in Redis
-2. A Slack webhook notifies the reviewer with approve/reject buttons
-3. The reviewer's action is published to `stream:approval_responses`
-4. Gateway resumes or cancels the request
-
-Idempotency keys prevent duplicate approvals when agents retry during the wait.
-
-### 5. Vault Abstraction
-
-A `SecretStore` trait with three backends:
-
-| Backend | Use Case |
-|---|---|
-| `BuiltinStore` | Envelope encryption in PostgreSQL (AES-256-GCM, per-secret DEKs) |
-| `VaultStore` | HashiCorp Vault transit engine (planned) |
-| `KmsStore` | AWS KMS + Secrets Manager (planned) |
-
-Envelope encryption: Master Key (env/file) → encrypts Data Encryption Keys (DEKs) → DEKs encrypt individual secrets. Each encryption uses a unique 96-bit nonce.
-
-### 6. Response Sanitization
-
-Streaming-aware sanitization to avoid buffering large responses:
-
-| Condition | Strategy |
-|---|---|
-| JSON < 1MB | Full parse + JSONPath redaction + regex scan |
-| JSON 1–10MB | Streaming tokenizer with sliding window |
-| JSON > 10MB | Pass-through (headers only) |
-| SSE streams | Per-event scan |
-| Binary | Pass-through |
-
-### 7. Audit Logging
-
-All requests are logged to a PostgreSQL partitioned table (monthly partitions, 90-day retention). Logged fields include: identity, request details, policy decisions (including shadow mode results), HITL outcomes, response metadata, cost estimates, and OpenTelemetry trace/span IDs.
-
-Migration path: When audit volume exceeds ~50GB/month, migrate to ClickHouse with a compatible schema.
+### Core Philosophy
+1.  **Zero Trust**: No request passes without explicit token validation and policy evaluation.
+2.  **Streaming First**: usage of `Bytes` and streaming bodies to minimize memory footprint; buffering occurs only when policy inspection requires it.
+3.  **Hot Path Optimization**: Critical path metadata is cached in-memory (L1) and Redis (L2) to minimize database hits.
+4.  **Fail-Close**: Security failures (auth, policy errors) always block the request. Network failures (upstream) trigger circuit breaking.
 
 ---
 
-## Data Flow Diagram
+## 2. System Diagram
 
-```
-┌──────────┐    ailink_token     ┌──────────────┐     real_key      ┌──────────┐
-│          │ ─────────────────▶ │              │ ─────────────────▶ │          │
-│ AI Agent │                    │    AIlink    │                    │ Upstream │
-│          │ ◀───────────────── │   Gateway    │ ◀───────────────── │   API    │
-└──────────┘   clean response   │              │    raw response    └──────────┘
-                                └──────┬───────┘
-                                       │
-                    ┌──────────────────┼──────────────────┐
-                    │                  │                  │
-              ┌─────▼─────┐    ┌──────▼──────┐    ┌──────▼──────┐
-              │ PostgreSQL │    │    Redis    │    │    Vault    │
-              │ • Tokens   │    │ • Cache    │    │ • Secrets  │
-              │ • Policies │    │ • Rates    │    │ • DEKs     │
-              │ • Audit    │    │ • HITL     │    │            │
-              │ • Users    │    │ • Pub/Sub  │    │            │
-              └────────────┘    └────────────┘    └────────────┘
+```mermaid
+graph TD
+    Agent[AI Agent] -->|HTTPS| Gateway
+    Dashboard[Dashboard] -->|HTTPS + Secret| Gateway
+
+    subgraph "AIlink Gateway (Rust/Axum)"
+        M_TLS[TLS Termination]
+        M_Auth[Token Auth / RBAC]
+        M_Rate[Distributed Rate Limiter]
+        M_Cache[Response Cache Check]
+        M_Policy[Policy Engine]
+        
+        subgraph "Proxy Pipeline"
+            P_Router[Universal Model Router]
+            P_LB[Load Balancer]
+            P_Retry[Retry & Backoff]
+            P_Transform[Protocol Translator]
+        end
+        
+        subgraph "Background & Async"
+            J_Cleanup[Log Cleanup Job]
+            J_Audit[Audit Logger]
+            J_Notify[Webhook Dispatcher]
+        end
+    end
+
+    Gateway -->|OTLP| Jaeger[Jaeger/OTel]
+    Gateway -->|TCP| Postgres[(PostgreSQL 16)]
+    Gateway -->|TCP| Redis[(Redis 7)]
+    
+    P_Transform -->|HTTPS| OpenAi[OpenAI API]
+    P_Transform -->|HTTPS| Anthropic[Anthropic API]
+    P_Transform -->|HTTPS| Private[Internal APIs]
+
+    Redis -.->|Pub/Sub| Gateway
+    Redis -.->|Streams| J_Notify
 ```
 
 ---
 
-## Crate Structure
+## 3. Component Deep Dive
 
-```
-gateway/src/
-├── main.rs              # Axum bootstrap, middleware stack composition, security headers
-├── config.rs            # Env vars + optional TOML config
-├── cache.rs             # DashMap + Redis two-tier cache
-├── cli.rs               # CLI commands (token, credential, policy management)
-├── errors.rs            # Unified error types and HTTP error responses
-├── rotation.rs          # Automatic key rotation scheduler
-│
-├── api/
-│   ├── mod.rs            # Management API router + admin auth middleware
-│   ├── handlers.rs       # CRUD handlers for tokens, policies, credentials, services, approvals, audit
-│   └── analytics.rs      # Volume, status, latency analytics endpoints
-│
-├── middleware/
-│   ├── engine.rs         # Condition→action policy evaluation engine
-│   ├── fields.rs         # RequestContext field extraction for conditions
-│   ├── policy.rs         # Pre/post-flight policy evaluation facade
-│   ├── redact.rs         # Policy-driven PII redaction (patterns + fields)
-│   ├── sanitize.rs       # Response sanitization (PII scrubbing)
-│   ├── spend.rs          # Spend tracking and cap enforcement
-│   ├── hitl.rs           # HITL approval workflow documentation
-│   └── audit.rs          # Async two-phase audit log writer
-│
-├── proxy/
-│   ├── handler.rs        # Main proxy handler (auth → policy → key inject → forward → audit)
-│   │                     # Also handles service-based routing (/v1/proxy/services/{name}/...)
-│   ├── upstream.rs       # Reqwest client with retries, backoff, and connection pooling
-│   └── transform.rs      # URL rewriting, header mutation
-│
-├── vault/
-│   ├── mod.rs            # SecretStore trait definition
-│   └── builtin.rs        # AES-256-GCM envelope encryption (PG-backed)
-│
-├── store/
-│   ├── mod.rs            # DataStore trait definition
-│   └── postgres.rs       # PostgreSQL implementation (sqlx)
-│
-├── jobs/
-│   └── cleanup.rs        # Background job: auto-expire Level 2 debug logs (hourly)
-│
-├── notification/
-│   └── slack.rs          # Slack webhook notifier for HITL approvals
-│
-└── models/
-    ├── token.rs           # Token types and serialization
-    ├── policy.rs          # Policy rules, conditions, actions, and evaluation types
-    ├── service.rs         # Service Registry entity (Action Gateway)
-    ├── audit.rs           # Audit log entry schema
-    ├── approval.rs        # HITL approval request types
-    └── cost.rs            # Token usage extraction and cost calculation
-```
+### 3.1. The Proxy Pipeline (Hot Path)
+
+Requests flow through a stack of **Tower Middleware** layers. Each layer is isolated and composable.
+
+1.  **TLS Termination**: Handled by the intake layer (or external load balancer in clustered setups).
+2.  **Trace Layer**: Assigns an OpenTelemetry trace ID to the request.
+3.  **Security Headers**: Injects `Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options` to prevent browser-based attacks.
+4.  **CORS**: Enforces `DASHBOARD_ORIGIN` for browser clients.
+5.  **Authentication**:
+    *   **Management API**: Validates `Authorization: Bearer <admin-key>` against `api_keys` table. Checks `role` (Admin/Editor/Viewer) and `scopes` (e.g., `tokens:write`).
+    *   **Proxy API**: Validates `Authorization: Bearer ailink_v1_...`. Resolves Virtual Token ID to `project_id`.
+    *   **Dashboard Proxy**: Validates `DASHBOARD_SECRET` and `X-Dashboard-Token`.
+6.  **Rate Limiting (L1)**: Checks in-memory checks for DoS protection.
+7.  **Policy Engine (Pre-Flight)**:
+    *   Resolves `request.*`, `agent.*`, `usage.*` fields.
+    *   Evaluates JSON-logic rules.
+    *   Executes actions: `deny`, `rate_limit` (Redis-backed), `spend_cap` (DB-backed atomic check).
+8.  **Human-in-the-Loop (HITL)**: If triggered, suspends the request, notifies Slack/Dashboard via Redis Stream, and waits for `approval` or `rejection`.
+9.  **Response Cache (Read)**: Checks Redis for a semantic match (hash of model + messages + args). Returns immediately on hit.
+10. **Load Balancer**: Selects an upstream target based on `weight` and `availability` (Circuit Breaker status).
+11. **Model Router**:
+    *   **Detection**: Identifies provider (OpenAI, Anthropic, Gemini) via model prefix (e.g. `claude-3`).
+    *   **Translation**: Converts incoming OpenAI-format body to target provider format (e.g., specific JSON structure for Gemini).
+12. **Upstream Request**:
+    *   Injects the **Real API Key** (decrypted from Vault).
+    *   Applies **Retries** with exponential backoff and Jitter.
+    *   Respects `Retry-After` headers.
+13. **Response Handling**:
+    *   **Stream Processing**: Captures chunks for audit logging.
+    *   **Translation (Reverse)**: Normalizes response back to OpenAI format.
+    *   **Policy Engine (Post-Flight)**: Redacts PII (`response.body.*`) or alerts on specific errors.
+    *   **Cache Write**: Stores successful LLM responses in Redis.
+
+### 3.2. Policy Engine
+
+The heart of AIlink's control plane. Policies are JSON documents that bind **Conditions** to **Actions**.
+
+*   **Phases**:
+    *   `pre`: Before upstream request (Access Control, Limits).
+    *   `post`: After response received (Redaction, Auditing).
+*   **Modes**:
+    *   `enforce`: Blocks/modifies requests.
+    *   `shadow`: Logs violations but allows requests (for testing).
+*   **Field Resolution**: Uses `src/middleware/fields.rs` to extract data via dot-notation:
+    *   `request.body.messages[0].content`: JSON path extraction.
+    *   `usage.spend_today_usd`: Real-time Redis counter.
+    *   `context.time.hour`: UTC time.
+*   **Operators**: `eq`, `neq`, `gt`, `lt`, `in`, `contains`, `starts_with`, `regex`, `glob`.
+*   **Actions**:
+    *   `deny`: Returns 403/429.
+    *   `rate_limit`: Increments Redis sliding window counter.
+    *   `store_audit`: Forces audit log level.
+    *   `redact`: Scrubs sensitive patterns (SSN, API Key) from body.
+    *   `webhook`: Dispatches async event.
+    *   `transform`: Modifies headers/body (e.g., inject system prompt).
+
+### 3.3. Identity & Security
+
+*   **Virtual Tokens**: `ailink_v1_...`. Randomly generated pointer to a configuration.
+    *   **Isolation**: Tokens belong to a `project_id`. Access across projects is blocked (IDOR protection).
+    *   **Capabilities**: Tokens are scoped to specific upstreams or services.
+*   **Secret Management (The Vault)**:
+    *   **Envelope Encryption**:
+        *   **Master Key (KEK)**: 32-byte key from `AILINK_MASTER_KEY` env var. Never stored in DB.
+        *   **Data Key (DEK)**: Unique 256-bit key per credential. Stored in DB encrypted by KEK.
+        *   **Ciphertext**: The actual API key, encrypted by DEK using **AES-256-GCM** with a unique 96-bit nonce.
+    *   **Lifecycle**: Decrypted only in memory, for the duration of the request context, then zeroed.
+*   **SSRF Protection**:
+    *   Webhook dispatcher validates URLs.
+    *   Rejects private IP ranges (10.0.0.0/8, 192.168.0.0/16, etc.).
+    *   Rejects cloud metadata services (169.254.169.254).
+    *   Enforces HTTPS (except localhost in dev).
+*   **Timing Attack Mitigation**:
+    *   All key comparisons (Admin Key, Dashboard Secret) use `subtle::ConstantTimeEq`.
+
+### 3.4. Observability & Auditing
+
+*   **Audit Logging**:
+    *   **Async Write**: Logs are pushed to a channel, batched, and written to `audit_logs` (PostgreSQL partition).
+    *   **Levels**:
+        *   `0`: Metadata only (tokens, latency, cost).
+        *   `1`: PII-scrubbed bodies.
+        *   `2`: Full capture (automatically expired/downgraded after 24h).
+    *   **Cost Tracking**: Calculates token usage and USD cost based on model pricing (configurable).
+*   **Tracing**:
+    *   OpenTelemetry (OTLP) export to Jaeger/Tempo.
+    *   Spans for: `middleware`, `db_query`, `redis_op`, `upstream_request`, `policy_eval`.
+*   **Metrics**:
+    *   Request counts, Latency histograms, Error rates.
+
+### 3.5. Background Jobs
+
+*   **Cleanup (`jobs/cleanup.rs`)**:
+    *   Runs hourly.
+    *   Identifies Level 2 audit logs older than 24 hours.
+    *   **Downgrades**: Sets `log_level = 0`.
+    *   **Strips**: Updates `request_body` / `response_body` to `[EXPIRED]` to reclaim storage.
+*   **Key Rotation**:
+    *   (Enterprise) Rotates upstream API keys based on policy schedules.
 
 ---
 
-## Key Design Principles
+## 4. Data Architecture
 
-1. **Zero-trust by default** — No request passes without token validation and policy evaluation
-2. **Cache-first hot path** — In-memory → Redis → PG. Hot requests never hit the database
-3. **Streaming, not buffering** — The proxy streams request and response bodies; never buffers more than necessary
-4. **Composable middleware** — Each security feature is an independent Tower Layer that can be tested, enabled, or disabled independently
-5. **Graceful degradation** — If Redis is down, fall back to PG. If audit writes lag, don't block the request (async writes)
-6. **Observable by default** — Every request produces an OpenTelemetry span with a trace ID that flows through audit logs
+### 4.1. PostgreSQL (System of Record)
+*   **`tokens`**: Virtual identities settings.
+*   **`credentials`**: Encrypted provider keys.
+*   **`policies`**: Rulesets (JSONB).
+*   **`api_keys`**: Management API access (RBAC).
+*   **`audit_logs`**: Partitioned by month. High-volume write target.
+*   **`spend_caps`**: Daily/Monthly limits per token.
+
+### 4.2. Redis (System of Speed)
+*   **Cache (`cache:*`)**:
+    *   Stores resolved Token → Policy + Credential mappings.
+    *   TTL: 5-10 mins. Invalidated via Pub/Sub on updates.
+*   **Counters (`usage:*`)**:
+    *   `usage:{token_id}:requests:{window}`: Rate limit counters.
+    *   `spend:{token_id}:daily:{YYYY-MM-DD}`: Atomic spend tracking.
+*   **Streams (`stream:*`)**:
+    *   `stream:approvals`: HITL request queue.
+    *   `stream:approval_responses`: Operator decisions.
+*   **LLM Cache (`response:*`)**:
+    *   Stores `SHA256(request_signature) -> response_payload`.
+
+---
+
+## 5. Integrations
+
+*   **Webhooks**:
+    *   **Events**: `policy_violation`, `spend_cap_exceeded`, `rate_limit_exceeded`.
+    *   **Delivery**: Fire-and-forget POST requests to configured URLs.
+*   **Slack**:
+    *   Interactive Block Kit messages for HITL approvals.
+    *   Real-time alerts for critical failures.
+
+---
+
+## 6. Development & Deployment
+
+*   **Docker**:
+    *   Multi-stage builds (Planner + Builder + Runtime) for minimal image size (~100MB).
+    *   Non-root user `ailink` for security.
+*   **Configuration**:
+    *   `Config` struct loads from Environment Variables + `.env` file.
+    *   Strict typing and validation at startup (fails fast if config is invalid).
+

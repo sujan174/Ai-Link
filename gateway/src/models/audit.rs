@@ -49,6 +49,26 @@ pub struct AuditEntry {
     pub tenant_id: Option<String>,
     /// Caller-supplied request ID from X-Request-ID header
     pub external_request_id: Option<String>,
+
+    // ── Phase 5: LLM Observability ───────────────────────────
+    /// Tool calls extracted from LLM response (JSON array)
+    pub tool_calls: Option<serde_json::Value>,
+    /// Number of tool calls in this response
+    pub tool_call_count: u16,
+    /// Finish reason (stop, tool_calls, length, content_filter, etc.)
+    pub finish_reason: Option<String>,
+    /// Session ID for grouping conversations (from X-Session-ID)
+    pub session_id: Option<String>,
+    /// Parent span ID for nested calls (from X-Parent-Span-ID)
+    pub parent_span_id: Option<String>,
+    /// Classified error type (rate_limit, context_too_long, etc.)
+    pub error_type: Option<String>,
+    /// Whether this was a streaming (SSE) response
+    pub is_streaming: bool,
+    /// Time to first token in milliseconds
+    pub ttft_ms: Option<u64>,
+    /// Whether this response was served from cache
+    pub cache_hit: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

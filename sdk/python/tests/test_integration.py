@@ -666,3 +666,381 @@ class TestServiceProxy:
         assert resp.status_code == 200
         data = resp.json()
         assert data["json"]["test"] == "service_proxy"
+
+
+# ──────────────────────────────────────────────
+# 10. Upstream Health Status (NEW)
+# ──────────────────────────────────────────────
+
+
+class TestUpstreamHealth:
+    """Tests for GET /api/v1/health/upstreams — the upstream circuit-breaker status page."""
+
+    @pytest.fixture(scope="class")
+    def upstream_token(self, admin_client, project_id, mock_upstream_url):
+        """Create a credential + token so the LB tracks at least one upstream."""
+        cred = admin_client.credentials.create(
+            name=f"upstream-cred-{uuid.uuid4().hex[:8]}",
+            provider="openai",
+            secret="sk-test",
+        )
+        token_resp = admin_client.tokens.create(
+            name=f"upstream-tok-{uuid.uuid4().hex[:8]}",
+            credential_id=str(cred["id"]),
+            upstream_url=f"{mock_upstream_url}/anything",
+            project_id=project_id,
+        )
+        return token_resp["token_id"]
+
+    def test_health_endpoint_returns_200(self, admin_client):
+        """GET /api/v1/health/upstreams returns HTTP 200."""
+        resp = admin_client.get("/api/v1/health/upstreams")
+        assert resp.status_code == 200
+
+    def test_health_endpoint_returns_list(self, admin_client):
+        """Response body is a JSON array."""
+        resp = admin_client.get("/api/v1/health/upstreams")
+        data = resp.json()
+        assert isinstance(data, list)
+
+    def test_health_endpoint_requires_auth(self, gateway_url):
+        """Unauthenticated request to /api/v1/health/upstreams returns 401."""
+        resp = requests.get(f"{gateway_url}/api/v1/health/upstreams")
+        assert resp.status_code == 401
+
+    def test_upstream_appears_after_request(self, upstream_token, gateway_url, admin_client):
+        """After a proxy request, the upstream should appear in the health list."""
+        agent = AIlinkClient(api_key=upstream_token, gateway_url=gateway_url, timeout=10.0)
+        resp = agent.post("/anything", json={"hello": "world"})
+        assert resp.status_code == 200, f"Request failed with {resp.status_code}: {resp.text}"
+        time.sleep(0.5)
+
+        resp = admin_client.get("/api/v1/health/upstreams")
+        assert resp.status_code == 200
+        upstreams = resp.json()
+
+        # At least one upstream should be tracked
+        assert len(upstreams) > 0, f"Upstreams list empty after request. Gateway logs might show why. Upstreams: {upstreams}"
+
+        # Each entry must have the required fields
+        for u in upstreams:
+            assert "url" in u
+            assert "is_healthy" in u
+            assert "failure_count" in u
+            assert "token_id" in u
+
+    def test_healthy_upstream_has_zero_failures(self, upstream_token, gateway_url, admin_client):
+        """A successful upstream should show is_healthy=true and failure_count=0."""
+        agent = AIlinkClient(api_key=upstream_token, gateway_url=gateway_url, timeout=10.0)
+        agent.post("/anything", json={"ping": "pong"})
+        time.sleep(0.5)
+
+        resp = admin_client.get("/api/v1/health/upstreams")
+        upstreams = resp.json()
+
+        # Find an upstream with zero failures (our mock upstream should be healthy)
+        healthy = [u for u in upstreams if u["is_healthy"] and u["failure_count"] == 0]
+        assert len(healthy) > 0, f"Expected at least one healthy upstream, got: {upstreams}"
+
+    def test_cooldown_field_is_null_for_healthy(self, admin_client):
+        """Healthy upstreams should have cooldown_remaining_secs = null."""
+        resp = admin_client.get("/api/v1/health/upstreams")
+        upstreams = resp.json()
+        for u in upstreams:
+            if u["is_healthy"]:
+                assert u.get("cooldown_remaining_secs") is None, (
+                    f"Healthy upstream should have null cooldown, got: {u}"
+                )
+
+
+# ──────────────────────────────────────────────
+# 11. Response Cache HIT Badge (NEW)
+# ──────────────────────────────────────────────
+
+
+class TestCacheHit:
+    """Tests for the response cache: x-ailink-cache header and cache_hit in audit logs."""
+
+    @pytest.fixture(scope="class")
+    def cache_token(self, admin_client, project_id, mock_upstream_url):
+        """Create a token pointing at mock upstream for cache testing."""
+        cred = admin_client.credentials.create(
+            name=f"cache-cred-{uuid.uuid4().hex[:8]}",
+            provider="openai",
+            secret="sk-test",
+        )
+        token_resp = admin_client.tokens.create(
+            name=f"cache-tok-{uuid.uuid4().hex[:8]}",
+            credential_id=str(cred["id"]),
+            upstream_url=f"{mock_upstream_url}/anything",
+            project_id=project_id,
+        )
+        return token_resp["token_id"]
+
+    def test_first_request_is_cache_miss(self, cache_token, gateway_url):
+        """First request to a unique payload should NOT have x-ailink-cache: HIT."""
+        agent = AIlinkClient(api_key=cache_token, gateway_url=gateway_url, timeout=10.0)
+        # Use a unique model name to avoid collisions with other tests
+        unique_marker = uuid.uuid4().hex[:8]
+        resp = agent.post(
+            "/anything",
+            json={
+                "model": f"gpt-4-cache-test-{unique_marker}",
+                "messages": [{"role": "user", "content": "cache test first"}],
+            },
+        )
+        # The upstream (httpbin) will return 200 regardless of body
+        cache_header = resp.headers.get("x-ailink-cache", "")
+        assert cache_header != "HIT", "First request should not be a cache hit"
+
+    def test_second_identical_request_is_cache_hit(self, cache_token, gateway_url):
+        """Second identical request should return x-ailink-cache: HIT."""
+        agent = AIlinkClient(api_key=cache_token, gateway_url=gateway_url, timeout=10.0)
+        unique_marker = uuid.uuid4().hex[:8]
+        payload = {
+            "model": f"gpt-4-cache-hit-{unique_marker}",
+            "messages": [{"role": "user", "content": "identical cache payload"}],
+        }
+
+        # First request — populates cache
+        r1 = agent.post("/anything", json=payload)
+        assert r1.status_code == 200
+        assert r1.headers.get("x-ailink-cache", "") != "HIT"
+
+        # Second request — should hit cache
+        r2 = agent.post("/anything", json=payload)
+        assert r2.status_code == 200
+        assert r2.headers.get("x-ailink-cache") == "HIT", (
+            f"Expected x-ailink-cache: HIT on second request, got: {r2.headers.get('x-ailink-cache')}"
+        )
+
+    def test_cache_hit_appears_in_audit_log(self, cache_token, gateway_url, admin_client):
+        """The audit log for a cache hit should have cache_hit=true."""
+        agent = AIlinkClient(api_key=cache_token, gateway_url=gateway_url, timeout=10.0)
+        unique_marker = uuid.uuid4().hex[:8]
+        payload = {
+            "model": f"gpt-4-audit-cache-{unique_marker}",
+            "messages": [{"role": "user", "content": f"audit cache test {unique_marker}"}],
+        }
+
+        # Two identical requests
+        agent.post("/anything", json=payload)
+        agent.post("/anything", json=payload)
+        time.sleep(1.5)
+
+        # Find audit logs for this token
+        logs = admin_client.audit.list(limit=100)
+        # Filter to logs from this token that hit cache
+        cache_hit_logs = [
+            log for log in logs
+            if hasattr(log, "cache_hit") and log.cache_hit is True
+        ]
+        assert len(cache_hit_logs) > 0, (
+            "Expected at least one audit log with cache_hit=True after sending identical requests"
+        )
+
+    def test_no_cache_header_bypasses_cache(self, cache_token, gateway_url):
+        """Request with x-ailink-no-cache: true should not return a cached response."""
+        agent = AIlinkClient(api_key=cache_token, gateway_url=gateway_url, timeout=10.0)
+        unique_marker = uuid.uuid4().hex[:8]
+        payload = {
+            "model": f"gpt-4-nocache-{unique_marker}",
+            "messages": [{"role": "user", "content": "no cache test"}],
+        }
+
+        # Warm the cache
+        agent.post("/anything", json=payload)
+
+        # Second request with bypass header
+        r2 = agent.post(
+            "/anything",
+            json=payload,
+            headers={"x-ailink-no-cache": "true"},
+        )
+        assert r2.headers.get("x-ailink-cache", "") != "HIT", (
+            "Request with x-ailink-no-cache: true should bypass cache"
+        )
+
+
+# ──────────────────────────────────────────────
+# 12. SSE Streaming (NEW)
+# ──────────────────────────────────────────────
+
+
+class TestSSEStreaming:
+    """
+    Tests for streaming request handling through the gateway.
+    SSE format translation (Anthropic/Gemini → OpenAI) is unit-tested in Rust.
+    These integration tests verify that:
+      - Streaming requests are proxied correctly end-to-end
+      - The gateway does not buffer/corrupt streaming responses
+      - Audit logs correctly record is_streaming=true
+    """
+
+    @pytest.fixture(scope="class")
+    def stream_token(self, admin_client, project_id, mock_upstream_url):
+        """Create a token for streaming tests."""
+        cred = admin_client.credentials.create(
+            name=f"stream-cred-{uuid.uuid4().hex[:8]}",
+            provider="openai",
+            secret="sk-test",
+        )
+        token_resp = admin_client.tokens.create(
+            name=f"stream-tok-{uuid.uuid4().hex[:8]}",
+            credential_id=str(cred["id"]),
+            upstream_url=f"{mock_upstream_url}/anything",
+            project_id=project_id,
+        )
+        return token_resp["token_id"]
+
+    def test_streaming_request_passes_through(self, stream_token, gateway_url):
+        """A streaming request (stream=true) should be proxied and return 200."""
+        resp = requests.post(
+            f"{gateway_url}/anything",
+            headers={
+                "Authorization": f"Bearer {stream_token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "stream test"}],
+                "stream": True,
+            },
+            stream=True,
+            timeout=10,
+        )
+        # The mock upstream (httpbin) will respond with 200 even for streaming
+        assert resp.status_code == 200
+
+    def test_streaming_request_logged_in_audit(self, stream_token, gateway_url, admin_client):
+        """Streaming requests should appear in audit logs with is_streaming=true."""
+        unique_marker = uuid.uuid4().hex[:8]
+        resp = requests.post(
+            f"{gateway_url}/anything",
+            headers={
+                "Authorization": f"Bearer {stream_token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": f"gpt-4-stream-audit-{unique_marker}",
+                "messages": [{"role": "user", "content": f"stream audit {unique_marker}"}],
+                "stream": True,
+            },
+            stream=True,
+            timeout=10,
+        )
+        assert resp.status_code == 200
+        # Consume response body
+        _ = resp.content
+        time.sleep(1.5)
+
+        logs = admin_client.audit.list(limit=100)
+        streaming_logs = [
+            log for log in logs
+            if hasattr(log, "is_streaming") and log.is_streaming is True
+        ]
+        assert len(streaming_logs) > 0, (
+            "Expected at least one audit log with is_streaming=True"
+        )
+
+    def test_non_streaming_request_not_flagged(self, stream_token, gateway_url, admin_client):
+        """Non-streaming requests should have is_streaming=false in audit logs."""
+        unique_marker = uuid.uuid4().hex[:8]
+        agent = AIlinkClient(api_key=stream_token, gateway_url=gateway_url, timeout=10.0)
+        agent.post(
+            "/anything",
+            json={
+                "model": f"gpt-4-no-stream-{unique_marker}",
+                "messages": [{"role": "user", "content": f"no stream {unique_marker}"}],
+            },
+        )
+        time.sleep(1.5)
+
+        logs = admin_client.audit.list(limit=100)
+        non_streaming = [
+            log for log in logs
+            if hasattr(log, "is_streaming") and log.is_streaming is False
+        ]
+        assert len(non_streaming) > 0, (
+            "Expected at least one audit log with is_streaming=False"
+        )
+
+
+# ──────────────────────────────────────────────
+# 13. Router Debugger — Audit Detail (NEW)
+# ──────────────────────────────────────────────
+
+
+class TestRouterDebugger:
+    """
+    Tests for the router_info field in audit log detail.
+    The Model Router translates requests from OpenAI format to Anthropic/Gemini format.
+    The router_info field captures: detected_provider, original_model, translated_model.
+    """
+
+    @pytest.fixture(scope="class")
+    def router_token(self, admin_client, project_id, mock_upstream_url):
+        """Create a token for router debugger tests."""
+        cred = admin_client.credentials.create(
+            name=f"router-cred-{uuid.uuid4().hex[:8]}",
+            provider="openai",
+            secret="sk-test",
+        )
+        token_resp = admin_client.tokens.create(
+            name=f"router-tok-{uuid.uuid4().hex[:8]}",
+            credential_id=str(cred["id"]),
+            upstream_url=mock_upstream_url,
+            project_id=project_id,
+        )
+        return token_resp["token_id"]
+
+    def test_audit_detail_has_router_info_field(self, router_token, gateway_url, admin_client):
+        """Audit log detail response includes a router_info field (may be null for non-routed requests)."""
+        agent = AIlinkClient(api_key=router_token, gateway_url=gateway_url, timeout=10.0)
+        agent.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "router info test"}],
+            },
+        )
+        time.sleep(1.5)
+
+        logs = admin_client.audit.list(limit=10)
+        assert len(logs) > 0, "No audit logs found"
+
+        # Fetch detail for the most recent log
+        log_id = str(logs[0].id)
+        detail_resp = admin_client.get(f"/api/v1/audit/{log_id}")
+        assert detail_resp.status_code == 200
+
+        detail = detail_resp.json()
+        # router_info key must exist in the response (value may be null)
+        assert "router_info" in detail, (
+            f"Expected 'router_info' key in audit detail response, got keys: {list(detail.keys())}"
+        )
+
+    def test_audit_detail_has_cache_hit_field(self, router_token, gateway_url, admin_client):
+        """Audit log detail response includes a cache_hit field."""
+        agent = AIlinkClient(api_key=router_token, gateway_url=gateway_url, timeout=10.0)
+        agent.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4",
+                "messages": [{"role": "user", "content": "cache hit field test"}],
+            },
+        )
+        time.sleep(1.5)
+
+        logs = admin_client.audit.list(limit=10)
+        assert len(logs) > 0
+
+        log_id = str(logs[0].id)
+        detail_resp = admin_client.get(f"/api/v1/audit/{log_id}")
+        assert detail_resp.status_code == 200
+
+        detail = detail_resp.json()
+        assert "cache_hit" in detail, (
+            f"Expected 'cache_hit' key in audit detail response, got keys: {list(detail.keys())}"
+        )
+

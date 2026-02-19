@@ -42,4 +42,26 @@ impl UpstreamClient {
              crate::errors::AppError::Upstream(e.to_string())
         })
     }
+
+    /// Forward a request and return the raw response without consuming the body.
+    /// Used for streaming (SSE) requests where we want to pipe bytes directly
+    /// to the client. Does NOT retry — SSE streams are not idempotent.
+    pub async fn forward_raw(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        headers: reqwest::header::HeaderMap,
+        body: bytes::Bytes,
+    ) -> Result<reqwest::Response, crate::errors::AppError> {
+        self.client
+            .request(method, url)
+            .headers(headers)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::warn!("Upstream streaming request failed: {}", e);
+                crate::errors::AppError::Upstream(e.to_string())
+            })
+    }
 }

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO usage_meters (org_id, period, total_requests, total_tokens_used, total_spend_usd)\n               VALUES ($1, $2, $3, $4, $5)\n               ON CONFLICT (org_id, period) DO UPDATE SET\n                   total_requests = usage_meters.total_requests + $3,\n                   total_tokens_used = usage_meters.total_tokens_used + $4,\n                   total_spend_usd = usage_meters.total_spend_usd + $5,\n                   updated_at = NOW()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Date",
+        "Int8",
+        "Int8",
+        "Numeric"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "16e8f85665658dd74e6bf16420d05bb432d6ed68219f2b35c6283b12dad05c81"
+}

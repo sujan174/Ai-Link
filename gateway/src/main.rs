@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::any;
 use clap::Parser;
 use tower_http::cors::CorsLayer;
@@ -31,7 +32,10 @@ pub struct AppState {
     pub cache: TieredCache,
     pub upstream_client: proxy::upstream::UpstreamClient,
     pub notifier: notification::slack::SlackNotifier,
+    pub webhook: notification::webhook::WebhookNotifier,
     pub config: config::Config,
+    pub lb: proxy::loadbalancer::LoadBalancer,
+    pub pricing: models::pricing_cache::PricingCache,
 }
 
 #[tokio::main]
@@ -68,20 +72,13 @@ async fn main() -> anyhow::Result<()> {
     let cfg = config::load()?;
     let args = cli::Cli::parse();
 
-    match args.command {
+    let result = match args.command {
         Some(cli::Commands::Serve { port }) => {
-            run_server(cfg, port).await?;
+            run_server(cfg, port).await
         }
         Some(cli::Commands::Token { command }) => {
-            // CLI commands that need DB also need state now?
-            // Actually handle_token_command now takes &Arc<AppState> or we can refactor it to take DB + Config?
-            // The implementation used State.db.insert_token.
-            // We should init the state for CLI commands too or pass DB.
-            // Let's create a minimal state for CLI.
-
             let db = PgStore::connect(&cfg.database_url).await?;
             let vault = BuiltinStore::new(&cfg.master_key, db.pool().clone())?;
-            // Dummy values for CLI
             let redis_client = redis::Client::open(cfg.redis_url.as_str())?;
             let redis_conn = redis::aio::ConnectionManager::new(redis_client).await?;
             let cache = TieredCache::new(redis_conn);
@@ -94,55 +91,54 @@ async fn main() -> anyhow::Result<()> {
                 cache,
                 upstream_client,
                 notifier,
+                webhook: notification::webhook::WebhookNotifier::new(),
                 config: cfg,
+                lb: proxy::loadbalancer::LoadBalancer::new(),
+                pricing: models::pricing_cache::PricingCache::new(),
             });
 
-            handle_token_command(command, &state).await?;
+            handle_token_command(command, &state).await
         }
         Some(cli::Commands::Credential { command }) => {
             let db = PgStore::connect(&cfg.database_url).await?;
-            handle_credential_command(&db, &cfg, command).await?;
+            handle_credential_command(&db, &cfg, command).await
         }
         Some(cli::Commands::Approval { command }) => {
             let db = PgStore::connect(&cfg.database_url).await?;
-            handle_approval_command(&db, command).await?;
+            handle_approval_command(&db, command).await
         }
         Some(cli::Commands::Policy { command }) => {
-            // Need state for policy command
-            let db = PgStore::connect(&cfg.database_url).await?;
-            // We can construct a minimal state or refactor handle_policy_command to just take DB.
-            // But handle_policy_command might need more in future?
-            // Currently it only uses db.
-            // Let's construct minimal state to match signature
-            let vault = BuiltinStore::new(&cfg.master_key, db.pool().clone())?;
-            // For CLI we might not need Redis if we don't assume we need it.
-            // But AppState requires it.
-            // Let's just pass DB to handle_policy_command instead of AppState to simplify.
-            // Ah I already implemented handle_policy_command taking AppState.
-            // Let's initialize full state.
-            let redis_client = redis::Client::open(cfg.redis_url.as_str())?;
-            let redis_conn = redis::aio::ConnectionManager::new(redis_client).await?;
-            let cache = TieredCache::new(redis_conn);
-            let upstream_client = proxy::upstream::UpstreamClient::new();
-            let notifier = notification::slack::SlackNotifier::new(cfg.slack_webhook_url.clone());
+             let db = PgStore::connect(&cfg.database_url).await?;
+             let vault = BuiltinStore::new(&cfg.master_key, db.pool().clone())?;
+             let redis_client = redis::Client::open(cfg.redis_url.as_str())?;
+             let redis_conn = redis::aio::ConnectionManager::new(redis_client).await?;
+             let cache = TieredCache::new(redis_conn);
+             let upstream_client = proxy::upstream::UpstreamClient::new();
+             let notifier = notification::slack::SlackNotifier::new(cfg.slack_webhook_url.clone());
 
-            let state = Arc::new(AppState {
-                db,
-                vault,
-                cache,
-                upstream_client,
-                notifier,
-                config: cfg,
-            });
+             let state = Arc::new(AppState {
+                 db,
+                 vault,
+                 cache,
+                 upstream_client,
+                 notifier,
+                 webhook: notification::webhook::WebhookNotifier::new(),
+                 config: cfg,
+                 lb: proxy::loadbalancer::LoadBalancer::new(),
+                 pricing: models::pricing_cache::PricingCache::new(),
+             });
 
-            handle_policy_command(command, &state).await?;
+             handle_policy_command(command, &state).await
         }
         None => {
-            run_server(cfg, 8443).await?;
+            run_server(cfg, 8443).await
         }
-    }
+    };
 
-    Ok(())
+    if let Err(ref e) = result {
+        eprintln!("Error: {:?}", e);
+    }
+    result
 }
 
 async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
@@ -165,27 +161,77 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
     let upstream_client = proxy::upstream::UpstreamClient::new();
     let notifier = notification::slack::SlackNotifier::new(cfg.slack_webhook_url.clone());
 
+    let pricing = models::pricing_cache::PricingCache::new();
+
     let state = Arc::new(AppState {
         db,
         vault,
         cache,
         upstream_client,
         notifier,
+        webhook: notification::webhook::WebhookNotifier::new(),
         config: cfg,
+        lb: proxy::loadbalancer::LoadBalancer::new(),
+        pricing: pricing.clone(),
     });
+
+    // Load initial pricing from DB into the in-memory cache
+    match state.db.list_model_pricing().await {
+        Ok(rows) => {
+            let entries = rows.into_iter().map(|r| models::pricing_cache::PricingEntry {
+                provider: r.provider,
+                model_pattern: r.model_pattern,
+                input_per_m: r.input_per_m,
+                output_per_m: r.output_per_m,
+            }).collect();
+            pricing.reload(entries).await;
+            tracing::info!("Loaded model pricing from DB");
+        }
+        Err(e) => {
+            tracing::warn!("Failed to load model pricing from DB, using hardcoded fallback: {}", e);
+        }
+    }
 
     let app = axum::Router::new()
         // Health endpoints (no auth)
         .route("/healthz", axum::routing::get(|| async { "ok" }))
         .route("/readyz", axum::routing::get(readiness_check))
         // Management API — nested under /api/v1 (preserves middleware + fallback)
-        .nest("/api/v1", api::api_router())
+        .nest("/api/v1", api::api_router(state.clone()))
         // Proxy: catch everything else
         .fallback(any(proxy::handler::proxy_handler))
         .with_state(state.clone())
+        // Enforce 25 MB body size limit on all routes
+        .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .layer(tower_http::trace::TraceLayer::new_for_http())
-        // SECURITY: permissive CORS is fine for local dev; restrict origins in production
-        .layer(CorsLayer::permissive())
+        // SEC-06: restrict CORS origins (reads DASHBOARD_ORIGIN env var, defaults to localhost for dev)
+        .layer({
+            use tower_http::cors::AllowOrigin;
+            use axum::http::{HeaderName, Method};
+            let dashboard_origin = std::env::var("DASHBOARD_ORIGIN")
+                .unwrap_or_else(|_| "http://localhost:3000".to_string());
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::predicate(move |origin, _| {
+                    let origin_str = origin.to_str().unwrap_or("");
+                    origin_str == dashboard_origin
+                        || origin_str.starts_with("http://localhost:")
+                        || origin_str.starts_with("http://127.0.0.1:")
+                }))
+                .allow_methods([
+                    Method::GET, Method::POST, Method::PUT,
+                    Method::DELETE, Method::PATCH, Method::OPTIONS,
+                ])
+                // NOTE: Cannot use AllowHeaders::any() with allow_credentials(true) per CORS spec
+                .allow_headers([
+                    HeaderName::from_static("content-type"),
+                    HeaderName::from_static("authorization"),
+                    HeaderName::from_static("x-admin-key"),
+                    HeaderName::from_static("x-dashboard-token"),
+                    HeaderName::from_static("x-request-id"),
+                ])
+                .allow_credentials(true)
+        })
+        .layer(axum::middleware::from_fn(request_id_middleware))
         .layer(axum::middleware::from_fn(security_headers_middleware));
 
     // Phase 4: Start background cleanup job for Level 2 log expiry
@@ -198,6 +244,20 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+/// Middleware: injects a unique X-Request-Id into every response.
+/// This allows clients to correlate errors with gateway logs.
+async fn request_id_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let req_id = uuid::Uuid::new_v4().to_string();
+    let mut resp = next.run(req).await;
+    if let Ok(val) = axum::http::HeaderValue::from_str(&req_id) {
+        resp.headers_mut().insert("x-request-id", val);
+    }
+    resp
 }
 
 async fn readiness_check() -> &'static str {
@@ -380,7 +440,7 @@ async fn handle_token_command(
                 id: token_id.clone(),
                 project_id: pid,
                 name,
-                credential_id: cred_id,
+                credential_id: Some(cred_id),
                 upstream_url: upstream,
                 scopes: serde_json::json!([]),
                 policy_ids: p_ids,

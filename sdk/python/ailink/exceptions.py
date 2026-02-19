@@ -2,6 +2,9 @@
 Custom exceptions for the AIlink SDK.
 
 Provides clear, actionable error messages instead of raw httpx.HTTPStatusError.
+Parses the OpenAI-compatible error format returned by the gateway:
+
+    {"error": {"message": "...", "type": "...", "code": "..."}}
 """
 
 import httpx
@@ -10,11 +13,32 @@ import httpx
 class AIlinkError(Exception):
     """Base exception for all AIlink SDK errors."""
 
-    def __init__(self, message: str, status_code: int = None, response: httpx.Response = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: int = None,
+        response: httpx.Response = None,
+        error_type: str = "",
+        code: str = "",
+        request_id: str = "",
+    ):
         self.message = message
         self.status_code = status_code
         self.response = response
+        self.error_type = error_type
+        self.code = code
+        self.request_id = request_id
         super().__init__(message)
+
+    def __repr__(self) -> str:
+        parts = [f"message={self.message!r}"]
+        if self.status_code:
+            parts.append(f"status_code={self.status_code}")
+        if self.code:
+            parts.append(f"code={self.code!r}")
+        if self.request_id:
+            parts.append(f"request_id={self.request_id!r}")
+        return f"{self.__class__.__name__}({', '.join(parts)})"
 
 
 class AuthenticationError(AIlinkError):
@@ -33,7 +57,7 @@ class NotFoundError(AIlinkError):
 
 
 class RateLimitError(AIlinkError):
-    """Rate limit exceeded. Check retry-after header."""
+    """Rate limit exceeded. Check retry_after for backoff duration."""
 
     def __init__(self, message: str, retry_after: float = None, **kwargs):
         self.retry_after = retry_after
@@ -45,9 +69,52 @@ class ValidationError(AIlinkError):
     pass
 
 
+class PayloadTooLargeError(AIlinkError):
+    """Request body exceeds the gateway's 25 MB size limit."""
+    pass
+
+
+class SpendCapError(AIlinkError):
+    """Token spend cap has been reached."""
+    pass
+
+
+class PolicyDeniedError(PermissionError):
+    """Request was blocked by a gateway policy."""
+    pass
+
+
 class GatewayError(AIlinkError):
     """Gateway returned a 5xx error."""
     pass
+
+
+def _parse_error_body(response: httpx.Response) -> tuple[str, str, str]:
+    """
+    Parse the gateway error response body.
+
+    Supports both the new structured format:
+        {"error": {"message": "...", "type": "...", "code": "..."}}
+    and the legacy flat format:
+        {"error": "message string"}
+
+    Returns (message, error_type, code).
+    """
+    try:
+        body = response.json()
+        error = body.get("error", {})
+        if isinstance(error, dict):
+            return (
+                error.get("message", response.text),
+                error.get("type", ""),
+                error.get("code", ""),
+            )
+        elif isinstance(error, str):
+            # Legacy flat format
+            return error, "", ""
+        return response.text, "", ""
+    except Exception:
+        return response.text, "", ""
 
 
 def raise_for_status(response: httpx.Response) -> None:
@@ -55,35 +122,48 @@ def raise_for_status(response: httpx.Response) -> None:
     Check response status and raise the appropriate AIlink exception.
 
     Use this instead of response.raise_for_status() for better error messages.
+    The exception will include:
+    - error_type: machine-readable category (e.g. "rate_limit_error")
+    - code: specific error code (e.g. "rate_limit_exceeded")
+    - request_id: from X-Request-Id header for log correlation
     """
     if response.is_success:
         return
 
     status = response.status_code
-    try:
-        body = response.json()
-        detail = body.get("error", body.get("message", response.text))
-    except Exception:
-        detail = response.text
+    message, error_type, code = _parse_error_body(response)
+    request_id = response.headers.get("x-request-id", "")
 
-    kwargs = {"status_code": status, "response": response}
+    kwargs = {
+        "status_code": status,
+        "response": response,
+        "error_type": error_type,
+        "code": code,
+        "request_id": request_id,
+    }
 
     if status == 401:
-        raise AuthenticationError(f"Authentication failed: {detail}", **kwargs)
+        raise AuthenticationError(f"Authentication failed: {message}", **kwargs)
+    elif status == 402:
+        raise SpendCapError(f"Spend cap reached: {message}", **kwargs)
     elif status == 403:
-        raise PermissionError(f"Permission denied: {detail}", **kwargs)
+        if code == "policy_denied":
+            raise PolicyDeniedError(f"Policy denied: {message}", **kwargs)
+        raise PermissionError(f"Permission denied: {message}", **kwargs)
     elif status == 404:
-        raise NotFoundError(f"Resource not found: {detail}", **kwargs)
+        raise NotFoundError(f"Resource not found: {message}", **kwargs)
+    elif status == 413:
+        raise PayloadTooLargeError(f"Payload too large: {message}", **kwargs)
     elif status == 422:
-        raise ValidationError(f"Validation error: {detail}", **kwargs)
+        raise ValidationError(f"Validation error: {message}", **kwargs)
     elif status == 429:
-        retry_after = response.headers.get("retry-after")
+        retry_after_raw = response.headers.get("retry-after")
         raise RateLimitError(
-            f"Rate limit exceeded: {detail}",
-            retry_after=float(retry_after) if retry_after else None,
+            f"Rate limit exceeded: {message}",
+            retry_after=float(retry_after_raw) if retry_after_raw else None,
             **kwargs,
         )
     elif 400 <= status < 500:
-        raise AIlinkError(f"Client error ({status}): {detail}", **kwargs)
+        raise AIlinkError(f"Client error ({status}): {message}", **kwargs)
     elif status >= 500:
-        raise GatewayError(f"Gateway error ({status}): {detail}", **kwargs)
+        raise GatewayError(f"Gateway error ({status}): {message}", **kwargs)

@@ -437,6 +437,58 @@ Spend caps are implemented through the policy engine using `usage.*` fields. Red
 }
 ```
 
+### Dedicated Spend Cap Enforcement
+
+In addition to policy-based budget rules, AIlink provides **dedicated per-token spend caps** stored in the `spend_caps` database table. These enforce hard budget limits independently of any policy configuration.
+
+**How it works:**
+1. Per-token daily and monthly limits are stored in the `spend_caps` table
+2. Redis counters (`spend:{token_id}:daily:{date}`) track real-time spend
+3. `check_spend_cap()` runs after policy evaluation — if a cap is exceeded, the request is blocked with HTTP 429
+4. A `spend_cap_exceeded` webhook event is automatically dispatched
+
+```sql
+-- Example: Set a $50/day and $500/month cap on a token
+INSERT INTO spend_caps (token_id, project_id, period, limit_usd, reset_at)
+VALUES ('your-token-id', 'project-uuid', 'daily', 50.00, NOW() + INTERVAL '1 day');
+
+INSERT INTO spend_caps (token_id, project_id, period, limit_usd, reset_at)
+VALUES ('your-token-id', 'project-uuid', 'monthly', 500.00, NOW() + INTERVAL '1 month');
+```
+
+### Webhook Notifications
+
+When a policy violation, rate limit exceedance, or spend cap breach occurs, AIlink dispatches a webhook to all configured URLs.
+
+**Configuration:**
+
+```bash
+AILINK_WEBHOOK_URLS=https://hooks.slack.com/services/...,https://webhook.site/your-id
+```
+
+**Event types:**
+
+| Event Type | Trigger |
+|---|---|
+| `policy_violation` | Policy `deny` action fires |
+| `rate_limit_exceeded` | Rate limit counter exceeded |
+| `spend_cap_exceeded` | Daily or monthly spend cap hit |
+
+**Payload example:**
+
+```json
+{
+  "event_type": "spend_cap_exceeded",
+  "timestamp": "2026-02-18T16:07:00Z",
+  "token_id": "tok_abc123",
+  "token_name": "production-agent",
+  "project_id": "00000000-0000-0000-0000-000000000001",
+  "details": { "reason": "daily spend cap of $50.00 exceeded" }
+}
+```
+
+Webhooks are best-effort (fire-and-forget). Failures are logged but never block requests.
+
 ---
 
 ## 5. Full Examples

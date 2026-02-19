@@ -37,7 +37,10 @@ async fn insert_audit_log(pool: &PgPool, entry: &AuditEntry) -> anyhow::Result<(
             hitl_required, hitl_decision, hitl_latency_ms, upstream_status,
             response_latency_ms, fields_redacted, shadow_violations, estimated_cost_usd,
             prompt_tokens, completion_tokens, model, ttft_ms, tokens_per_second,
-            user_id, tenant_id, external_request_id, log_level
+            user_id, tenant_id, external_request_id, log_level,
+            tool_calls, tool_call_count, finish_reason,
+            session_id, parent_span_id, error_type, is_streaming,
+            cache_hit
         )
         VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8,
@@ -45,7 +48,10 @@ async fn insert_audit_log(pool: &PgPool, entry: &AuditEntry) -> anyhow::Result<(
             $14, $15, $16, $17,
             $18, $19, $20, $21,
             $22, $23, $24, $25, $26,
-            $27, $28, $29, $30
+            $27, $28, $29, $30,
+            $31, $32, $33,
+            $34, $35, $36, $37,
+            $38
         )
         "#,
     )
@@ -74,12 +80,21 @@ async fn insert_audit_log(pool: &PgPool, entry: &AuditEntry) -> anyhow::Result<(
     .bind(entry.prompt_tokens.map(|v| v as i32))
     .bind(entry.completion_tokens.map(|v| v as i32))
     .bind(&entry.model)
-    .bind(None::<i32>) // ttft_ms — placeholder until streaming support
+    .bind(entry.ttft_ms.map(|v| v as i32))
     .bind(entry.tokens_per_second)
     .bind(&entry.user_id)
     .bind(&entry.tenant_id)
     .bind(&entry.external_request_id)
     .bind(entry.log_level as i16)
+    // Phase 5 columns
+    .bind(&entry.tool_calls)
+    .bind(entry.tool_call_count as i16)
+    .bind(&entry.finish_reason)
+    .bind(&entry.session_id)
+    .bind(&entry.parent_span_id)
+    .bind(&entry.error_type)
+    .bind(entry.is_streaming)
+    .bind(entry.cache_hit)
     .execute(pool)
     .await?;
 

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
+import { motion } from "framer-motion";
 import {
     Key,
     ShieldAlert,
@@ -12,20 +13,39 @@ import {
     Fingerprint,
     BarChart3,
     LayoutDashboard,
-    Moon,
-    Sun,
     Plug,
+    CreditCard,
+    LockKeyhole,
+    Activity,
+    Webhook,
+    FlaskConical,
+    Settings,
+    User,
+    ChevronLeft,
+    ChevronRight,
 } from "lucide-react";
-import { ProjectSwitcher } from "@/components/project-switcher";
 import { useEffect, useState } from "react";
 
 type SidebarProps = React.HTMLAttributes<HTMLDivElement>;
+
+interface Route {
+    href: string;
+    label: string;
+    icon: any;
+    badge?: number | null;
+}
+
+interface Group {
+    label: string;
+    routes: Route[];
+}
 
 export function Sidebar({ className }: SidebarProps) {
     const pathname = usePathname();
     const { theme, setTheme } = useTheme();
 
-
+    // Collapsed state
+    const [collapsed, setCollapsed] = useState(false);
     const [mounted, setMounted] = useState(false);
     const [health, setHealth] = useState<"online" | "offline" | "checking">("checking");
     const [approvalCount, setApprovalCount] = useState(0);
@@ -69,136 +89,224 @@ export function Sidebar({ className }: SidebarProps) {
         return () => clearInterval(interval);
     }, []);
 
-    const routes = [
+    const groups: Group[] = [
         {
-            href: "/",
-            label: "Overview",
-            icon: LayoutDashboard,
+            label: "Platform",
+            routes: [
+                {
+                    href: "/",
+                    label: "Overview",
+                    icon: LayoutDashboard,
+                },
+                {
+                    href: "/playground",
+                    label: "Playground",
+                    icon: FlaskConical,
+                },
+                {
+                    href: "/audit",
+                    label: "Traces & Logs",
+                    icon: ClipboardList,
+                },
+                {
+                    href: "/analytics",
+                    label: "Analytics",
+                    icon: BarChart3,
+                },
+                {
+                    href: "/billing",
+                    label: "Usage & Billing",
+                    icon: CreditCard,
+                },
+            ]
         },
         {
-            href: "/audit",
-            label: "Audit Logs",
-            icon: ClipboardList,
-            badge: null,
+            label: "Gateway",
+            routes: [
+                {
+                    href: "/upstreams",
+                    label: "Upstreams",
+                    icon: Activity,
+                },
+                {
+                    href: "/services",
+                    label: "Services",
+                    icon: Plug,
+                },
+                {
+                    href: "/policies",
+                    label: "Policies",
+                    icon: ShieldAlert,
+                },
+                {
+                    href: "/credentials",
+                    label: "Credentials",
+                    icon: Fingerprint,
+                },
+            ]
         },
         {
-            href: "/analytics",
-            label: "Analytics",
-            icon: BarChart3,
+            label: "Security",
+            routes: [
+                {
+                    href: "/tokens",
+                    label: "Agent Tokens",
+                    icon: Key,
+                },
+                {
+                    href: "/keys",
+                    label: "API Keys",
+                    icon: LockKeyhole,
+                },
+                {
+                    href: "/approvals",
+                    label: "Approvals",
+                    icon: CheckCircle,
+                    badge: approvalCount > 0 ? approvalCount : null,
+                },
+            ]
         },
         {
-            href: "/tokens",
-            label: "Tokens",
-            icon: Key,
-        },
-        {
-            href: "/credentials",
-            label: "Credentials",
-            icon: Fingerprint,
-        },
-        {
-            href: "/policies",
-            label: "Policies",
-            icon: ShieldAlert,
-        },
-        {
-            href: "/services",
-            label: "Services",
-            icon: Plug,
-        },
-        {
-            href: "/approvals",
-            label: "Approvals",
-            icon: CheckCircle,
-            badge: approvalCount > 0 ? approvalCount : null,
-        },
+            label: "Developers",
+            routes: [
+                {
+                    href: "/webhooks",
+                    label: "Webhooks",
+                    icon: Webhook,
+                },
+                {
+                    href: "/settings/team",
+                    label: "Team",
+                    icon: User,
+                },
+                {
+                    href: "/settings",
+                    label: "Settings",
+                    icon: Settings,
+                },
+            ]
+        }
     ];
 
     return (
-        <div className={cn("flex h-full w-64 flex-col bg-[var(--sidebar-bg)] border-r border-[var(--sidebar-border)]", className)}>
-            {/* Logo */}
-            <div className="flex h-16 items-center border-b border-[var(--sidebar-border)] px-6">
-                <Link href="/" className="flex items-center gap-2.5 font-bold text-lg group">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 text-white text-sm font-black shadow-lg shadow-blue-500/20 group-hover:shadow-blue-500/40 transition-shadow">
+        <motion.div
+            initial={false}
+            animate={{ width: collapsed ? 80 : 256 }}
+            transition={{ type: "spring", stiffness: 300, damping: 30 }}
+            className={cn("flex h-full flex-col bg-[var(--sidebar-bg)] border-r border-[var(--sidebar-border)] relative", className)}
+        >
+            {/* Collapse Toggle */}
+            <button
+                onClick={() => setCollapsed(!collapsed)}
+                aria-label="Toggle Sidebar"
+                className="absolute -right-3 top-6 z-50 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--sidebar-border)] bg-[var(--sidebar-bg)] text-muted-foreground shadow-sm hover:text-foreground hover:shadow-md transition-all"
+            >
+                {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+            </button>
+
+            {/* Header */}
+            <div className={cn("flex flex-col gap-4 border-b border-[var(--sidebar-border)] transition-all", collapsed ? "p-2" : "p-4")}>
+                <Link href="/" className={cn("flex items-center gap-2.5 font-bold text-lg group", collapsed ? "justify-center" : "px-2")}>
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 text-white text-sm font-black shadow-lg shadow-blue-500/20 group-hover:shadow-blue-500/40 transition-shadow">
                         A
                     </div>
-                    <span className="gradient-text font-bold text-lg tracking-tight">
-                        AIlink
-                    </span>
-                    <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold text-blue-500 tracking-wider uppercase">
-                        Gateway
-                    </span>
+                    {!collapsed && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="flex items-center gap-2 whitespace-nowrap overflow-hidden"
+                        >
+                            <span className="gradient-text font-bold text-lg tracking-tight">
+                                AIlink
+                            </span>
+                            <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold text-blue-500 tracking-wider uppercase">
+                                Gateway
+                            </span>
+                        </motion.div>
+                    )}
                 </Link>
             </div>
 
-            {/* Project Switcher */}
-            <div className="px-4 pt-4">
-                <ProjectSwitcher />
-            </div>
-
             {/* Navigation */}
-            <div className="flex-1 overflow-auto py-4">
-                <nav className="grid gap-1 px-3">
-                    <span className="mb-2 px-3 text-[10px] uppercase font-bold tracking-[0.15em] text-muted-foreground/60">
-                        Platform
-                    </span>
-                    {routes.map((route) => {
-                        const isActive = route.href === "/"
-                            ? pathname === "/"
-                            : pathname.startsWith(route.href);
-                        return (
-                            <Link
-                                key={route.href}
-                                href={route.href}
-                                className={cn(
-                                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200",
-                                    isActive
-                                        ? "bg-primary/10 text-primary shadow-sm"
-                                        : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                                )}
+            <div className="flex-1 overflow-y-auto overflow-x-hidden py-4 px-3 space-y-6 scrollbar-none">
+                {groups.map((group) => (
+                    <div key={group.label} className="space-y-1">
+                        {!collapsed && (
+                            <motion.h4
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                className="px-3 text-[10px] uppercase font-bold tracking-[0.15em] text-muted-foreground/60 mb-2 whitespace-nowrap"
                             >
-                                <route.icon className={cn("h-4 w-4", isActive && "text-primary")} />
-                                <span className="flex-1">{route.label}</span>
-                                {route.badge && (
-                                    <span className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500/15 px-1.5 text-[10px] font-bold text-amber-500 transition-all">
-                                        {route.badge}
-                                    </span>
-                                )}
-                            </Link>
-                        );
-                    })}
-                </nav>
+                                {group.label}
+                            </motion.h4>
+                        )}
+                        {group.routes.map((route) => {
+                            const isActive = route.href === "/"
+                                ? pathname === "/"
+                                : pathname.startsWith(route.href);
+                            return (
+                                <Link
+                                    key={route.href}
+                                    href={route.href}
+                                    className={cn(
+                                        "flex items-center gap-3 rounded-md py-2 text-sm font-medium transition-all duration-200 group relative",
+                                        collapsed ? "justify-center px-2" : "px-3",
+                                        isActive
+                                            ? "text-primary bg-muted/30"
+                                            : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                                    )}
+                                    title={collapsed ? route.label : undefined}
+                                >
+                                    {isActive && (
+                                        <div className="absolute left-0 top-1/2 -translate-y-1/2 h-4 w-0.5 rounded-r-full bg-primary" />
+                                    )}
+                                    <route.icon
+                                        size={16}
+                                        strokeWidth={1.5}
+                                        className={cn("shrink-0 transition-colors", isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground")}
+                                    />
+                                    {!collapsed && (
+                                        <motion.span
+                                            initial={{ opacity: 0 }}
+                                            animate={{ opacity: 1 }}
+                                            className="flex-1 whitespace-nowrap overflow-hidden text-ellipsis"
+                                        >
+                                            {route.label}
+                                        </motion.span>
+                                    )}
+                                    {!collapsed && route.badge && (
+                                        <motion.span
+                                            initial={{ opacity: 0, scale: 0.8 }}
+                                            animate={{ opacity: 1, scale: 1 }}
+                                            className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500/15 px-1.5 text-[10px] font-bold text-amber-500 transition-all font-mono"
+                                        >
+                                            {route.badge}
+                                        </motion.span>
+                                    )}
+                                </Link>
+                            );
+                        })}
+                    </div>
+                ))}
             </div>
 
             {/* Footer */}
-            <div className="border-t border-[var(--sidebar-border)] p-4 space-y-3">
-                {/* Dark Mode Toggle */}
-                {mounted && (
-                    <button
-                        onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-                        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-                    >
-                        {theme === "dark" ? (
-                            <Sun className="h-4 w-4" />
-                        ) : (
-                            <Moon className="h-4 w-4" />
-                        )}
-                        {theme === "dark" ? "Light Mode" : "Dark Mode"}
-                    </button>
-                )}
-
-                <div className="flex items-center justify-between text-xs text-muted-foreground px-3">
-                    <span className="font-mono">v0.6.0</span>
-                    <div className="flex items-center gap-1.5" title={health === "online" ? "Gateway connected" : "Gateway unreachable"}>
-                        <div className={cn(
-                            "h-2 w-2 rounded-full transition-colors duration-500",
-                            health === "online" ? "bg-emerald-500 animate-pulse" :
-                                health === "offline" ? "bg-rose-500" : "bg-amber-500"
-                        )} />
-                        <span>{health === "online" ? "Online" : health === "offline" ? "Offline" : "Checking..."}</span>
+            <div className="border-t border-[var(--sidebar-border)] p-4 space-y-1">
+                <div className={cn("py-2 transition-all", collapsed ? "px-0 flex justify-center" : "px-3")}>
+                    <div className={cn("flex items-center text-xs text-muted-foreground", collapsed ? "justify-center" : "justify-between")}>
+                        <div className="flex items-center gap-2">
+                            <div className={cn(
+                                "h-2 w-2 rounded-full transition-colors duration-500 shrink-0",
+                                health === "online" ? "bg-emerald-500 animate-pulse" :
+                                    health === "offline" ? "bg-rose-500" : "bg-amber-500"
+                            )} />
+                            {!collapsed && <span className="font-mono">v0.6.0</span>}
+                        </div>
+                        {!collapsed && <span className="text-[10px] uppercase tracking-wider opacity-50">{health}</span>}
                     </div>
                 </div>
             </div>
-        </div>
+        </motion.div>
     );
 }

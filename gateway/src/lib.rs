@@ -1,0 +1,10 @@
+//! AIlink Gateway — library crate for integration testing.
+//!
+//! Re-exports modules needed by integration tests in `tests/`.
+
+pub mod cache;
+pub mod config;
+pub mod errors;
+pub mod middleware;
+pub mod models;
+pub mod notification;

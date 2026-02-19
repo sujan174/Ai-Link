@@ -27,6 +27,23 @@ pub struct SanitizationResult {
     pub redacted_types: Vec<String>,
 }
 
+/// Sanitize the accumulated content from a completed SSE stream.
+///
+/// Operates on the full assembled text (not individual chunks), which solves
+/// the split-PII problem where a pattern like "user@example.com" could be
+/// split across two SSE chunks and missed by per-chunk sanitization.
+///
+/// This is called on the audit log copy — the in-flight stream is forwarded
+/// as-is to minimize latency.
+pub fn sanitize_stream_content(content: &str) -> SanitizationResult {
+    let mut redacted = HashSet::new();
+    let sanitized = sanitize_text(content, &mut redacted);
+    SanitizationResult {
+        body: sanitized.into_bytes(),
+        redacted_types: redacted.into_iter().collect(),
+    }
+}
+
 /// Streaming-aware response sanitization.
 ///
 /// Strategy:

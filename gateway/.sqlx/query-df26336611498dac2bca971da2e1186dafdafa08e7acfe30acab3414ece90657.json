@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT \n                percentile_cont(0.5) WITHIN GROUP (ORDER BY response_latency_ms) as p50,\n                percentile_cont(0.9) WITHIN GROUP (ORDER BY response_latency_ms) as p90,\n                percentile_cont(0.99) WITHIN GROUP (ORDER BY response_latency_ms) as p99\n             FROM audit_logs\n             WHERE project_id = $1 AND token_id = $2\n               AND created_at > now() - interval '24 hours'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "p50",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 1,
+        "name": "p90",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 2,
+        "name": "p99",
+        "type_info": "Float8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "df26336611498dac2bca971da2e1186dafdafa08e7acfe30acab3414ece90657"
+}

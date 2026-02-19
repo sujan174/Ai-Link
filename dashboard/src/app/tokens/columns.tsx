@@ -2,7 +2,8 @@
 
 import { ColumnDef } from "@tanstack/react-table"
 import { Token } from "@/lib/api"
-import { ArrowUpDown, CheckCircle, XCircle, MoreHorizontal, Trash2, Copy } from "lucide-react"
+import Link from "next/link"
+import { ArrowUpDown, CheckCircle, XCircle, MoreHorizontal, Trash2, Copy, BarChart } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { formatDistanceToNow } from "date-fns"
@@ -107,6 +108,12 @@ export const columns: ColumnDef<Token>[] = [
                         >
                             <Copy className="mr-2 h-3.5 w-3.5" />
                             Copy ID
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                            <Link href={`/analytics/token/${token.id}`} className="cursor-pointer">
+                                <BarChart className="mr-2 h-3.5 w-3.5" />
+                                View Analytics
+                            </Link>
                         </DropdownMenuItem>
                         {token.is_active && (
                             <DropdownMenuItem

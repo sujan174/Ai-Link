@@ -1,15 +1,17 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { listCredentials, createCredential, rotateCredential, Credential } from "@/lib/api";
-import { Fingerprint, Plus, Lock, RefreshCw, Server, RotateCw, Copy, Check, AlertTriangle, Eye, EyeOff } from "lucide-react";
+import { useState } from "react";
+import useSWR, { mutate } from "swr";
+import { listCredentials, createCredential, rotateCredential, Credential, swrFetcher } from "@/lib/api";
+import { Fingerprint, Plus, Lock, RefreshCw, Server, RotateCw, Copy, Check, AlertTriangle, Key } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/empty-state";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { PageSkeleton } from "@/components/page-skeleton";
 import {
     Dialog,
     DialogContent,
@@ -22,10 +24,12 @@ import {
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 
+const EMPTY_CREDENTIALS: Credential[] = [];
+
 export default function CredentialsPage() {
-    const [credentials, setCredentials] = useState<Credential[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const { data: credentialsData, isLoading, mutate: mutateCredentials } = useSWR<Credential[]>("/credentials", swrFetcher);
+    const credentials = credentialsData || EMPTY_CREDENTIALS;
+
     const [showModal, setShowModal] = useState(false);
 
     // Rotation state
@@ -34,23 +38,6 @@ export default function CredentialsPage() {
     const [rotateLoading, setRotateLoading] = useState(false);
     const [copied, setCopied] = useState(false);
 
-    const fetchCredentials = useCallback(async () => {
-        try {
-            setLoading(true);
-            const data = await listCredentials();
-            setCredentials(data);
-            setError(null);
-        } catch (e) {
-            setError(e instanceof Error ? e.message : "Failed to load credentials");
-        } finally {
-            setLoading(false);
-        }
-    }, []);
-
-    useEffect(() => {
-        fetchCredentials();
-    }, [fetchCredentials]);
-
     const handleRotate = async () => {
         if (!rotatingId) return;
         setRotateLoading(true);
@@ -58,7 +45,7 @@ export default function CredentialsPage() {
             const res = await rotateCredential(rotatingId);
             setNewSecret(res.secret);
             toast.success("Credential rotated successfully");
-            fetchCredentials();
+            mutateCredentials();
         } catch (e) {
             toast.error("Failed to rotate credential");
             setRotatingId(null); // Close on error
@@ -78,135 +65,115 @@ export default function CredentialsPage() {
     const activeCount = credentials.filter((c) => c.is_active).length;
 
     return (
-        <div className="p-8 space-y-8 max-w-[1600px] mx-auto">
+        <div className="p-8 space-y-6 max-w-[1600px] mx-auto">
+            {/* Header */}
             <div className="flex items-center justify-between animate-fade-in">
                 <div className="space-y-1">
                     <h2 className="text-3xl font-bold tracking-tight">Credentials</h2>
-                    <p className="text-muted-foreground">Encrypted API keys stored in the vault — secrets never leave the gateway</p>
+                    <p className="text-muted-foreground text-sm">Encrypted API keys stored in the vault — secrets never leave the gateway</p>
                 </div>
                 <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={fetchCredentials} disabled={loading}>
-                        <RefreshCw className={cn("h-4 w-4 mr-2", loading && "animate-spin")} />
+                    <Button variant="outline" size="sm" onClick={() => mutateCredentials()} disabled={isLoading}>
+                        <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", isLoading && "animate-spin")} />
                         Refresh
                     </Button>
-                    <Button onClick={() => setShowModal(true)}>
-                        <Plus className="mr-2 h-4 w-4" /> Add Credential
+                    <Button size="sm" onClick={() => setShowModal(true)}>
+                        <Plus className="mr-1.5 h-3.5 w-3.5" /> Add Credential
                     </Button>
                 </div>
             </div>
 
+            {/* KPI Cards */}
             <div className="grid gap-4 md:grid-cols-3 animate-slide-up">
-                <Card className="glass-card hover-lift p-4">
-                    <div className="flex items-center gap-3">
-                        <div className="icon-circle-blue">
-                            <Lock className="h-4 w-4" />
-                        </div>
-                        <div>
-                            <p className="text-2xl font-bold tabular-nums">{credentials.length}</p>
-                            <p className="text-xs text-muted-foreground">Total Credentials</p>
-                        </div>
-                    </div>
-                </Card>
-                <Card className="glass-card hover-lift p-4">
-                    <div className="flex items-center gap-3">
-                        <div className="icon-circle-emerald">
-                            <Fingerprint className="h-4 w-4" />
-                        </div>
-                        <div>
-                            <p className="text-2xl font-bold tabular-nums text-emerald-500">{activeCount}</p>
-                            <p className="text-xs text-muted-foreground">Active</p>
-                        </div>
-                    </div>
-                </Card>
-                <Card className="glass-card hover-lift p-4">
-                    <div className="flex items-center gap-3">
-                        <div className="icon-circle-violet">
-                            <Server className="h-4 w-4" />
-                        </div>
-                        <div>
-                            <p className="text-2xl font-bold tabular-nums">{new Set(credentials.map((c) => c.provider)).size}</p>
-                            <p className="text-xs text-muted-foreground">Providers</p>
-                        </div>
-                    </div>
-                </Card>
+                <StatCard
+                    icon={Lock}
+                    label="Total Credentials"
+                    value={credentials.length}
+                    color="blue"
+                    loading={isLoading}
+                />
+                <StatCard
+                    icon={Fingerprint}
+                    label="Active"
+                    value={activeCount}
+                    color="emerald"
+                    loading={isLoading}
+                />
+                <StatCard
+                    icon={Server}
+                    label="Providers"
+                    value={new Set(credentials.map((c) => c.provider)).size}
+                    color="violet"
+                    loading={isLoading}
+                />
             </div>
 
-            {error && (
-                <div className="bg-destructive/15 text-destructive border border-destructive/20 p-4 rounded-lg text-sm animate-slide-up">
-                    {error}
-                </div>
-            )}
-
-            <Card className="glass-card animate-slide-up stagger-2">
-                <Table>
-                    <TableHeader>
-                        <TableRow>
-                            <TableHead>Name</TableHead>
-                            <TableHead>Provider</TableHead>
-                            <TableHead>Version</TableHead>
-                            <TableHead>Status</TableHead>
-                            <TableHead>Created At</TableHead>
-                            <TableHead className="w-[100px]">Actions</TableHead>
-                        </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                        {loading ? (
-                            Array.from({ length: 5 }).map((_, i) => (
-                                <TableRow key={i}>
-                                    <TableCell><div className="h-4 w-24 animate-pulse bg-muted rounded" /></TableCell>
-                                    <TableCell><div className="h-4 w-16 animate-pulse bg-muted rounded" /></TableCell>
-                                    <TableCell><div className="h-4 w-8 animate-pulse bg-muted rounded" /></TableCell>
-                                    <TableCell><div className="h-4 w-12 animate-pulse bg-muted rounded" /></TableCell>
-                                    <TableCell><div className="h-4 w-24 animate-pulse bg-muted rounded" /></TableCell>
-                                    <TableCell><div className="h-4 w-8 animate-pulse bg-muted rounded" /></TableCell>
+            {/* Table */}
+            <div className="animate-slide-up stagger-2">
+                {isLoading && credentials.length === 0 ? (
+                    <PageSkeleton cards={0} rows={5} />
+                ) : credentials.length === 0 ? (
+                    <Card className="glass-card p-12">
+                        <EmptyState
+                            icon={Lock}
+                            title="No credentials found"
+                            description="Add your first API key to the secure vault. We encrypt it with AES-256-GCM."
+                            actionLabel="Add Credential"
+                            onAction={() => setShowModal(true)}
+                        />
+                    </Card>
+                ) : (
+                    <Card className="glass-card overflow-hidden">
+                        <Table>
+                            <TableHeader>
+                                <TableRow className="bg-muted/20 hover:bg-muted/20">
+                                    <TableHead className="uppercase text-xs tracking-wider">Name</TableHead>
+                                    <TableHead className="uppercase text-xs tracking-wider">Provider</TableHead>
+                                    <TableHead className="uppercase text-xs tracking-wider">Version</TableHead>
+                                    <TableHead className="uppercase text-xs tracking-wider">Status</TableHead>
+                                    <TableHead className="uppercase text-xs tracking-wider">Created</TableHead>
+                                    <TableHead className="w-[100px]"></TableHead>
                                 </TableRow>
-                            ))
-                        ) : credentials.length === 0 ? (
-                            <TableRow>
-                                <TableCell colSpan={6} className="h-96">
-                                    <EmptyState
-                                        icon={Lock}
-                                        title="No credentials found"
-                                        description="Add your first API key to the secure vault. We encrypt it with AES-256-GCM."
-                                        actionLabel="Add Credential"
-                                        onAction={() => setShowModal(true)}
-                                    />
-                                </TableCell>
-                            </TableRow>
-                        ) : (
-                            credentials.map((cred) => (
-                                <TableRow key={cred.id} className="hover:bg-muted/30 transition-colors">
-                                    <TableCell className="font-medium text-foreground">{cred.name}</TableCell>
-                                    <TableCell>
-                                        <Badge variant="outline" className="font-mono text-xs">
-                                            {cred.provider}
-                                        </Badge>
-                                    </TableCell>
-                                    <TableCell className="text-muted-foreground text-xs">v{cred.version}</TableCell>
-                                    <TableCell>
-                                        <Badge variant={cred.is_active ? "success" : "secondary"} dot>
-                                            {cred.is_active ? "Active" : "Revoked"}
-                                        </Badge>
-                                    </TableCell>
-                                    <TableCell className="text-muted-foreground text-xs">
-                                        {new Date(cred.created_at).toLocaleDateString()}
-                                    </TableCell>
-                                    <TableCell>
-                                        <Button
-                                            variant="ghost"
-                                            size="icon"
-                                            title="Rotate Credential"
-                                            onClick={() => setRotatingId(cred.id)}
-                                        >
-                                            <RotateCw className="h-4 w-4 text-muted-foreground hover:text-primary transition-colors" />
-                                        </Button>
-                                    </TableCell>
-                                </TableRow>
-                            ))
-                        )}
-                    </TableBody>
-                </Table>
-            </Card>
+                            </TableHeader>
+                            <TableBody>
+                                {credentials.map((cred) => (
+                                    <TableRow key={cred.id} className="hover:bg-muted/30 transition-colors">
+                                        <TableCell className="font-medium text-foreground flex items-center gap-2">
+                                            <Key className="h-4 w-4 text-muted-foreground" />
+                                            {cred.name}
+                                        </TableCell>
+                                        <TableCell>
+                                            <Badge variant="outline" className="font-mono text-xs bg-muted/50">
+                                                {cred.provider}
+                                            </Badge>
+                                        </TableCell>
+                                        <TableCell className="text-muted-foreground text-xs font-mono">v{cred.version}</TableCell>
+                                        <TableCell>
+                                            <Badge variant={cred.is_active ? "success" : "secondary"} dot>
+                                                {cred.is_active ? "Active" : "Revoked"}
+                                            </Badge>
+                                        </TableCell>
+                                        <TableCell className="text-muted-foreground text-xs font-mono">
+                                            {new Date(cred.created_at).toLocaleDateString()}
+                                        </TableCell>
+                                        <TableCell>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                title="Rotate Credential"
+                                                className="hover:text-primary"
+                                                onClick={() => setRotatingId(cred.id)}
+                                            >
+                                                <RotateCw className="h-4 w-4" />
+                                            </Button>
+                                        </TableCell>
+                                    </TableRow>
+                                ))}
+                            </TableBody>
+                        </Table>
+                    </Card>
+                )}
+            </div>
 
             {/* Create Modal */}
             {showModal && (
@@ -214,7 +181,7 @@ export default function CredentialsPage() {
                     onClose={() => setShowModal(false)}
                     onSuccess={() => {
                         setShowModal(false);
-                        fetchCredentials();
+                        mutateCredentials();
                     }}
                 />
             )}
@@ -280,6 +247,37 @@ export default function CredentialsPage() {
                 </DialogContent>
             </Dialog>
         </div>
+    );
+}
+
+function StatCard({ icon: Icon, label, value, color, loading }: {
+    icon: React.ComponentType<{ className?: string }>;
+    label: string;
+    value: number;
+    color: "blue" | "emerald" | "violet";
+    loading?: boolean;
+}) {
+    const bgColors = {
+        blue: "bg-blue-500/10 text-blue-500",
+        emerald: "bg-emerald-500/10 text-emerald-500",
+        violet: "bg-violet-500/10 text-violet-500",
+    };
+    return (
+        <Card className="glass-card hover-lift">
+            <CardContent className="p-5 flex items-center gap-4">
+                <div className={cn("p-3 rounded-xl transition-colors", bgColors[color])}>
+                    <Icon className="h-6 w-6" />
+                </div>
+                <div>
+                    <p className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-0.5">{label}</p>
+                    {loading ? (
+                        <div className="h-8 w-16 bg-muted/50 rounded shimmer my-0.5" />
+                    ) : (
+                        <p className="text-3xl font-bold tabular-nums tracking-tight">{value}</p>
+                    )}
+                </div>
+            </CardContent>
+        </Card>
     );
 }
 

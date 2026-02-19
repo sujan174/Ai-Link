@@ -8,6 +8,14 @@ pub struct Config {
     pub master_key: String,
     pub admin_key: Option<String>,
     pub slack_webhook_url: Option<String>,
+    /// Comma-separated list of webhook URLs to notify on policy events.
+    pub webhook_urls: Vec<String>,
+    /// Default per-token rate limit (requests per window). 0 = disabled.
+    /// Set via AILINK_DEFAULT_RPM env var. Default: 600.
+    pub default_rate_limit: u64,
+    /// Window in seconds for the default rate limit.
+    /// Set via AILINK_DEFAULT_RPM_WINDOW env var. Default: 60.
+    pub default_rate_limit_window: u64,
 }
 
 impl Config {
@@ -25,6 +33,15 @@ pub fn load() -> anyhow::Result<Config> {
         .unwrap_or_else(|_| "CHANGE_ME_32_BYTE_HEX_KEY".into());
 
     if master_key == "CHANGE_ME_32_BYTE_HEX_KEY" {
+        let env_mode = std::env::var("AILINK_ENV")
+            .or_else(|_| std::env::var("RUST_ENV"))
+            .unwrap_or_default();
+        if env_mode == "production" {
+            anyhow::bail!(
+                "AILINK_MASTER_KEY is still the insecure placeholder. \
+                 Set a proper 64-char hex key before running in production."
+            );
+        }
         eprintln!("⚠️  AILINK_MASTER_KEY is not set — using insecure placeholder. Set a 64-char hex key for production.");
     }
 
@@ -39,5 +56,20 @@ pub fn load() -> anyhow::Result<Config> {
         master_key,
         admin_key: std::env::var("AILINK_ADMIN_KEY").ok(),
         slack_webhook_url: std::env::var("AILINK_SLACK_WEBHOOK_URL").ok(),
+        webhook_urls: std::env::var("AILINK_WEBHOOK_URLS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect(),
+        default_rate_limit: std::env::var("AILINK_DEFAULT_RPM")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(600),
+        default_rate_limit_window: std::env::var("AILINK_DEFAULT_RPM_WINDOW")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60),
     })
 }

@@ -14,15 +14,89 @@ pip install ailink
 
 ### Quick Start
 
-#### Explicit Client (Recommended)
+#### LLM Gateway (Universal Model Proxy)
 
-Use the `AIlinkClient` to proxy requests.
+AIlink is a **drop-in replacement** for any OpenAI-compatible endpoint. Point your existing SDK at the gateway and use any model — OpenAI, Anthropic Claude, or Google Gemini — with the same API. The gateway auto-detects the provider from the model name and handles all format translation transparently.
+
+**Drop-in with the OpenAI SDK:**
+
+```python
+import openai
+from ailink import AIlinkClient
+
+# One line to get a policy-enforced, audited OpenAI client
+client = AIlinkClient(api_key="ailink_v1_...", gateway_url="https://gateway.ailink.dev")
+oai = client.openai()
+
+# Use exactly like openai.Client — no other changes needed
+response = oai.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Summarise this contract."}],
+)
+```
+
+**Switch to Claude or Gemini — same code, just change the model name:**
+
+```python
+# Anthropic Claude — gateway translates OpenAI format → Messages API automatically
+response = oai.chat.completions.create(
+    model="claude-3-5-sonnet-20241022",
+    messages=[{"role": "user", "content": "Summarise this contract."}],
+)
+
+# Google Gemini — gateway translates to generateContent API automatically
+response = oai.chat.completions.create(
+    model="gemini-2.0-flash",
+    messages=[{"role": "user", "content": "Summarise this contract."}],
+)
+```
+
+> The gateway detects the provider from the model name prefix (`claude-*` → Anthropic, `gemini-*` → Google, `gpt-*` / `o1-*` / `o3-*` → OpenAI) and rewrites the request/response format on the fly. Your code never changes.
+
+**Streaming:**
+
+```python
+stream = oai.chat.completions.create(
+    model="claude-3-5-sonnet-20241022",
+    messages=[{"role": "user", "content": "Write a poem."}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="", flush=True)
+```
+
+**Async:**
+
+```python
+from ailink import AsyncClient
+
+async with AsyncClient(api_key="ailink_v1_...", gateway_url="https://gateway.ailink.dev") as client:
+    oai = client.openai()
+    response = await oai.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Hello"}],
+    )
+```
+
+**Supported models (auto-detected):**
+
+| Prefix | Provider | Example models |
+|--------|----------|----------------|
+| `gpt-*`, `o1-*`, `o3-*`, `o4-*` | OpenAI | `gpt-4o`, `o3-mini` |
+| `claude-*` | Anthropic | `claude-3-5-sonnet-20241022`, `claude-3-haiku` |
+| `gemini-*` | Google | `gemini-2.0-flash`, `gemini-1.5-pro` |
+
+---
+
+#### Action Gateway (API Proxy)
+
+Use the `AIlinkClient` to proxy requests to any REST API.
 
 ```python
 from ailink import AIlinkClient
 
 client = AIlinkClient(
-    token="ailink_v1_proj_abc123_tok_def456",
+    api_key="ailink_v1_proj_abc123_tok_def456",
     gateway_url="https://gateway.ailink.dev",
     agent_name="billing-agent",  # shows up in audit logs
 )
@@ -38,7 +112,7 @@ charge = client.post("/v1/charges", json={
 })
 ```
 
-#### Option 3: LangChain Integration
+#### LangChain Integration
 
 ```python
 from ailink.integrations import langchain_tool
@@ -55,7 +129,7 @@ from langchain.agents import create_react_agent
 agent = create_react_agent(llm, tools=[stripe_tool])
 ```
 
-#### Option 4: CrewAI Integration
+#### CrewAI Integration
 
 ```python
 from ailink.integrations import crewai_tool
@@ -73,6 +147,7 @@ dev_agent = Agent(
     tools=[github_tool],
 )
 ```
+
 
 ### HITL (Human-in-the-Loop) Handling
 
@@ -138,6 +213,19 @@ except AIlinkError as e:
     print(f"Gateway error: {e}")
 ```
 
+### Response Caching
+The gateway automatically caches identical LLM responses to save costs and reduce latency. To force a fresh response (bypass cache):
+
+```python
+response = client.post(
+    "/v1/chat/completions",
+    json={...},
+    headers={"x-ailink-no-cache": "true"}
+)
+```
+
+Cache hits are indicated by the `x-ailink-cache: HIT` header in the response.
+
 ### Configuration
 
 ```python
@@ -152,6 +240,81 @@ client = AIlinkClient(
 ```
 
 ---
+
+### Passthrough Mode (Bring Your Own Key)
+
+When a token has **no stored credential**, the gateway operates in passthrough mode — it forwards requests to the upstream without injecting a key. Use `with_upstream_key()` to supply the upstream API key at call time, so it never needs to be stored in AIlink.
+
+This is "Double Auth": the AIlink token authenticates you **to the gateway**, and your upstream key authenticates the gateway **to the provider**.
+
+```python
+client = AIlinkClient(
+    api_key="ailink_v1_...",   # AIlink token (no credential attached)
+    gateway_url="https://gateway.ailink.dev",
+)
+
+# The upstream key is sent as X-Real-Authorization and forwarded to the provider
+with client.with_upstream_key("sk-my-openai-key") as byok:
+    resp = byok.post("/v1/chat/completions", json={
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Hello"}],
+    })
+```
+
+The `header` argument controls the auth scheme (default `"Bearer"`). For APIs that use a raw key:
+
+```python
+with client.with_upstream_key("my-api-key", header="") as byok:
+    resp = byok.get("/v1/data")
+```
+
+**Async:**
+
+```python
+async with client.with_upstream_key("sk-my-key") as byok:
+    resp = await byok.post("/v1/chat/completions", json={...})
+```
+
+---
+
+### Session Tracing
+
+Use `trace()` to correlate all requests in a multi-step agent workflow. Every request inside the block is tagged with the same `x-session-id`, which appears in audit logs so you can filter and replay entire conversations.
+
+```python
+# session_id is auto-generated if omitted
+with client.trace(session_id="conv-abc123") as t:
+    t.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "Step 1"}]})
+    t.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "Step 2"}]})
+    # Both requests share session_id="conv-abc123" in audit logs
+```
+
+For nested traces (e.g. a sub-agent spawned by a parent), pass `parent_span_id`:
+
+```python
+with client.trace(session_id="conv-abc123", parent_span_id="span-root-001") as t:
+    t.post("/v1/chat/completions", json={...})
+```
+
+**Async:**
+
+```python
+async with client.trace(session_id="conv-abc123") as t:
+    await t.post("/v1/chat/completions", json={...})
+```
+
+**Composable** — stack both context managers for traced BYOK requests:
+
+```python
+with client.with_upstream_key("sk-my-key") as byok_client:
+    with byok_client.trace(session_id="conv-xyz") as t:
+        t.post("/v1/chat/completions", json={...})
+```
+
+> **Audit log fields:** `session_id` and `parent_span_id` are stored on every audit log entry and can be filtered via the Management API.
+
+---
+
 
 ## TypeScript SDK
 

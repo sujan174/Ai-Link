@@ -23,6 +23,10 @@ services:
       
       # Master Key (for vault encryption)
       AILINK_MASTER_KEY: "change_this_to_a_secure_random_key_32_bytes"
+      # Production Mode (enforces secure defaults)
+      # AILINK_ENV: "production"
+      # CORS Origin
+      # DASHBOARD_ORIGIN: "http://localhost:3000"
       
       # Slack Integration (for HITL)
       # AILINK_SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/..."
@@ -40,6 +44,9 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: "http://localhost:8443/api/v1"
       API_URL: "http://gateway:8443/api/v1"
+      GATEWAY_INTERNAL_URL: "http://gateway:8443"
+      # Dashboard Proxy Auth
+      DASHBOARD_SECRET: "change_this_shared_secret_in_production"
     depends_on:
       - gateway
 
@@ -106,8 +113,11 @@ Helm charts available in Phase 2. For now, deploy `ailink/gateway` as a Deployme
 |---|---|
 | `DATABASE_URL` | Postgres connection string |
 | `REDIS_URL` | Redis connection string |
-| `AILINK_MASTER_KEY` | 32-byte hex key for vault encryption (Critical: Change in production!) |
+| `AILINK_MASTER_KEY` | 32-byte hex key for vault encryption (Critical: Gateway will REFUSE TO START in production if this is the default) |
 | `AILINK_ADMIN_KEY` | Admin API key (default: `ailink-admin-test`) |
+| `DASHBOARD_SECRET` | Shared secret for dashboard proxy authentication (Required in production) |
+| `DASHBOARD_ORIGIN` | Allowed CORS origin, e.g., `https://dashboard.example.com` (Default: `http://localhost:3000`) |
+| `AILINK_ENV` | Set to `production` to enforce secure startup checks |
 | `AILINK_LOG_LEVEL` | `info`, `debug`, or `trace` (default: `info`) |
 | `AILINK_PORT` | Port to bind (default: 8443) |
 | `AILINK_ENABLE_TEST_HOOKS`| Set to `1` to enable test-only headers (e.g., cost override). Off by default |

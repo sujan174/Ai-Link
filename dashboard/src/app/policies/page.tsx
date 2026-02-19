@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { listPolicies, createPolicy, updatePolicy, deletePolicy, Policy } from "@/lib/api";
+import useSWR from "swr";
+import { listPolicies, createPolicy, updatePolicy, deletePolicy, Policy, swrFetcher } from "@/lib/api";
 import {
     RefreshCw, Plus, ShieldCheck, ShieldAlert, Eye, X,
     ChevronRight, ShieldBan, Zap, Clock, FileText, Code2,
@@ -69,31 +70,20 @@ const ACTION_TYPES = [
 
 // ── Main Page ─────────────────────────────────────
 
+// ── Main Page ─────────────────────────────────────
+
+const EMPTY_POLICIES: Policy[] = [];
+
 export default function PoliciesPage() {
-    const [policies, setPolicies] = useState<Policy[]>([]);
-    const [loading, setLoading] = useState(true);
+    const { data: policiesData, isLoading, mutate } = useSWR<Policy[]>("/policies", swrFetcher);
+    const policies = policiesData || EMPTY_POLICIES;
+
     const [createOpen, setCreateOpen] = useState(false);
     const [detailPolicy, setDetailPolicy] = useState<Policy | null>(null);
     const [editPolicy, setEditPolicy] = useState<Policy | null>(null);
     const [historyPolicy, setHistoryPolicy] = useState<Policy | null>(null);
 
-    const fetchPolicies = useCallback(async () => {
-        try {
-            setLoading(true);
-            const data = await listPolicies();
-            setPolicies(data);
-        } catch {
-            toast.error("Failed to load policies");
-        } finally {
-            setLoading(false);
-        }
-    }, []);
-
-    useEffect(() => {
-        fetchPolicies();
-    }, [fetchPolicies]);
-
-    const blockingCount = policies.filter(p => p.mode === 'blocking').length;
+    const blockingCount = policies.filter(p => p.mode === 'enforce').length;
     const shadowCount = policies.filter(p => p.mode === 'shadow').length;
     const totalRules = policies.reduce((sum, p) => sum + (p.rules?.length || 0), 0);
 
@@ -106,8 +96,8 @@ export default function PoliciesPage() {
                     <p className="text-muted-foreground text-sm">Condition → action rules for traffic governance, AI safety, and compliance</p>
                 </div>
                 <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={fetchPolicies} disabled={loading}>
-                        <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", loading && "animate-spin")} />
+                    <Button variant="outline" size="sm" onClick={() => mutate()} disabled={isLoading}>
+                        <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", isLoading && "animate-spin")} />
                         Refresh
                     </Button>
                     <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -119,7 +109,7 @@ export default function PoliciesPage() {
                         <DialogContent className="sm:max-w-[680px] max-h-[85vh] overflow-y-auto">
                             <PolicyFormDialog
                                 mode="create"
-                                onSuccess={() => { setCreateOpen(false); fetchPolicies(); }}
+                                onSuccess={() => { setCreateOpen(false); mutate(); }}
                             />
                         </DialogContent>
                     </Dialog>
@@ -127,26 +117,35 @@ export default function PoliciesPage() {
             </div>
 
             {/* KPI Strip */}
-            <div className="grid gap-3 md:grid-cols-4 animate-slide-up">
-                <KPIMini icon={Layers} value={policies.length} label="Total Policies" color="blue" />
-                <KPIMini icon={ShieldBan} value={blockingCount} label="Blocking" color="rose" />
-                <KPIMini icon={Eye} value={shadowCount} label="Shadow Mode" color="amber" />
-                <KPIMini icon={Filter} value={totalRules} label="Total Rules" color="violet" />
+            <div className="grid gap-4 md:grid-cols-4 animate-slide-up">
+                <KPIMini icon={Layers} value={policies.length} label="Total Policies" color="blue" loading={isLoading} />
+                <KPIMini icon={ShieldBan} value={blockingCount} label="Blocking" color="rose" loading={isLoading} />
+                <KPIMini icon={Eye} value={shadowCount} label="Shadow Mode" color="amber" loading={isLoading} />
+                <KPIMini icon={Filter} value={totalRules} label="Total Rules" color="violet" loading={isLoading} />
             </div>
 
             {/* Table */}
             <div className="animate-slide-up stagger-2">
-                <DataTable
-                    columns={columns}
-                    data={policies}
-                    searchKey="name"
-                    searchPlaceholder="Search policies..."
-                    meta={{
-                        onView: (p: Policy) => setDetailPolicy(p),
-                        onEdit: (p: Policy) => setEditPolicy(p),
-                        onRefresh: fetchPolicies,
-                    }}
-                />
+                {isLoading && policies.length === 0 ? (
+                    <div className="space-y-4">
+                        <div className="h-10 w-[300px] bg-muted/50 rounded shimmer" />
+                        <div className="rounded-md border border-border/60 bg-card/50 h-[400px] shimmer" />
+                    </div>
+                ) : (
+                    <div className="rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden shadow-sm">
+                        <DataTable
+                            columns={columns}
+                            data={policies}
+                            searchKey="name"
+                            searchPlaceholder="Search policies..."
+                            meta={{
+                                onView: (p: Policy) => setDetailPolicy(p),
+                                onEdit: (p: Policy) => setEditPolicy(p),
+                                onRefresh: mutate,
+                            }}
+                        />
+                    </div>
+                )}
             </div>
 
             {/* Detail Panel */}
@@ -166,7 +165,7 @@ export default function PoliciesPage() {
                         <PolicyFormDialog
                             mode="edit"
                             initialPolicy={editPolicy}
-                            onSuccess={() => { setEditPolicy(null); fetchPolicies(); }}
+                            onSuccess={() => { setEditPolicy(null); mutate(); }}
                         />
                     </DialogContent>
                 </Dialog>
@@ -186,29 +185,34 @@ export default function PoliciesPage() {
 
 // ── KPI Mini Card ─────────────────────────────────
 
-function KPIMini({ icon: Icon, value, label, color }: {
+function KPIMini({ icon: Icon, value, label, color, loading }: {
     icon: React.ComponentType<{ className?: string }>;
     value: number;
     label: string;
     color: "blue" | "rose" | "amber" | "violet";
+    loading?: boolean;
 }) {
-    const colors = {
-        blue: "icon-circle-blue",
+    const bgColors = {
+        blue: "bg-blue-500/10 text-blue-500",
         rose: "bg-rose-500/10 text-rose-500",
-        amber: "icon-circle-amber",
-        violet: "icon-circle-violet",
+        amber: "bg-amber-500/10 text-amber-500",
+        violet: "bg-violet-500/10 text-violet-500",
     };
     return (
-        <Card className="glass-card hover-lift p-3">
-            <div className="flex items-center gap-3">
-                <div className={cn("flex h-8 w-8 items-center justify-center rounded-lg", colors[color])}>
-                    <Icon className="h-3.5 w-3.5" />
+        <Card className="glass-card hover-lift">
+            <CardContent className="p-4 flex items-center gap-4">
+                <div className={cn("p-2.5 rounded-xl transition-colors", bgColors[color])}>
+                    <Icon className="h-5 w-5" />
                 </div>
-                <div>
-                    <p className="text-xl font-bold tabular-nums">{value}</p>
-                    <p className="text-[11px] text-muted-foreground">{label}</p>
+                <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-0.5">{label}</p>
+                    {loading ? (
+                        <div className="h-7 w-16 bg-muted/50 rounded shimmer my-0.5" />
+                    ) : (
+                        <p className="text-xl font-bold tabular-nums tracking-tight">{value}</p>
+                    )}
                 </div>
-            </div>
+            </CardContent>
         </Card>
     );
 }
@@ -256,7 +260,7 @@ function PolicyDetailPanel({ policy, onClose, onEdit, onHistory }: {
                 <div className="grid grid-cols-2 gap-4">
                     <div>
                         <p className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Mode</p>
-                        <Badge variant={policy.mode === "blocking" ? "destructive" : "warning"} dot className="capitalize">
+                        <Badge variant={policy.mode === "enforce" ? "destructive" : "warning"} dot className="capitalize">
                             {policy.mode}
                         </Badge>
                     </div>
@@ -444,7 +448,7 @@ function PolicyFormDialog({ mode, initialPolicy, onSuccess }: {
 }) {
     const [saving, setSaving] = useState(false);
     const [name, setName] = useState(initialPolicy?.name || "");
-    const [policyMode, setPolicyMode] = useState(initialPolicy?.mode || "blocking");
+    const [policyMode, setPolicyMode] = useState(initialPolicy?.mode || "enforce");
     const [inputMode, setInputMode] = useState<"visual" | "json">("visual");
     const [rules, setRules] = useState<RuleForm[]>([emptyRule()]);
     const [jsonRules, setJsonRules] = useState("[]");
@@ -566,7 +570,7 @@ function PolicyFormDialog({ mode, initialPolicy, onSuccess }: {
                     <div className="space-y-1.5">
                         <Label htmlFor="mode" className="text-xs">Mode</Label>
                         <Select value={policyMode} onChange={(e) => setPolicyMode(e.target.value)}>
-                            <option value="blocking">🔒 Blocking (Enforce)</option>
+                            <option value="enforce">🔒 Blocking (Enforce)</option>
                             <option value="shadow">👁 Shadow (Log only)</option>
                         </Select>
                     </div>

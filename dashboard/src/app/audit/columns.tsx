@@ -2,9 +2,20 @@
 
 import { ColumnDef } from "@tanstack/react-table"
 import { AuditLog } from "@/lib/api"
-import { ArrowUpDown, Eye, Cpu } from "lucide-react"
+import { ArrowUpDown, Eye, Cpu, Zap, Wrench } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+
+const finishReasonColor: Record<string, string> = {
+    stop: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+    end_turn: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+    tool_calls: "bg-violet-500/15 text-violet-400 border-violet-500/30",
+    tool_use: "bg-violet-500/15 text-violet-400 border-violet-500/30",
+    length: "bg-amber-500/15 text-amber-400 border-amber-500/30",
+    max_tokens: "bg-amber-500/15 text-amber-400 border-amber-500/30",
+    content_filter: "bg-rose-500/15 text-rose-400 border-rose-500/30",
+    safety: "bg-rose-500/15 text-rose-400 border-rose-500/30",
+};
 
 export const columns: ColumnDef<AuditLog>[] = [
     {
@@ -119,12 +130,82 @@ export const columns: ColumnDef<AuditLog>[] = [
         },
     },
     {
+        id: "cache",
+        header: "Cache",
+        cell: ({ row }) => {
+            const hit = row.original.cache_hit;
+            if (hit == null) return <span className="text-muted-foreground text-xs">—</span>;
+            return hit ? (
+                <Badge variant="outline" className="bg-emerald-500/15 text-emerald-400 border-emerald-500/30 text-[10px] px-1.5 py-0">
+                    HIT
+                </Badge>
+            ) : (
+                <Badge variant="outline" className="bg-zinc-500/10 text-zinc-400 border-zinc-500/30 text-[10px] px-1.5 py-0">
+                    MISS
+                </Badge>
+            );
+        },
+    },
+    {
         accessorKey: "estimated_cost_usd",
         header: "Cost",
         cell: ({ row }) => {
             const cost = row.getValue("estimated_cost_usd") as string | null;
             if (!cost || cost === "0") return <span className="text-muted-foreground text-xs">—</span>;
             return <div className="font-mono text-xs text-amber-400">${parseFloat(cost).toFixed(4)}</div>;
+        },
+    },
+    {
+        accessorKey: "finish_reason",
+        header: "Finish",
+        cell: ({ row }) => {
+            const reason = row.getValue("finish_reason") as string | null;
+            if (!reason) return <span className="text-muted-foreground text-xs">—</span>;
+            const colorClass = finishReasonColor[reason] ?? "bg-muted/40 text-muted-foreground border-border/50";
+            return (
+                <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${colorClass}`}>
+                    {reason}
+                </Badge>
+            );
+        },
+    },
+    {
+        id: "tools",
+        header: "Tools",
+        cell: ({ row }) => {
+            const count = row.original.tool_call_count;
+            if (!count) return <span className="text-muted-foreground text-xs">—</span>;
+            return (
+                <div className="flex items-center gap-1">
+                    <Wrench className="h-3 w-3 text-violet-400" />
+                    <span className="text-xs font-medium text-violet-400">{count}</span>
+                </div>
+            );
+        },
+    },
+    {
+        accessorKey: "error_type",
+        header: "Error",
+        cell: ({ row }) => {
+            const errorType = row.getValue("error_type") as string | null;
+            if (!errorType) return <span className="text-muted-foreground text-xs">—</span>;
+            return (
+                <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-rose-500/15 text-rose-400 border-rose-500/30">
+                    {errorType.replace(/_/g, " ")}
+                </Badge>
+            );
+        },
+    },
+    {
+        id: "streaming",
+        header: "",
+        cell: ({ row }) => {
+            if (!row.original.is_streaming) return null;
+            return (
+                <div title="Streaming response">
+                    <Zap className="h-3.5 w-3.5 text-yellow-400" />
+                </div>
+            );
         },
     },
     {
@@ -162,3 +243,4 @@ export const columns: ColumnDef<AuditLog>[] = [
         ),
     },
 ]
+
