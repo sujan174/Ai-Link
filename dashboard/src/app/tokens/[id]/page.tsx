@@ -233,51 +233,94 @@ export default function TokenDetailPage() {
                 </Card>
             )}
 
-            {/* Info Cards */}
+            {/* Info Cards & Quick Start */}
             <div className="grid md:grid-cols-3 gap-6">
                 <Card className="glass-card md:col-span-2">
-                    <CardHeader className="pb-3">
-                        <CardTitle className="text-sm font-medium">Configuration</CardTitle>
+                    <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                        <CardTitle className="text-sm font-medium">Quick Start Guide</CardTitle>
                     </CardHeader>
-                    <CardContent className="grid grid-cols-2 gap-4 text-sm">
+                    <CardContent className="space-y-4">
                         <div>
-                            <p className="text-xs text-muted-foreground mb-1">Token ID</p>
-                            <p className="font-mono text-xs break-all">{token.id}</p>
+                            <p className="text-xs text-muted-foreground mb-2">cURL Example</p>
+                            <div className="w-full bg-muted/80 rounded-lg p-3 text-left font-mono text-xs relative group overflow-x-auto">
+                                <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => {
+                                        navigator.clipboard.writeText(`curl -X POST http://localhost:8443/v1/chat/completions \\
+  -H "Authorization: Bearer ${token.id}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello AILink!"}]
+  }'`);
+                                        toast.success("Copied cURL");
+                                    }}><Copy className="h-3 w-3" /></Button>
+                                </div>
+                                <span className="text-violet-400">curl</span> -X POST http://localhost:8443/v1/chat/completions \<br />
+                                &nbsp;&nbsp;-H <span className="text-emerald-400">"Authorization: Bearer {token.id}"</span> \<br />
+                                &nbsp;&nbsp;-H <span className="text-emerald-400">"Content-Type: application/json"</span> \<br />
+                                &nbsp;&nbsp;-d <span className="text-amber-400">'{`\n    "model": "gpt-4o-mini",\n    "messages": [{"role": "user", "content": "Hello AILink!"}]\n  `}'</span>
+                            </div>
                         </div>
                         <div>
-                            <p className="text-xs text-muted-foreground mb-1">Created At</p>
-                            <p className="font-mono text-xs">{new Date(token.created_at).toLocaleString()}</p>
-                        </div>
-                        <div>
-                            <p className="text-xs text-muted-foreground mb-1">Credential ID</p>
-                            <p className="font-mono text-xs break-all text-blue-400">{token.credential_id}</p>
-                        </div>
-                        <div>
-                            <p className="text-xs text-muted-foreground mb-1">Upstream URL</p>
-                            <p className="font-mono text-xs break-all">{token.upstream_url}</p>
+                            <p className="text-xs text-muted-foreground mb-2">Python SDK</p>
+                            <div className="w-full bg-muted/80 rounded-lg p-3 text-left font-mono text-xs relative group overflow-x-auto">
+                                <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => {
+                                        navigator.clipboard.writeText(`from ailink import AIlinkClient\n\nclient = AIlinkClient(api_key="${token.id}")\noai = client.openai()\nresponse = oai.chat.completions.create(\n    model="gpt-4o-mini",\n    messages=[{"role": "user", "content": "Hello AILink!"}]\n)\nprint(response.choices[0].message.content)`);
+                                        toast.success("Copied Python snippet");
+                                    }}><Copy className="h-3 w-3" /></Button>
+                                </div>
+                                <span className="text-rose-400">from</span> ailink <span className="text-rose-400">import</span> AIlinkClient<br /><br />
+                                client = AIlinkClient(api_key=<span className="text-emerald-400">"{token.id}"</span>)<br />
+                                oai = client.openai()<br />
+                                response = oai.chat.completions.create(<br />
+                                &nbsp;&nbsp;&nbsp;&nbsp;model=<span className="text-emerald-400">"gpt-4o-mini"</span>,<br />
+                                &nbsp;&nbsp;&nbsp;&nbsp;messages=[{`{`}<span className="text-emerald-400">"role"</span>: <span className="text-emerald-400">"user"</span>, <span className="text-emerald-400">"content"</span>: <span className="text-emerald-400">"Hello AILink!"</span>{`}`}]<br />
+                                )<br />
+                                <span className="text-blue-400">print</span>(response.choices[0].message.content)
+                            </div>
                         </div>
                     </CardContent>
                 </Card>
 
-                <Card className="glass-card">
-                    <CardHeader className="pb-3">
-                        <CardTitle className="text-sm font-medium">Policies &amp; scopes</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                        <div>
-                            <p className="text-xs text-muted-foreground mb-2">Attached Policies</p>
+                <div className="grid gap-6">
+                    <Card className="glass-card">
+                        <CardHeader className="pb-3">
+                            <CardTitle className="text-sm font-medium">Configuration</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4 text-sm">
+                            <div>
+                                <p className="text-xs text-muted-foreground mb-1">Credential ID</p>
+                                <p className="font-mono text-xs break-all text-blue-400">{token.credential_id}</p>
+                            </div>
+                            <div>
+                                <p className="text-xs text-muted-foreground mb-1">Upstream URL</p>
+                                <p className="font-mono text-xs break-all">{token.upstream_url}</p>
+                            </div>
+                            <div>
+                                <p className="text-xs text-muted-foreground mb-1">Created At</p>
+                                <p className="font-mono text-xs">{new Date(token.created_at).toLocaleString()}</p>
+                            </div>
+                        </CardContent>
+                    </Card>
+
+                    <Card className="glass-card">
+                        <CardHeader className="pb-3">
+                            <CardTitle className="text-sm font-medium">Policies</CardTitle>
+                        </CardHeader>
+                        <CardContent>
                             <div className="flex flex-wrap gap-2">
                                 {token.policy_ids.length > 0 ? token.policy_ids.map(pid => (
                                     <Badge key={pid} variant="outline" className="font-mono text-[10px] break-all">
                                         {pid}
                                     </Badge>
                                 )) : (
-                                    <span className="text-xs text-muted-foreground italic">No policies</span>
+                                    <span className="text-[10px] bg-muted px-2 py-1 rounded text-muted-foreground italic">No policies attached</span>
                                 )}
                             </div>
-                        </div>
-                    </CardContent>
-                </Card>
+                        </CardContent>
+                    </Card>
+                </div>
             </div>
 
             {/* Budget & Spend Caps */}

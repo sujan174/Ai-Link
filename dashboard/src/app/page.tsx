@@ -28,6 +28,7 @@ export default function OverviewPage() {
     // SWR Hooks for real-time data
     const { data: logs = [], isLoading: logsLoading } = useSWR<AuditLog[]>("/audit-logs?limit=100", swrFetcher, { refreshInterval: 5000 });
     const { data: tokens = [], isLoading: tokensLoading } = useSWR<Token[]>("/tokens", swrFetcher);
+    const { data: credentials = [], isLoading: credentialsLoading } = useSWR<Credential[]>("/credentials", swrFetcher);
     const { data: approvals = [], isLoading: approvalsLoading } = useSWR<ApprovalRequest[]>("/approvals", swrFetcher, { refreshInterval: 10000 });
 
     // UI State
@@ -39,7 +40,7 @@ export default function OverviewPage() {
         }
     }, []);
 
-    const loading = logsLoading || tokensLoading || approvalsLoading;
+    const loading = logsLoading || tokensLoading || credentialsLoading || approvalsLoading;
 
     // Computed metrics
     const totalRequests = logs.length;
@@ -101,43 +102,91 @@ export default function OverviewPage() {
                         <span className="sr-only">Dismiss</span>
                         <XCircle className="h-4 w-4" />
                     </Button>
-                    <CardContent className="flex flex-col items-center justify-center py-12 text-center space-y-4">
-                        <div className="p-3 bg-primary/10 rounded-full">
-                            <Zap className="h-8 w-8 text-primary" />
-                        </div>
-                        <div className="space-y-1 max-w-md">
-                            <h3 className="text-lg font-bold">Ready for liftoff?</h3>
-                            <p className="text-muted-foreground text-sm">
-                                Your gateway is running but hasn't processed any requests yet. Send your first request to see metrics light up.
-                            </p>
-                        </div>
+                    <CardHeader className="text-center pb-2">
+                        <CardTitle className="text-2xl font-bold flex items-center justify-center gap-2">
+                            <Zap className="h-6 w-6 text-primary" />
+                            Welcome to AILink
+                        </CardTitle>
+                        <p className="text-muted-foreground max-w-lg mx-auto">
+                            Complete these three steps to secure your first AI agent.
+                        </p>
+                    </CardHeader>
+                    <CardContent className="py-6 max-w-3xl mx-auto w-full">
+                        <div className="space-y-6">
+                            {/* Step 1 */}
+                            <div className="flex gap-4 items-start">
+                                <div className={cn("mt-1 flex h-8 w-8 items-center justify-center rounded-full border-2", credentials.length > 0 ? "border-emerald-500 bg-emerald-500/10 text-emerald-500" : "border-primary bg-primary/10 text-primary")}>
+                                    {credentials.length > 0 ? <CheckCircle2 className="h-5 w-5" /> : <span>1</span>}
+                                </div>
+                                <div className="space-y-1.5 flex-1">
+                                    <h3 className="font-semibold text-lg flex items-center gap-2">
+                                        Add a Provider Credential
+                                        {credentials.length > 0 && <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/30">Complete</span>}
+                                    </h3>
+                                    <p className="text-sm text-muted-foreground">Securely store an OpenAI, Anthropic, or Gemini API key in the vault.</p>
+                                    {credentials.length === 0 && (
+                                        <div className="pt-2">
+                                            <Link href="/credentials"><Button size="sm">Add Credential</Button></Link>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
 
-                        <div className="w-full max-w-xl bg-muted/80 rounded-lg p-4 text-left font-mono text-xs relative group mt-4">
-                            <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => {
-                                    navigator.clipboard.writeText(`curl -X POST http://localhost:8443/v1/chat/completions \\
+                            {/* Step 2 */}
+                            <div className={cn("flex gap-4 items-start transition-opacity", credentials.length === 0 && "opacity-50 grayscale")}>
+                                <div className={cn("mt-1 flex h-8 w-8 items-center justify-center rounded-full border-2", tokens.length > 0 ? "border-emerald-500 bg-emerald-500/10 text-emerald-500" : credentials.length > 0 ? "border-primary bg-primary/10 text-primary" : "border-muted text-muted-foreground")}>
+                                    {tokens.length > 0 ? <CheckCircle2 className="h-5 w-5" /> : <span>2</span>}
+                                </div>
+                                <div className="space-y-1.5 flex-1">
+                                    <h3 className="font-semibold text-lg flex items-center gap-2">
+                                        Create an isolated Token
+                                        {tokens.length > 0 && <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/30">Complete</span>}
+                                    </h3>
+                                    <p className="text-sm text-muted-foreground">Mint a virtual token (`ailink_v1_...`) bound to your credential. Give this to your agent.</p>
+                                    {credentials.length > 0 && tokens.length === 0 && (
+                                        <div className="pt-2">
+                                            <Link href="/tokens"><Button size="sm">Create Token</Button></Link>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Step 3 */}
+                            <div className={cn("flex gap-4 items-start transition-opacity", tokens.length === 0 && "opacity-50 grayscale")}>
+                                <div className={cn("mt-1 flex h-8 w-8 items-center justify-center rounded-full border-2", "border-primary bg-primary/10 text-primary")}>
+                                    <span>3</span>
+                                </div>
+                                <div className="space-y-1.5 flex-1 w-full overflow-hidden">
+                                    <h3 className="font-semibold text-lg flex items-center gap-2">
+                                        Send your first proxy request
+                                    </h3>
+                                    <p className="text-sm text-muted-foreground">Use this pre-filled curl command. The gateway will inject the real key and log the request below.</p>
+
+                                    <div className="w-full bg-muted/80 rounded-lg p-4 text-left font-mono text-xs relative group mt-3 overflow-x-auto">
+                                        <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                            <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => {
+                                                navigator.clipboard.writeText(`curl -X POST http://localhost:8443/v1/chat/completions \\
   -H "Authorization: Bearer ${tokens[0]?.id || 'YOUR_TOKEN'}" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Hello!"}]
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello AILink!"}]
   }'`);
-                                    toast.success("Command copied!");
-                                }}>Copy</Button>
+                                                toast.success("Command copied!");
+                                            }}>Copy</Button>
+                                        </div>
+                                        <span className="text-violet-400">curl</span> -X POST http://localhost:8443/v1/chat/completions \<br />
+                                        &nbsp;&nbsp;-H <span className="text-emerald-400">"Authorization: Bearer {tokens[0]?.id || 'YOUR_TOKEN'}"</span> \<br />
+                                        &nbsp;&nbsp;-H <span className="text-emerald-400">"Content-Type: application/json"</span> \<br />
+                                        &nbsp;&nbsp;-d <span className="text-amber-400">'{`\n    "model": "gpt-4o-mini",\n    "messages": [{"role": "user", "content": "Hello AILink!"}]\n  `}'</span>
+                                    </div>
+                                    <div className="pt-3">
+                                        <Link href="https://github.com/sujan174/ailink/blob/main/sdk/python/README.md" target="_blank">
+                                            <Button variant="outline" size="sm">View Python SDK Setup</Button>
+                                        </Link>
+                                    </div>
+                                </div>
                             </div>
-                            <span className="text-violet-400">curl</span> -X POST http://localhost:8443/v1/chat/completions \<br />
-                            &nbsp;&nbsp;-H <span className="text-emerald-400">"Authorization: Bearer {tokens[0]?.id || 'YOUR_TOKEN'}"</span> \<br />
-                            &nbsp;&nbsp;-H <span className="text-emerald-400">"Content-Type: application/json"</span> \<br />
-                            &nbsp;&nbsp;-d <span className="text-amber-400">'{`\n    "model": "gpt-4",\n    "messages": [{"role": "user", "content": "Hello!"}]\n  `}'</span>
-                        </div>
-
-                        <div className="flex gap-2 mt-2">
-                            <Link href="/playground">
-                                <Button variant="default">Open Playground</Button>
-                            </Link>
-                            <Link href="https://docs.ailink.app/quickstart" target="_blank">
-                                <Button variant="outline">Read Docs</Button>
-                            </Link>
                         </div>
                     </CardContent>
                 </Card>

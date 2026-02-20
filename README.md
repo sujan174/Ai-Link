@@ -67,49 +67,35 @@ docker compose up -d
 ```
 
 This brings up the full stack:
-*   **Dashboard**: [http://localhost:3000](http://localhost:3000) (default key: `ailink-admin-test` — [change it](docs/DEPLOYMENT.md))
+*   **Dashboard**: [http://localhost:3000](http://localhost:3000) (default key: `ailink-admin-test`)
 *   **Gateway**: [http://localhost:8443](http://localhost:8443)
 
-See the [Self-Hosting Guide](docs/self-hosting.md) for detailed setup.
+### 2. Configure via Dashboard
+Open [http://localhost:3000](http://localhost:3000) and:
+1. **Add a Credential**: Store your real provider keys (OpenAI, Anthropic, etc.) securely in the vault.
+2. **Create Policies**: Define traffic routing, A/B splits, PII redaction, or cost limits.
+3. **Generate a Token**: Issue an AILink virtual token that binds to your credential and policies.
 
+### 3. Change 2 Lines of Code
 
-### 2. Store a Real Key, Issue a Virtual Token
-
-```bash
-# Add your Stripe key to the vault
-docker exec ailink-gateway ailink credential add \
-  --name "stripe-production" \
-  --key "sk_live_your_real_stripe_key"
-
-# Create a scoped token for your agent
-docker exec ailink-gateway ailink token create \
-  --name "billing-agent-stripe" \
-  --credential "stripe-production" \
-  --upstream "https://api.stripe.com" \
-  --methods GET,POST \
-  --paths "/v1/charges/*,/v1/customers/*" \
-  --rate-limit "60/min"
-# → ailink_v1_proj_default_tok_abc123
-```
-
-### 3. Use It
-
-```bash
-pip install ailink
-```
+Point your existing AI SDKs or agents to the AILink Gateway:
 
 ```python
-import stripe
+import openai
 from ailink import AIlinkClient
 
-# Point Stripe at the gateway instead of api.stripe.com
-stripe.api_base = "http://localhost:8443"
-stripe.api_key = "ailink_v1_proj_default_tok_abc123"
+# Use the virtual token you generated
+client = AIlinkClient(api_key="ailink_v1_...")
+oai = client.openai()
 
-charges = stripe.Charge.list()  # proxied, policy-checked, logged
+# Business as usual — AILink handles the proxying, policies, and cost tracking!
+response = oai.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello AILink!"}]
+)
 ```
 
-Your agent never touches the real Stripe key, can't go over 60 req/min, and can only hit `/v1/charges` and `/v1/customers`.
+📚 **For a complete step-by-step walkthrough, see the [Detailed Quickstart Guide](docs/QUICKSTART.md).**
 
 ---
 

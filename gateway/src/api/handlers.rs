@@ -1747,6 +1747,24 @@ pub async fn get_analytics_timeseries(
     Ok(Json(points))
 }
 
+/// GET /api/v1/analytics/experiments — A/B testing experiment data
+pub async fn get_analytics_experiments(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Vec<crate::models::analytics::ExperimentSummary>>, StatusCode> {
+    auth.require_scope("analytics:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    let experiments = state.db.get_analytics_experiments(project_id).await.map_err(|e| {
+        tracing::error!("get_analytics_experiments failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(experiments))
+}
+
 /// PUT /api/v1/pricing — create or update a pricing entry
 pub async fn upsert_pricing(
     State(state): State<Arc<AppState>>,

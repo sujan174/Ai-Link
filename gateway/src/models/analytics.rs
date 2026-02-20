@@ -55,3 +55,14 @@ pub struct AnalyticsTimeseriesPoint {
     pub cost: f64,
     pub lat: f64,
 }
+
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ExperimentSummary {
+    pub experiment_name: String,
+    pub variant_name: String,
+    pub total_requests: i64,
+    pub avg_latency_ms: f64,
+    pub total_cost_usd: f64,
+    pub avg_tokens: f64,
+    pub error_count: i64,
+}

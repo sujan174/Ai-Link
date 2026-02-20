@@ -587,6 +587,82 @@ function PolicyFormDialog({ mode, initialPolicy, onSuccess }: {
                     </div>
                 </div>
 
+                {/* Templates */}
+                {mode === "create" && (
+                    <div className="space-y-2 pt-2 border-t">
+                        <Label className="text-xs text-muted-foreground flex items-center gap-1.5"><Zap className="h-3 w-3 text-amber-500" /> Start from a Template</Label>
+                        <div className="flex flex-wrap gap-2">
+                            <Button
+                                type="button" variant="outline" size="sm"
+                                className="text-xs h-7 px-2.5 bg-background hover:bg-muted"
+                                onClick={() => {
+                                    setInputMode("json");
+                                    setJsonRules(JSON.stringify([{
+                                        phase: "post",
+                                        condition: "Always",
+                                        action: { Log: { level: "info", tags: ["shadow-test"] } }
+                                    }], null, 2));
+                                    setPolicyMode("shadow");
+                                    if (!name) setName("Shadow Logger");
+                                    toast.success("Applied Shadow Logger template!");
+                                }}
+                            >
+                                👁 Shadow Logger
+                            </Button>
+
+                            <Button
+                                type="button" variant="outline" size="sm"
+                                className="text-xs h-7 px-2.5 bg-background hover:bg-muted"
+                                onClick={() => {
+                                    setInputMode("json");
+                                    setJsonRules(JSON.stringify([{
+                                        phase: "pre",
+                                        condition: "Always",
+                                        action: {
+                                            Split: {
+                                                experiment: "model-ab-test",
+                                                variants: [
+                                                    { weight: 50, name: "gpt-4o", set_body_fields: { model: "gpt-4o" } },
+                                                    { weight: 50, name: "claude-3-5", set_body_fields: { model: "claude-3-5-sonnet-20241022" } }
+                                                ]
+                                            }
+                                        }
+                                    }], null, 2));
+                                    setPolicyMode("enforce");
+                                    if (!name) setName("A/B Model Split");
+                                    toast.success("Applied A/B Split template! (Make sure to switch to JSON mode)");
+                                }}
+                            >
+                                ⚖️ A/B Model Split
+                            </Button>
+
+                            <Button
+                                type="button" variant="outline" size="sm"
+                                className="text-xs h-7 px-2.5 bg-background hover:bg-muted"
+                                onClick={() => {
+                                    setInputMode("visual");
+                                    setRules([emptyRule()]);
+                                    setRules(prev => {
+                                        const r = { ...prev[0] };
+                                        r.conditionMode = "check";
+                                        r.field = "provider";
+                                        r.operator = "In";
+                                        r.value = "openai, anthropic";
+                                        r.actionType = "Deny";
+                                        r.phase = "pre";
+                                        return [r];
+                                    });
+                                    setPolicyMode("enforce");
+                                    if (!name) setName("Restrict Providers");
+                                    toast.success("Applied Provider Restriction template!");
+                                }}
+                            >
+                                🚫 Restrict Providers
+                            </Button>
+                        </div>
+                    </div>
+                )}
+
                 {/* Input Mode Toggle */}
                 <div className="flex items-center gap-1 border rounded-lg p-0.5 w-fit">
                     <button

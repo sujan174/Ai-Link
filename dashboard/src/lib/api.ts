@@ -113,6 +113,16 @@ export interface AuditLogDetail extends AuditLog {
   router_info: { detected_provider?: string; original_model?: string; translated_model?: string } | null;
 }
 
+export interface ExperimentSummary {
+  experiment_name: string;
+  variant_name: string;
+  total_requests: number;
+  avg_latency_ms: number;
+  total_cost_usd: number;
+  avg_tokens: number;
+  error_count: number;
+}
+
 export interface UpstreamEntry {
   url: string;
   weight?: number;
@@ -138,7 +148,6 @@ export interface CreateTokenResponse {
 // ── API Functions ──────────────────────────────
 
 export const listTokens = () => api<Token[]>("/tokens");
-
 export const getToken = (id: string) => api<Token>(`/tokens/${id}`);
 
 export const createToken = (data: CreateTokenRequest) => {

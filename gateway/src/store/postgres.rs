@@ -1242,6 +1242,32 @@ impl PgStore {
         })
     }
 
+    pub async fn get_analytics_experiments(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<Vec<crate::models::analytics::ExperimentSummary>> {
+        // Group by experiment_name and variant_name
+        // For baseline (null variants), we group them together under an empty string or 'baseline'
+        let rows = sqlx::query_as::<_, crate::models::analytics::ExperimentSummary>(
+            r#"SELECT 
+                experiment_name as "experiment_name!",
+                COALESCE(variant_name, 'baseline') as "variant_name!",
+                COUNT(*) as "total_requests!",
+                COALESCE(AVG(response_latency_ms)::float8, 0.0) as "avg_latency_ms!",
+                COALESCE(SUM(cost_usd)::float8, 0.0) as "total_cost_usd!",
+                COALESCE(AVG(prompt_tokens + completion_tokens)::float8, 0.0) as "avg_tokens!",
+                COUNT(*) FILTER (WHERE upstream_status >= 400) as "error_count!"
+             FROM audit_logs
+             WHERE project_id = $1 AND experiment_name IS NOT NULL
+             GROUP BY experiment_name, variant_name
+             ORDER BY experiment_name, variant_name"#
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     // -- Model Pricing Operations --
 
     pub async fn list_model_pricing(&self) -> anyhow::Result<Vec<ModelPricingRow>> {
