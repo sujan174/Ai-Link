@@ -240,6 +240,22 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
     jobs::cleanup::spawn(state.db.pool().clone());
     tracing::info!("Background cleanup job started (Level 2 log expiry every 1h)");
 
+    // Phase 2.3: Start budget check job (every 15 minutes)
+    {
+        let budget_pool = state.db.pool().clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(900)); // 15min
+            loop {
+                interval.tick().await;
+                if let Err(e) = jobs::budget_checker::run_budget_check(&budget_pool).await {
+                    tracing::error!(error = %e, "budget check job failed");
+                }
+            }
+        });
+        tracing::info!("Budget check job started (project spend alerts every 15min)");
+    }
+
+
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("AIlink gateway listening on {}", addr);

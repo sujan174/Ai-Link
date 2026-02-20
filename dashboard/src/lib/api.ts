@@ -625,6 +625,8 @@ export interface AnalyticsSummary {
   avg_latency: number;
   total_cost: number;
   total_tokens: number;
+  total_input_tokens?: number;
+  total_output_tokens?: number;
 }
 
 export interface AnalyticsTimeseriesPoint {
@@ -633,6 +635,8 @@ export interface AnalyticsTimeseriesPoint {
   error_count: number;
   cost: number;
   lat: number;
+  input_tokens?: number;
+  output_tokens?: number;
 }
 
 // ── System Settings (Phase 9) ────────────────────────────────

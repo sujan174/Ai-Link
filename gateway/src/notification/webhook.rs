@@ -1,14 +1,16 @@
 use anyhow::Result;
+use hmac::{Hmac, Mac};
 use serde::Serialize;
+use sha2::Sha256;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 // ── Webhook Event Types ───────────────────────────────────────
 
 /// A structured event payload sent to webhook endpoints.
 #[derive(Debug, Clone, Serialize)]
 pub struct WebhookEvent {
-    /// Event type identifier, e.g. "policy_violation", "rate_limit_exceeded", "spend_cap_exceeded".
+    /// Event type identifier, e.g. "policy_violation", "rate_limit_exceeded".
     pub event_type: String,
     /// ISO-8601 timestamp of when the event occurred.
     pub timestamp: String,
@@ -82,9 +84,25 @@ impl WebhookEvent {
     }
 }
 
+// ── HMAC Signing ─────────────────────────────────────────────
+
+/// Compute HMAC-SHA256 of `payload` using `secret`.
+/// Returns lowercase hex digest (e.g. "sha256=<hex>").
+fn hmac_sha256_hex(secret: &str, payload: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .expect("HMAC can take key of any size");
+    mac.update(payload);
+    let result = mac.finalize();
+    let bytes = result.into_bytes();
+    format!("sha256={}", hex::encode(bytes))
+}
+
 // ── Webhook Notifier ──────────────────────────────────────────
 
 /// Dispatches webhook events to one or more configured URLs.
+/// Supports:
+/// - HMAC-SHA256 signing (X-AILink-Signature header)
+/// - Up to 3 retries with exponential back-off (1s → 5s → 25s)
 #[derive(Clone)]
 pub struct WebhookNotifier {
     client: reqwest::Client,
@@ -94,44 +112,120 @@ impl WebhookNotifier {
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(10))
                 .user_agent("AILink-Webhook/1.0")
                 .build()
                 .expect("failed to build webhook HTTP client"),
         }
     }
 
-    /// Send a webhook event to a single URL.
-    /// Failures are logged as warnings but never propagated — webhooks are best-effort.
-    pub async fn send(&self, url: &str, event: &WebhookEvent) -> Result<()> {
-        let resp = self
-            .client
-            .post(url)
-            .json(event)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("webhook request failed: {}", e))?;
+    /// Send a signed webhook event to a single URL with retry.
+    ///
+    /// If `signing_secret` is `Some`, the request body is signed with HMAC-SHA256
+    /// and the signature is sent in the `X-AILink-Signature` header.
+    ///
+    /// Retries up to 3 times on failure with exponential back-off.
+    /// Returns `Ok(())` if delivery succeeded on any attempt.
+    pub async fn send_signed(
+        &self,
+        url: &str,
+        event: &WebhookEvent,
+        signing_secret: Option<&str>,
+    ) -> Result<()> {
+        let payload = serde_json::to_vec(event)
+            .map_err(|e| anyhow::anyhow!("webhook serialize error: {}", e))?;
+        let delivery_id = uuid::Uuid::new_v4().to_string();
+        let timestamp = chrono::Utc::now().timestamp().to_string();
+        let signature = signing_secret
+            .map(|s| hmac_sha256_hex(s, &payload));
 
-        let status = resp.status();
-        if status.is_success() {
-            info!(url, event_type = %event.event_type, "webhook delivered");
-        } else {
-            let body = resp.text().await.unwrap_or_default();
-            warn!(
-                url,
-                event_type = %event.event_type,
-                status = %status,
-                body = %body,
-                "webhook delivery failed"
-            );
+        let backoff_secs: &[u64] = &[0, 1, 5, 25];
+
+        for (attempt, &delay) in backoff_secs.iter().enumerate() {
+            if delay > 0 {
+                tracing::debug!(
+                    url,
+                    attempt,
+                    delay_secs = delay,
+                    event_type = %event.event_type,
+                    "retrying webhook delivery"
+                );
+                tokio::time::sleep(Duration::from_secs(delay)).await;
+            }
+
+            let mut req = self
+                .client
+                .post(url)
+                .header("content-type", "application/json")
+                .header("x-ailink-delivery-id", &delivery_id)
+                .header("x-ailink-timestamp", &timestamp)
+                .header("x-ailink-event", &event.event_type);
+
+            if let Some(ref sig) = signature {
+                req = req.header("x-ailink-signature", sig.as_str());
+            }
+
+            let result = req
+                .body(payload.clone())
+                .send()
+                .await;
+
+            match result {
+                Ok(resp) if resp.status().is_success() => {
+                    info!(
+                        url,
+                        event_type = %event.event_type,
+                        delivery_id = %delivery_id,
+                        attempt,
+                        status = %resp.status(),
+                        "webhook delivered successfully"
+                    );
+                    return Ok(());
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    warn!(
+                        url,
+                        event_type = %event.event_type,
+                        delivery_id = %delivery_id,
+                        attempt,
+                        status = %status,
+                        body = %body,
+                        "webhook delivery failed (non-2xx), will retry"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        url,
+                        event_type = %event.event_type,
+                        delivery_id = %delivery_id,
+                        attempt,
+                        error = %e,
+                        "webhook request error, will retry"
+                    );
+                }
+            }
         }
 
-        Ok(())
+        // All attempts exhausted
+        warn!(
+            url,
+            event_type = %event.event_type,
+            delivery_id = %delivery_id,
+            "webhook delivery failed after all retries"
+        );
+        Err(anyhow::anyhow!("webhook delivery failed after 3 retries: {}", url))
+    }
+
+    /// Send without signing (backwards compat for env-var driven config webhooks).
+    pub async fn send(&self, url: &str, event: &WebhookEvent) -> Result<()> {
+        self.send_signed(url, event, None).await
     }
 
     /// Dispatch an event to all configured webhook URLs (fire-and-forget).
     ///
-    /// Each URL is attempted independently; failures in one do not affect others.
+    /// Each URL is attempted independently with retry; failures in one do not block others.
     pub async fn dispatch(&self, urls: &[String], event: WebhookEvent) {
         if urls.is_empty() {
             return;
@@ -143,7 +237,26 @@ impl WebhookNotifier {
         tokio::spawn(async move {
             for url in &urls {
                 if let Err(e) = notifier.send(url, &event).await {
-                    warn!(url, error = %e, "webhook dispatch error");
+                    warn!(url, error = %e, "webhook dispatch ultimately failed");
+                }
+            }
+        });
+    }
+
+    /// Dispatch a signed event to per-webhook DB records (URL + optional signing secret).
+    pub async fn dispatch_signed(&self, targets: &[(String, Option<String>)], event: WebhookEvent) {
+        if targets.is_empty() {
+            debug!("dispatch_signed: no webhook targets, skipping");
+            return;
+        }
+
+        let notifier = self.clone();
+        let targets = targets.to_vec();
+
+        tokio::spawn(async move {
+            for (url, secret) in &targets {
+                if let Err(e) = notifier.send_signed(url, &event, secret.as_deref()).await {
+                    warn!(url, error = %e, "signed webhook dispatch ultimately failed");
                 }
             }
         });
@@ -192,5 +305,20 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("policy_violation"));
         assert!(json.contains("timestamp"));
+    }
+
+    #[test]
+    fn test_hmac_signature_deterministic() {
+        let sig1 = hmac_sha256_hex("secret123", b"payload");
+        let sig2 = hmac_sha256_hex("secret123", b"payload");
+        assert_eq!(sig1, sig2);
+        assert!(sig1.starts_with("sha256="));
+    }
+
+    #[test]
+    fn test_hmac_signature_different_secret() {
+        let sig1 = hmac_sha256_hex("secret1", b"payload");
+        let sig2 = hmac_sha256_hex("secret2", b"payload");
+        assert_ne!(sig1, sig2);
     }
 }

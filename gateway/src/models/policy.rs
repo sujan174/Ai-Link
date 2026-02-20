@@ -253,9 +253,45 @@ pub enum Action {
         #[serde(default = "default_risk_threshold")]
         risk_threshold: f32,
     },
+    /// Traffic splitting for A/B testing and canary rollouts.
+    ///
+    /// Example: send 30% of traffic to GPT-4 and 70% to Claude.
+    /// Variant selection is deterministic per request_id (same caller always
+    /// gets the same variant within a request).
+    ///
+    /// ```json
+    /// {
+    ///   "action": "split",
+    ///   "experiment": "model-comparison-q1",
+    ///   "variants": [
+    ///     {"weight": 70, "name": "control",    "set_body_fields": {"model": "gpt-4o"}},
+    ///     {"weight": 30, "name": "experiment", "set_body_fields": {"model": "claude-3-5-sonnet-20241022"}}
+    ///   ]
+    /// }
+    /// ```
+    Split {
+        /// One or more variants with relative weights (do not need to sum to 100).
+        variants: Vec<SplitVariant>,
+        /// Optional experiment name used to group audit log entries for analysis.
+        #[serde(default)]
+        experiment: Option<String>,
+    },
 }
 
 // ── Action Sub-types ─────────────────────────────────────────
+
+/// A single weighted variant in a Split action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SplitVariant {
+    /// Relative weight (does not need to sum to 100; e.g., 70+30 or 1+1 both mean 50/50).
+    pub weight: u32,
+    /// Body fields to override when this variant is selected.
+    /// Typically `{"model": "claude-3-5-sonnet-20241022"}` to redirect to a different model.
+    pub set_body_fields: std::collections::HashMap<String, serde_json::Value>,
+    /// Optional variant label shown in experiment analytics (e.g., "control", "experiment").
+    #[serde(default)]
+    pub name: Option<String>,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

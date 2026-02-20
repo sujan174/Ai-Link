@@ -69,6 +69,11 @@ pub struct AuditEntry {
     pub ttft_ms: Option<u64>,
     /// Whether this response was served from cache
     pub cache_hit: bool,
+    // ── A/B Experiment Tracking (Split action) ───────────────────
+    /// Experiment name from the Split policy action (for grouping in analytics).
+    pub experiment_name: Option<String>,
+    /// Variant name selected for this request (e.g., "control" or "experiment").
+    pub variant_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

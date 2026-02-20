@@ -4,6 +4,8 @@ use serde_json::{json, Value};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     OpenAI,
+    /// Azure OpenAI Service — same JSON format as OpenAI, different URL structure + api-key header.
+    AzureOpenAI,
     Anthropic,
     Gemini,
     Unknown,
@@ -70,6 +72,13 @@ pub fn detect_provider(model: &str, upstream_url: &str) -> Provider {
     {
         return Provider::Gemini;
     }
+    // Azure OpenAI: detect by endpoint URL patterns
+    if url_lower.contains("azure.com") && url_lower.contains("openai")
+        || url_lower.contains(".openai.azure.com")
+        || url_lower.contains("azure-api.net")
+    {
+        return Provider::AzureOpenAI;
+    }
     if url_lower.contains("openai") {
         return Provider::OpenAI;
     }
@@ -86,12 +95,13 @@ fn starts_with_ignore_ascii_case(s: &str, prefix: &str) -> bool {
 }
 
 /// Translate an OpenAI-format request body into the provider's native format.
-/// Returns `None` if no translation is needed (i.e., OpenAI or Unknown).
+/// Returns `None` if no translation is needed (i.e., OpenAI, AzureOpenAI, or Unknown).
 pub fn translate_request(provider: Provider, body: &Value) -> Option<Value> {
     match provider {
         Provider::Anthropic => Some(openai_to_anthropic_request(body)),
         Provider::Gemini => Some(openai_to_gemini_request(body)),
-        Provider::OpenAI | Provider::Unknown => None,
+        // Azure OpenAI uses the same JSON format as OpenAI — no translation needed
+        Provider::OpenAI | Provider::AzureOpenAI | Provider::Unknown => None,
     }
 }
 
@@ -101,12 +111,19 @@ pub fn translate_response(provider: Provider, body: &Value, model: &str) -> Opti
     match provider {
         Provider::Anthropic => Some(anthropic_to_openai_response(body, model)),
         Provider::Gemini => Some(gemini_to_openai_response(body, model)),
-        Provider::OpenAI | Provider::Unknown => None,
+        // Azure OpenAI uses the same JSON format as OpenAI — no translation needed
+        Provider::OpenAI | Provider::AzureOpenAI | Provider::Unknown => None,
     }
 }
 
 /// Rewrite the upstream URL for the given provider and model.
-/// Example: For Gemini, the URL format is different from OpenAI.
+///
+/// For Azure OpenAI, the URL format is:
+///   {endpoint}/openai/deployments/{deployment}/chat/completions?api-version=2024-05-01-preview
+///
+/// The `base_url` for Azure should be set to the endpoint root, e.g.:
+///   https://my-resource.openai.azure.com
+/// The `model` field should be the deployment name.
 pub fn rewrite_upstream_url(provider: Provider, base_url: &str, model: &str) -> String {
     match provider {
         Provider::Gemini => {
@@ -118,6 +135,19 @@ pub fn rewrite_upstream_url(provider: Provider, base_url: &str, model: &str) -> 
             // Anthropic API: POST https://api.anthropic.com/v1/messages
             let base = base_url.trim_end_matches('/');
             format!("{}/v1/messages", base)
+        }
+        Provider::AzureOpenAI => {
+            // Azure OpenAI: {endpoint}/openai/deployments/{deployment}/chat/completions
+            // If the base_url already contains "/openai/deployments/" we leave it as-is.
+            if base_url.to_lowercase().contains("/openai/deployments/") {
+                base_url.to_string()
+            } else {
+                let base = base_url.trim_end_matches('/');
+                format!(
+                    "{}/openai/deployments/{}/chat/completions?api-version=2024-05-01-preview",
+                    base, model
+                )
+            }
         }
         _ => base_url.to_string(),
     }
@@ -535,7 +565,8 @@ pub fn translate_sse_body(provider: Provider, body: &[u8], model: &str) -> Optio
     match provider {
         Provider::Anthropic => Some(translate_anthropic_sse_to_openai(body, model)),
         Provider::Gemini => Some(translate_gemini_sse_to_openai(body, model)),
-        Provider::OpenAI | Provider::Unknown => None,
+        // Azure OpenAI uses the same SSE format as OpenAI — no translation needed
+        Provider::OpenAI | Provider::AzureOpenAI | Provider::Unknown => None,
     }
 }
 
@@ -799,7 +830,81 @@ fn translate_gemini_sse_to_openai(body: &[u8], model: &str) -> Vec<u8> {
     output.into_bytes()
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Error Response Normalization (Provider → OpenAI format)
+// ═══════════════════════════════════════════════════════════════
+
+/// Normalize a provider-specific error body into OpenAI error format.
+///
+/// OpenAI error format:
+/// ```json
+/// {"error":{"message":"...","type":"...","param":null,"code":null}}
+/// ```
+///
+/// Returns `None` if:
+/// - The provider is OpenAI/Unknown (no translation needed)
+/// - The body is not parseable JSON
+/// - The body doesn't look like an error
+///
+/// Callers should fall through to returning the original body on `None`.
+pub fn normalize_error_response(provider: Provider, body: &[u8]) -> Option<serde_json::Value> {
+    match provider {
+        // Azure OpenAI returns OpenAI-compatible errors — no normalization needed
+        Provider::OpenAI | Provider::AzureOpenAI | Provider::Unknown => None,
+        Provider::Anthropic => {
+            // Anthropic error format:
+            // {"type":"error","error":{"type":"invalid_request_error","message":"..."}}
+            let json: serde_json::Value = serde_json::from_slice(body).ok()?;
+            let err = json.get("error")?;
+            let message = err.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error");
+            let err_type = err.get("type").and_then(|t| t.as_str()).unwrap_or("api_error");
+            tracing::debug!(
+                provider = "anthropic",
+                err_type,
+                message,
+                "normalizing Anthropic error to OpenAI format"
+            );
+            Some(json!({
+                "error": {
+                    "message": message,
+                    "type": err_type,
+                    "param": null,
+                    "code": null
+                }
+            }))
+        }
+        Provider::Gemini => {
+            // Gemini error format (wrapped in array):
+            // [{"error":{"code":400,"message":"...","status":"INVALID_ARGUMENT"}}]
+            // OR: {"error":{"code":400,"message":"...","status":"..."}}
+            let json: serde_json::Value = serde_json::from_slice(body).ok()?;
+            let err_obj = if json.is_array() {
+                json.as_array()?.first()?.get("error")?
+            } else {
+                json.get("error")?
+            };
+            let message = err_obj.get("message").and_then(|m| m.as_str()).unwrap_or("unknown error");
+            let status = err_obj.get("status").and_then(|s| s.as_str()).unwrap_or("api_error");
+            tracing::debug!(
+                provider = "gemini",
+                status,
+                message,
+                "normalizing Gemini error to OpenAI format"
+            );
+            Some(json!({
+                "error": {
+                    "message": message,
+                    "type": status.to_lowercase(),
+                    "param": null,
+                    "code": err_obj.get("code").cloned()
+                }
+            }))
+        }
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────
+
 
 #[cfg(test)]
 mod tests {

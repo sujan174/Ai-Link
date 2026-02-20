@@ -73,10 +73,41 @@ pub async fn proxy_handler(
         .get("x-session-id")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
-    let parent_span_id = headers
-        .get("x-parent-span-id")
+
+    // W3C Trace Context: parse `traceparent` header if present.
+    // Format: 00-{trace_id}-{parent_id}-{flags}
+    // We prefer traceparent over x-parent-span-id when both are present.
+    let (w3c_trace_id, w3c_parent_id) = headers
+        .get("traceparent")
         .and_then(|v| v.to_str().ok())
-        .map(String::from);
+        .and_then(|tp| {
+            let parts: Vec<&str> = tp.splitn(4, '-').collect();
+            if parts.len() == 4 {
+                Some((parts[1].to_string(), parts[2].to_string()))
+            } else {
+                tracing::debug!(traceparent = %tp, "malformed traceparent header, ignoring");
+                None
+            }
+        })
+        .map(|(t, p)| (Some(t), Some(p)))
+        .unwrap_or((None, None));
+
+    let parent_span_id = w3c_parent_id
+        .or_else(|| {
+            headers
+                .get("x-parent-span-id")
+                .and_then(|v| v.to_str().ok())
+                .map(String::from)
+        });
+
+    if let (Some(ref tid), Some(ref pid)) = (&w3c_trace_id, &parent_span_id) {
+        tracing::debug!(
+            trace_id = %tid,
+            parent_span_id = %pid,
+            req_id = %request_id,
+            "W3C trace context received"
+        );
+    }
 
     // Detect streaming request (will be confirmed after body parse)
     let is_streaming_req = crate::models::llm::is_streaming_request(&body);
@@ -221,9 +252,12 @@ pub async fn proxy_handler(
     let mut hitl_decision = None;
     let mut hitl_timeout_str = "30m".to_string();
     let mut hitl_latency_ms = None;
-    let mut policy_rate_limited = false; // Track if any policy-based rate limit was applied
+    let mut policy_rate_limited = false;
     let mut header_mutations = middleware::redact::HeaderMutations::default();
     let mut redacted_by_policy: Vec<String> = Vec::new();
+    // A/B experiment tracking — set by Split action
+    let mut experiment_name: Option<String> = None;
+    let mut variant_name: Option<String> = None;
 
     for triggered in &outcome_actions {
         match &triggered.action {
@@ -367,6 +401,56 @@ pub async fn proxy_handler(
                             policy = %triggered.policy_name,
                             fields = ?set_body_fields.keys().collect::<Vec<_>>(),
                             "applied body overrides"
+                        );
+                    }
+                }
+            }
+
+            // ── Split (A/B traffic split) ──
+            Action::Split { variants, experiment } => {
+                if variants.is_empty() {
+                    tracing::warn!(policy = %triggered.policy_name, "Split action has no variants, skipping");
+                } else {
+                    let total_weight: u32 = variants.iter().map(|v| v.weight).sum();
+                    if total_weight == 0 {
+                        tracing::warn!(policy = %triggered.policy_name, "Split action has zero total weight, skipping");
+                    } else {
+                        // Deterministic variant selection: derive a stable bucket from request_id bytes.
+                        // XOR-fold the UUID bytes into a u32 so the same request_id always picks
+                        // the same variant, ensuring stable assignment within a request.
+                        let req_bytes = request_id.as_bytes();
+                        let bucket_seed = req_bytes[0..4].iter().enumerate()
+                            .fold(0u32, |acc, (i, &b)| acc ^ ((b as u32) << (i * 8)));
+                        let bucket = bucket_seed % total_weight;
+                        let mut cumulative: u32 = 0;
+                        let mut chosen = &variants[0];
+                        for variant in variants {
+                            cumulative += variant.weight;
+                            if bucket < cumulative {
+                                chosen = variant;
+                                break;
+                            }
+                        }
+                        // Apply the chosen variant's body field overrides
+                        if let Some(ref mut body_val) = parsed_body {
+                            if let Some(obj) = body_val.as_object_mut() {
+                                for (k, v) in &chosen.set_body_fields {
+                                    obj.insert(k.clone(), v.clone());
+                                }
+                            }
+                        }
+                        // Track for audit log
+                        experiment_name = experiment.clone();
+                        variant_name = chosen.name.clone();
+                        tracing::info!(
+                            policy = %triggered.policy_name,
+                            experiment = ?experiment,
+                            variant = ?chosen.name,
+                            weight = chosen.weight,
+                            total_weight,
+                            bucket,
+                            fields = ?chosen.set_body_fields.keys().collect::<Vec<_>>(),
+                            "A/B split: assigned variant"
                         );
                     }
                 }
@@ -981,6 +1065,34 @@ pub async fn proxy_handler(
         }
     }
 
+    // W3C Trace Context propagation: forward a child traceparent to the upstream.
+    // We use the incoming trace_id (if any) to maintain the same trace, but generate
+    // a new span_id from our request_id so the gateway hop is visible in traces.
+    let gateway_span_id = &request_id.to_string().replace('-', "")[..16]; // 16 hex chars
+    let outbound_traceparent = if let Some(ref trace_id) = w3c_trace_id {
+        // A traceparent was received — propagate the same trace with our span as parent
+        format!("00-{}-{}-01", trace_id, gateway_span_id)
+    } else {
+        // No incoming traceparent — start a new one using req_id as trace_id
+        let trace_hex = request_id.to_string().replace('-', "");
+        format!("00-{}-{}-01", trace_hex, gateway_span_id)
+    };
+    if let Ok(hv) = reqwest::header::HeaderValue::from_str(&outbound_traceparent) {
+        upstream_headers.insert("traceparent", hv);
+        tracing::debug!(
+            traceparent = %outbound_traceparent,
+            req_id = %request_id,
+            "forwarding traceparent to upstream"
+        );
+    }
+    // Also forward tracestate if present (preserves vendor-specific data)
+    if let Some(ts) = headers.get("tracestate").and_then(|v| v.to_str().ok()) {
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(ts) {
+            upstream_headers.insert("tracestate", hv);
+        }
+    }
+
+
     // Convert method Axum -> Reqwest
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
         .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid method: {}", e)))?;
@@ -1296,7 +1408,21 @@ pub async fn proxy_handler(
                 resp_body_vec = serde_json::to_vec(&translated).unwrap_or(resp_body_vec);
             }
         }
+    } else {
+        // Error response (4xx/5xx): normalize to OpenAI error format for non-OpenAI providers
+        if let Some(normalized) = proxy::model_router::normalize_error_response(
+            detected_provider,
+            &resp_body_vec,
+        ) {
+            tracing::debug!(
+                provider = ?detected_provider,
+                status = %status,
+                "normalizing upstream error response to OpenAI format"
+            );
+            resp_body_vec = serde_json::to_vec(&normalized).unwrap_or(resp_body_vec);
+        }
     }
+
 
     let mut parsed_resp_body: Option<serde_json::Value> = serde_json::from_slice(&resp_body_vec).ok();
 
@@ -1584,6 +1710,8 @@ pub async fn proxy_handler(
     audit.error_type = llm_error_type;
     audit.is_streaming = is_streaming_req;
     audit.cache_hit = false; // not a cache hit — we went to upstream
+    audit.experiment_name = experiment_name;
+    audit.variant_name = variant_name;
     audit.emit(&state);
 
     // ── Response Cache: store successful, non-streaming responses ──
@@ -1681,6 +1809,9 @@ struct AuditBuilder {
     is_streaming: bool,
     ttft_ms: Option<u64>,
     cache_hit: bool,
+    // A/B experiment tracking
+    experiment_name: Option<String>,
+    variant_name: Option<String>,
 }
 
 impl AuditBuilder {
@@ -1726,6 +1857,8 @@ impl AuditBuilder {
             is_streaming: self.is_streaming,
             ttft_ms: self.ttft_ms,
             cache_hit: self.cache_hit,
+            experiment_name: self.experiment_name,
+            variant_name: self.variant_name,
         };
         middleware::audit::log_async(state.db.pool().clone(), entry);
     }

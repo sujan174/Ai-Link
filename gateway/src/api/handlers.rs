@@ -1506,6 +1506,9 @@ pub struct WebhookRow {
     pub events: Vec<String>,
     pub is_active: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Signing secret returned once on creation; `None` on list responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signing_secret: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1535,13 +1538,14 @@ pub async fn list_webhooks(
 
     let project_id = auth.default_project_id();
     let rows = sqlx::query_as::<_, WebhookRow>(
-        "SELECT id, project_id, url, events, is_active, created_at FROM webhooks WHERE project_id = $1 ORDER BY created_at DESC",
+        // SEC: signing_secret intentionally omitted (shown only once on creation)
+        "SELECT id, project_id, url, events, is_active, created_at, NULL::text AS signing_secret FROM webhooks WHERE project_id = $1 ORDER BY created_at DESC",
     )
     .bind(project_id)
     .fetch_all(state.db.pool())
     .await
     .map_err(|e| {
-        tracing::error!("list_webhooks failed: {}", e);
+        tracing::error!(project_id = %project_id, error = %e, "list_webhooks query failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -1562,20 +1566,33 @@ pub async fn create_webhook(
     let project_id = auth.default_project_id();
     let events = payload.events.unwrap_or_default();
 
+    // Generate a 32-byte (256-bit) random signing secret shown once on creation.
+    let signing_secret: String = (0..32)
+        .map(|_| rand::random::<u8>())
+        .fold(String::with_capacity(64), |mut acc, b| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{:02x}", b);
+            acc
+        });
+
+    tracing::info!(project_id = %project_id, url = %payload.url, "creating webhook with signing secret");
+
+    // Fetch the auto-inserted row with signing_secret included
     let row = sqlx::query_as::<_, WebhookRow>(
         r#"
-        INSERT INTO webhooks (project_id, url, events)
-        VALUES ($1, $2, $3)
-        RETURNING id, project_id, url, events, is_active, created_at
+        INSERT INTO webhooks (project_id, url, events, signing_secret)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, project_id, url, events, is_active, created_at, signing_secret
         "#,
     )
     .bind(project_id)
     .bind(&payload.url)
     .bind(&events)
+    .bind(&signing_secret)
     .fetch_one(state.db.pool())
     .await
     .map_err(|e| {
-        tracing::error!("create_webhook failed: {}", e);
+        tracing::error!(project_id = %project_id, error = %e, "create_webhook DB insert failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 

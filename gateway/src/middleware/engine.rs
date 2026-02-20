@@ -317,6 +317,7 @@ fn action_name(action: &Action) -> &'static str {
         Action::Tag { .. } => "tag",
         Action::Webhook { .. } => "webhook",
         Action::ContentFilter { .. } => "content_filter",
+        Action::Split { .. } => "split",
     }
 }
 

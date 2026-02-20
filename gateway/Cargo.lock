@@ -1037,6 +1037,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "hex",
+ "hmac",
  "hyper 1.8.1",
  "hyper-util",
  "once_cell",
