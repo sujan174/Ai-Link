@@ -28,7 +28,18 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Select } from "@/components/ui/select";
+// Native select styled to match the design system (used with <option> children)
+const Select = ({ className, children, ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) => (
+    <select
+        className={cn(
+            "flex h-9 w-full items-center rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+            className
+        )}
+        {...props}
+    >
+        {children}
+    </select>
+);
 import { formatDistanceToNow } from "date-fns";
 
 // ── Constants ─────────────────────────────────────

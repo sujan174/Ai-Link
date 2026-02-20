@@ -107,6 +107,10 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(handlers::list_projects).post(handlers::create_project),
         )
         .route(
+            "/projects/:id",
+            put(handlers::update_project).delete(handlers::delete_project),
+        )
+        .route(
             "/approvals", // HITL requests
             get(handlers::list_approvals),
         )

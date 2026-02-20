@@ -47,7 +47,7 @@ export default function AnalyticsPage() {
     const formatCost = (val: number) => `$${val.toFixed(4)}`;
     const formatLatency = (val: number) => `${Math.round(val)}ms`;
     const formatNumber = (val: number) => new Intl.NumberFormat('en-US', { notation: "compact", maximumFractionDigits: 1 }).format(val);
-    const formatDate = (dateStr: string) => {
+    const formatDate = (dateStr: any) => {
         const date = new Date(dateStr);
         return range === "24"
             ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })

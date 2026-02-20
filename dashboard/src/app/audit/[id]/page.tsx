@@ -243,7 +243,12 @@ export default function AuditDetailPage() {
                             )}
                         </CardHeader>
                         <CardContent>
-                            {log.request_body && log.request_body !== "[EXPIRED]" ? (
+                            {log.log_level === 0 ? (
+                                <div className="h-32 flex flex-col items-center justify-center text-sm text-muted-foreground bg-muted/20 rounded-lg border border-dashed border-border/50">
+                                    <Shield className="h-5 w-5 mb-2 text-muted-foreground/50" />
+                                    Payload logging disabled due to token privacy settings (Metadata Only)
+                                </div>
+                            ) : log.request_body && log.request_body !== "[EXPIRED]" ? (
                                 <pre className="text-xs font-mono bg-muted/40 rounded-lg p-4 overflow-auto max-h-[400px] whitespace-pre-wrap break-all border border-border/50">
                                     {tryFormatJSON(log.request_body)}
                                 </pre>
@@ -263,7 +268,12 @@ export default function AuditDetailPage() {
                             </CardTitle>
                         </CardHeader>
                         <CardContent>
-                            {log.response_body && log.response_body !== "[EXPIRED]" ? (
+                            {log.log_level === 0 ? (
+                                <div className="h-32 flex flex-col items-center justify-center text-sm text-muted-foreground bg-muted/20 rounded-lg border border-dashed border-border/50">
+                                    <Shield className="h-5 w-5 mb-2 text-muted-foreground/50" />
+                                    Payload logging disabled due to token privacy settings (Metadata Only)
+                                </div>
+                            ) : log.response_body && log.response_body !== "[EXPIRED]" ? (
                                 <pre className="text-xs font-mono bg-muted/40 rounded-lg p-4 overflow-auto max-h-[400px] whitespace-pre-wrap break-all border border-border/50">
                                     {tryFormatJSON(log.response_body)}
                                 </pre>

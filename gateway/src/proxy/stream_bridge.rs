@@ -39,54 +39,66 @@ pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body
     let slot_for_bg = result_slot.clone();
 
     let accumulator = Arc::new(Mutex::new(StreamAccumulator::new_with_start(start)));
+    let mut byte_stream = upstream_resp.bytes_stream();
 
-    let byte_stream = upstream_resp.bytes_stream();
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1024);
 
-    // We need to track first-chunk for TTFT. Use a shared atomic flag.
-    let first_chunk_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    tokio::spawn(async move {
+        let mut first = true;
 
-    let mapped = byte_stream.map(move |chunk_result| {
-        match chunk_result {
-            Ok(bytes) => {
-                // Spawn background accumulation — non-blocking, best-effort
-                let acc = accumulator.clone();
-                let slot = slot_for_bg.clone();
-                let first_seen = first_chunk_seen.clone();
-                let bytes_clone = bytes.clone();
-                let elapsed_ms = start.elapsed().as_millis() as u64;
-
-                tokio::spawn(async move {
-                    let mut acc = acc.lock().await;
+        while let Some(chunk_result) = byte_stream.next().await {
+            match chunk_result {
+                Ok(bytes) => {
+                    let mut acc_guard = accumulator.lock().await;
 
                     // Record TTFT on the very first data chunk
-                    if !first_seen.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                        acc.set_ttft_ms(elapsed_ms);
+                    if first {
+                        first = false;
+                        acc_guard.set_ttft_ms(start.elapsed().as_millis() as u64);
                     }
 
                     // Feed each SSE line to the accumulator
-                    let text = String::from_utf8_lossy(&bytes_clone);
+                    let text = String::from_utf8_lossy(&bytes);
                     let mut done = false;
                     for line in text.lines() {
-                        if acc.push_sse_line(line) {
+                        if acc_guard.push_sse_line(line) {
                             done = true;
                         }
                     }
 
-                    // If stream is done, extract and store the result
+                    // If stream is done via [DONE] tag, extract result early
                     if done {
-                        // Take ownership of the accumulator to call finish() (which consumes self)
-                        let finished_acc = std::mem::replace(&mut *acc, StreamAccumulator::new());
-                        let result = finished_acc.finish();
-                        *slot.lock().await = Some(result);
+                        let mut slot_guard = slot_for_bg.lock().await;
+                        if slot_guard.is_none() {
+                            let finished_acc = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
+                            *slot_guard = Some(finished_acc.finish());
+                        }
                     }
-                });
+                    drop(acc_guard);
 
-                Ok::<Bytes, std::io::Error>(bytes)
+                    // Send to client; if client disconnected, break loop
+                    if tx.send(Ok(bytes)).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string());
+                    let _ = tx.send(Err(err)).await;
+                    break;
+                }
             }
-            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string())),
+        }
+
+        // EOF or client disconnect: ensure result_slot is populated if not already
+        let mut slot_guard = slot_for_bg.lock().await;
+        if slot_guard.is_none() {
+            let mut acc_guard = accumulator.lock().await;
+            let finished_acc = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
+            *slot_guard = Some(finished_acc.finish());
         }
     });
 
+    let mapped = tokio_stream::wrappers::ReceiverStream::new(rx);
     let body = Body::from_stream(mapped);
     (body, result_slot)
 }

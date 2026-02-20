@@ -632,31 +632,44 @@ pub async fn proxy_handler(
 
         let timeout_secs = middleware::policy::parse_window_secs(&hitl_timeout_str).unwrap_or(1800); // default 30m
 
-        // ── M4: Redis BLPOP for instant HITL notification ──────────────────
-        // Instead of polling the DB every second, we block on a Redis list key.
-        // The dashboard handler pushes the decision to `hitl:decision:{id}` on approve/reject.
-        // This reduces HITL latency from ~1s to <100ms and eliminates DB polling load.
+        // ── M4: Async Redis Polling for HITL notification ──────────────────────
+        // Instead of BLPOP (which hard-blocks the shared ConnectionManager mux TCP stream),
+        // we use a 500ms async sleep loop with non-blocking LPOP.
         let mut redis_conn = state.cache.redis();
         let hitl_key = format!("hitl:decision:{}", approval_id);
         let mut approved = false;
 
-        // BLPOP with the full timeout — returns (key, value) or nil on timeout
-        let blpop_result: redis::RedisResult<Option<(String, String)>> = redis::AsyncCommands::blpop(
-            &mut redis_conn,
-            &hitl_key,
-            timeout_secs as f64,
-        ).await;
+        let start_wait = std::time::Instant::now();
+        let timeout_duration = std::time::Duration::from_secs(timeout_secs as u64);
+        let mut decision_opt: Option<String> = None;
 
-        let decision = match blpop_result {
-            Ok(Some((_key, value))) => value,
-            Ok(None) => {
-                // BLPOP timed out — fall back to a single DB check
-                state.db.get_approval_status(approval_id).await
-                    .map_err(AppError::Internal)?
+        while start_wait.elapsed() < timeout_duration {
+            let lpop_result: redis::RedisResult<Option<String>> = redis::AsyncCommands::lpop(
+                &mut redis_conn,
+                &hitl_key,
+                None,
+            ).await;
+
+            match lpop_result {
+                Ok(Some(value)) => {
+                    decision_opt = Some(value);
+                    break; // got the decision
+                }
+                Ok(None) => {
+                    // Empty list, wait and retry
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => {
+                    tracing::warn!("HITL Redis LPOP failed, falling back to DB: {}", e);
+                    break;
+                }
             }
-            Err(e) => {
-                // Redis error — fall back to DB polling (graceful degradation)
-                tracing::warn!("HITL Redis BLPOP failed, falling back to DB: {}", e);
+        }
+
+        let decision = match decision_opt {
+            Some(value) => value,
+            None => {
+                // Loop timed out or Redis errored — fall back to a single DB check
                 state.db.get_approval_status(approval_id).await
                     .map_err(AppError::Internal)?
             }

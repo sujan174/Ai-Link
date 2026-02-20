@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import useSWR from "swr";
 import { swrFetcher, AuditLog, Token, ApprovalRequest } from "@/lib/api";
 import {
@@ -17,15 +18,26 @@ import {
     Loader2,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { toast } from "sonner";
 
 export default function OverviewPage() {
     // SWR Hooks for real-time data
     const { data: logs = [], isLoading: logsLoading } = useSWR<AuditLog[]>("/audit-logs?limit=100", swrFetcher, { refreshInterval: 5000 });
     const { data: tokens = [], isLoading: tokensLoading } = useSWR<Token[]>("/tokens", swrFetcher);
     const { data: approvals = [], isLoading: approvalsLoading } = useSWR<ApprovalRequest[]>("/approvals", swrFetcher, { refreshInterval: 10000 });
+
+    // UI State
+    const [dismissed, setDismissed] = useState(false);
+
+    useEffect(() => {
+        if (typeof window !== "undefined") {
+            setDismissed(localStorage.getItem("dismissed_onboarding") === "true");
+        }
+    }, []);
 
     const loading = logsLoading || tokensLoading || approvalsLoading;
 
@@ -74,46 +86,103 @@ export default function OverviewPage() {
                 )}
             </div>
 
-            {/* KPI Grid */}
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                <KPICard
-                    title="Total Requests"
-                    value={totalRequests.toLocaleString()}
-                    subtitle="Last 100 logged"
-                    icon={Activity}
-                    iconColor="blue"
-                    delay={0}
-                    loading={loading}
-                />
-                <KPICard
-                    title="Avg Latency"
-                    value={`${avgLatency}ms`}
-                    subtitle={avgLatency < 200 ? "Excellent" : avgLatency < 500 ? "Good" : "High"}
-                    icon={Zap}
-                    iconColor="emerald"
-                    delay={1}
-                    loading={loading}
-                    trend={avgLatency > 500 ? "down" : "up"}
-                />
-                <KPICard
-                    title="Active Tokens"
-                    value={activeTokens.toString()}
-                    subtitle={`${tokens.length} total tokens`}
-                    icon={Key}
-                    iconColor="violet"
-                    delay={2}
-                    loading={loading}
-                />
-                <KPICard
-                    title="Visible Spend"
-                    value={`$${totalSpend.toFixed(4)}`}
-                    subtitle="Estimated cost"
-                    icon={DollarSign}
-                    iconColor="amber"
-                    delay={3}
-                    loading={loading}
-                />
-            </div>
+            {/* Onboarding State */}
+            {!loading && totalRequests === 0 && !dismissed ? (
+                <Card className="border-dashed border-2 bg-muted/20 animate-fade-in mb-8 relative">
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="absolute right-4 top-4 h-6 w-6 text-muted-foreground hover:text-foreground"
+                        onClick={() => {
+                            localStorage.setItem("dismissed_onboarding", "true");
+                            setDismissed(true);
+                        }}
+                    >
+                        <span className="sr-only">Dismiss</span>
+                        <XCircle className="h-4 w-4" />
+                    </Button>
+                    <CardContent className="flex flex-col items-center justify-center py-12 text-center space-y-4">
+                        <div className="p-3 bg-primary/10 rounded-full">
+                            <Zap className="h-8 w-8 text-primary" />
+                        </div>
+                        <div className="space-y-1 max-w-md">
+                            <h3 className="text-lg font-bold">Ready for liftoff?</h3>
+                            <p className="text-muted-foreground text-sm">
+                                Your gateway is running but hasn't processed any requests yet. Send your first request to see metrics light up.
+                            </p>
+                        </div>
+
+                        <div className="w-full max-w-xl bg-muted/80 rounded-lg p-4 text-left font-mono text-xs relative group mt-4">
+                            <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => {
+                                    navigator.clipboard.writeText(`curl -X POST http://localhost:8443/v1/chat/completions \\
+  -H "Authorization: Bearer ${tokens[0]?.id || 'YOUR_TOKEN'}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gpt-4",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'`);
+                                    toast.success("Command copied!");
+                                }}>Copy</Button>
+                            </div>
+                            <span className="text-violet-400">curl</span> -X POST http://localhost:8443/v1/chat/completions \<br />
+                            &nbsp;&nbsp;-H <span className="text-emerald-400">"Authorization: Bearer {tokens[0]?.id || 'YOUR_TOKEN'}"</span> \<br />
+                            &nbsp;&nbsp;-H <span className="text-emerald-400">"Content-Type: application/json"</span> \<br />
+                            &nbsp;&nbsp;-d <span className="text-amber-400">'{`\n    "model": "gpt-4",\n    "messages": [{"role": "user", "content": "Hello!"}]\n  `}'</span>
+                        </div>
+
+                        <div className="flex gap-2 mt-2">
+                            <Link href="/playground">
+                                <Button variant="default">Open Playground</Button>
+                            </Link>
+                            <Link href="https://docs.ailink.app/quickstart" target="_blank">
+                                <Button variant="outline">Read Docs</Button>
+                            </Link>
+                        </div>
+                    </CardContent>
+                </Card>
+            ) : (
+                /* KPI Grid */
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                    <KPICard
+                        title="Total Requests"
+                        value={totalRequests.toLocaleString()}
+                        subtitle="Last 100 logged"
+                        icon={Activity}
+                        iconColor="blue"
+                        delay={0}
+                        loading={loading}
+                    />
+                    <KPICard
+                        title="Avg Latency"
+                        value={`${avgLatency}ms`}
+                        subtitle={avgLatency < 200 ? "Excellent" : avgLatency < 500 ? "Good" : "High"}
+                        icon={Zap}
+                        iconColor="emerald"
+                        delay={1}
+                        loading={loading}
+                        trend={avgLatency > 500 ? "down" : "up"}
+                    />
+                    <KPICard
+                        title="Active Tokens"
+                        value={activeTokens.toString()}
+                        subtitle={`${tokens.length} total tokens`}
+                        icon={Key}
+                        iconColor="violet"
+                        delay={2}
+                        loading={loading}
+                    />
+                    <KPICard
+                        title="Visible Spend"
+                        value={`$${totalSpend.toFixed(4)}`}
+                        subtitle="Estimated cost"
+                        icon={DollarSign}
+                        iconColor="amber"
+                        delay={3}
+                        loading={loading}
+                    />
+                </div>
+            )}
 
             {/* Main Content Grid */}
             <div className="grid gap-6 md:grid-cols-7">

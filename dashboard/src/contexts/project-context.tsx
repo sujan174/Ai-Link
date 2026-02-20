@@ -1,7 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { listProjects, createProject as apiCreateProject, Project } from "@/lib/api";
+import { listProjects, createProject as apiCreateProject, updateProject as apiUpdateProject, deleteProject as apiDeleteProject, Project } from "@/lib/api";
 import { toast } from "sonner";
 
 
@@ -11,6 +11,8 @@ interface ProjectContextType {
     isLoading: boolean;
     selectProject: (projectId: string) => void;
     createProject: (name: string) => Promise<void>;
+    updateProject: (id: string, name: string) => Promise<void>;
+    deleteProject: (id: string) => Promise<void>;
     refreshProjects: () => Promise<void>;
 }
 
@@ -68,6 +70,35 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
         }
     };
 
+    const updateProject = async (id: string, name: string) => {
+        try {
+            await apiUpdateProject(id, name);
+            toast.success("Project updated");
+            await refreshProjects();
+        } catch (e) {
+            toast.error("Failed to update project");
+            throw e;
+        }
+    };
+
+    const deleteProject = async (id: string) => {
+        try {
+            await apiDeleteProject(id);
+            toast.success("Project deleted");
+            await refreshProjects();
+            // If deleted current project, switch to default
+            if (id === selectedProjectId) {
+                // Find default or first available
+                // We'll trust refreshProjects will fix the state or we force a reload knowing the ID is gone
+                localStorage.removeItem("ailink_project_id");
+                window.location.reload();
+            }
+        } catch (e) {
+            toast.error("Failed to delete project");
+            throw e;
+        }
+    };
+
     return (
         <ProjectContext.Provider value={{
             projects,
@@ -75,6 +106,8 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
             isLoading,
             selectProject,
             createProject,
+            updateProject,
+            deleteProject,
             refreshProjects
         }}>
             {children}

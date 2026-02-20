@@ -33,6 +33,7 @@ pub struct CreateTokenRequest {
     pub upstream_url: String,
     pub project_id: Option<Uuid>,
     pub policy_ids: Option<Vec<Uuid>>,
+    pub log_level: Option<i16>,
 }
 
 #[derive(Serialize)]
@@ -162,6 +163,72 @@ pub async fn create_project(
     ))
 }
 
+/// PUT /api/v1/projects/:id — rename a project
+pub async fn update_project(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+    Json(payload): Json<CreateProjectRequest>, // Reuse struct since it just needs name
+) -> Result<Json<ProjectResponse>, StatusCode> {
+    if auth.role == ApiKeyRole::ReadOnly {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let updated = state
+        .db
+        .update_project(id, auth.org_id, &payload.name)
+        .await
+        .map_err(|e| {
+            tracing::error!("update_project failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if !updated {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    Ok(Json(ProjectResponse {
+        id,
+        name: payload.name,
+    }))
+}
+
+/// DELETE /api/v1/projects/:id — delete a project
+pub async fn delete_project(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    // Only Admin (or SuperAdmin) can delete projects
+    if auth.role != ApiKeyRole::Admin && auth.role != ApiKeyRole::SuperAdmin {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    // PREVENT DELETING THE DEFAULT PROJECT
+    if id == auth.default_project_id() {
+        tracing::warn!("attempt to delete default project prevented");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let deleted = state
+        .db
+        .delete_project(id, auth.org_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("delete_project failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
 /// GET /api/v1/tokens — list all tokens for a project
 pub async fn list_tokens(
     State(state): State<Arc<AppState>>,
@@ -218,6 +285,7 @@ pub async fn create_token(
         upstream_url: payload.upstream_url,
         scopes: serde_json::json!([]),
         policy_ids: payload.policy_ids.unwrap_or_default(),
+        log_level: payload.log_level,
     };
 
     state.db.insert_token(&new_token).await.map_err(|e| {

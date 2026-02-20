@@ -180,8 +180,13 @@ export function Sidebar({ className }: SidebarProps) {
                     icon: User,
                 },
                 {
+                    href: "/settings/project",
+                    label: "Project Settings",
+                    icon: Settings,
+                },
+                {
                     href: "/settings",
-                    label: "Settings",
+                    label: "System Settings",
                     icon: Settings,
                 },
             ]

@@ -45,6 +45,7 @@ export interface Token {
   upstream_url: string;
   scopes: unknown;
   policy_ids: string[];
+  log_level: number;
   is_active: boolean;
   created_at: string;
 }
@@ -125,6 +126,7 @@ export interface CreateTokenRequest {
   project_id?: string;
   policy_ids?: string[];
   upstreams?: UpstreamEntry[];
+  log_level?: number;
 }
 
 export interface CreateTokenResponse {
@@ -299,6 +301,17 @@ export const createProject = (name: string) =>
   api<{ id: string; name: string }>("/projects", {
     method: "POST",
     body: JSON.stringify({ name }),
+  });
+
+export const updateProject = (id: string, name: string) =>
+  api<{ id: string; name: string }>(`/projects/${id}`, {
+    method: "PUT",
+    body: JSON.stringify({ name }),
+  });
+
+export const deleteProject = (id: string) =>
+  api<void>(`/projects/${id}`, {
+    method: "DELETE",
   });
 
 // ── System API ─────────────────────────────────

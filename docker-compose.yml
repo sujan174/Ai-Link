@@ -29,13 +29,10 @@ services:
       - "8443:8443"
     environment:
       # Database and Redis
-      - DATABASE_URL=postgres://postgres:password@postgres/ailink
+      - DATABASE_URL=postgres://postgres:password@postgres:5432/ailink
       - REDIS_URL=redis://redis:6379
       # Monitoring
       - RUST_LOG=gateway=info,tower_http=info
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
-      - OTEL_SERVICE_NAME=ailink-gateway
-      # Security (Example key; change in production!)
       - AILINK_MASTER_KEY=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
       - AILINK_ADMIN_KEY=ailink-admin-test
       # SEC-06: Restrict CORS to dashboard origin

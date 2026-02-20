@@ -34,6 +34,10 @@ import {
 } from "@/components/ui/dialog";
 import {
   Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -82,6 +86,7 @@ export default function TokensPage() {
       upstream_url: data.upstream_url,
       scopes: [],
       policy_ids: [],
+      log_level: data.log_level ?? 1,
       is_active: true,
       created_at: new Date().toISOString(),
     };
@@ -233,6 +238,7 @@ function CreateTokenForm({ onSuccess, onCreate }: { onSuccess: () => void; onCre
     name: "",
     credential_id: "",
     upstream_url: "https://api.openai.com/v1", // Default good DX
+    log_level: 1, // 1 = Redacted payload
   });
 
   // Multi-upstream entries
@@ -472,15 +478,18 @@ function CreateTokenForm({ onSuccess, onCreate }: { onSuccess: () => void; onCre
             ) : (
               <Select
                 value={formData.credential_id}
-                onChange={(e) => setFormData({ ...formData, credential_id: e.target.value })}
-                required
+                onValueChange={(val) => setFormData({ ...formData, credential_id: val })}
               >
-                <option value="" disabled>Select a credential...</option>
-                {credentials.filter(c => c.is_active).map((cred) => (
-                  <option key={cred.id} value={cred.id}>
-                    {cred.name} ({cred.provider})
-                  </option>
-                ))}
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a credential..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {credentials.filter(c => c.is_active).map((cred) => (
+                    <SelectItem key={cred.id} value={cred.id}>
+                      {cred.name} ({cred.provider})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
               </Select>
             )}
             {credentials.length === 0 && !fetchingCreds && (
@@ -490,6 +499,29 @@ function CreateTokenForm({ onSuccess, onCreate }: { onSuccess: () => void; onCre
             )}
           </div>
         )}
+
+        {/* Privacy & Logging */}
+        <div className="space-y-1.5 pt-2 border-t border-border/50">
+          <Label className="text-xs flex items-center gap-1.5">
+            Privacy & Logging
+          </Label>
+          <Select
+            value={String(formData.log_level)}
+            onValueChange={(val) => setFormData({ ...formData, log_level: parseInt(val) })}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="0">Metadata Only (No payloads saved)</SelectItem>
+              <SelectItem value="1">Redacted Payload (Scrub PII keys/secrets)</SelectItem>
+              <SelectItem value="2">Full Payload (Everything saved - Best for debugging)</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-[10px] text-muted-foreground">
+            Controls what request and response data is stored in the Gateway's audit logs.
+          </p>
+        </div>
       </div>
       <DialogFooter>
         <DialogClose asChild>

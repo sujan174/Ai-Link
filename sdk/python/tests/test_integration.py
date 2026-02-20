@@ -234,7 +234,6 @@ class TestProxyFlow:
     def test_proxy_roundtrip(self, active_token, gateway_url):
         """Agent sends request through gateway → mock upstream echoes it back."""
         agent = AIlinkClient(api_key=active_token, gateway_url=gateway_url, timeout=10.0)
-
         resp = agent.post("/anything", json={"hello": "world"})
         assert resp.status_code == 200
         data = resp.json()

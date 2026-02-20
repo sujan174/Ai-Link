@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Search, Calculator, User, CreditCard, Settings, FileText, CheckCircle2, Shield, Key } from "lucide-react";
+import { Search, Calculator, User, CreditCard, Settings, FileText, CheckCircle2, Shield, Key, Zap } from "lucide-react";
 
 import {
     Dialog,
@@ -42,6 +42,7 @@ export function CommandPalette() {
                 { icon: CheckCircle2, name: "Approvals", shortcut: "G A", action: () => router.push("/approvals") },
                 { icon: Calculator, name: "Analytics", shortcut: "G Y", action: () => router.push("/analytics") },
                 { icon: CreditCard, name: "Credentials", shortcut: "G C", action: () => router.push("/credentials") },
+                { icon: Zap, name: "Playground", shortcut: "G L", action: () => router.push("/playground") },
             ]
         },
         {

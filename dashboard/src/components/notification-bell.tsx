@@ -14,8 +14,10 @@ import { listNotifications, countUnreadNotifications, markNotificationRead, mark
 import { formatDistanceToNow } from "date-fns";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
+import { useProject } from "@/contexts/project-context";
 
 export function NotificationBell() {
+    const { selectedProjectId } = useProject();
     const [unreadCount, setUnreadCount] = useState(0);
     const [notifications, setNotifications] = useState<Notification[]>([]);
     const [open, setOpen] = useState(false);
@@ -39,19 +41,20 @@ export function NotificationBell() {
         }
     };
 
-    // Poll for unread count
+    // Poll for unread count, re-run if project changes
     useEffect(() => {
+        if (!selectedProjectId) return; // Wait until project ID is validated by context
         fetchUnread();
         const interval = setInterval(fetchUnread, 10000);
         return () => clearInterval(interval);
-    }, []);
+    }, [selectedProjectId]);
 
     // Fetch list when opening
     useEffect(() => {
-        if (open) {
+        if (open && selectedProjectId) {
             fetchList();
         }
-    }, [open]);
+    }, [open, selectedProjectId]);
 
     const handleMarkAllRead = async (e: React.MouseEvent) => {
         e.stopPropagation();

@@ -4,6 +4,23 @@ import pytest
 import requests
 from ailink import AIlinkClient, AsyncClient
 
+@pytest.fixture(autouse=True)
+def _cleanup_clients(monkeypatch):
+    created_clients = []
+    original_init = AIlinkClient.__init__
+    
+    def new_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        created_clients.append(self)
+        
+    monkeypatch.setattr(AIlinkClient, "__init__", new_init)
+    yield
+    for client in created_clients:
+        try:
+            client.close()
+        except Exception:
+            pass
+ 
 # ── Global Config ─────────────────────────────────────────────────────────────
 GATEWAY_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:8443")
 ADMIN_KEY = os.getenv("ADMIN_KEY", "ailink-admin-test")

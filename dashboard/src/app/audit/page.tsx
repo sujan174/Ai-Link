@@ -23,7 +23,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { EmptyState } from "@/components/empty-state"
 import { PageSkeleton } from "@/components/page-skeleton"
-import { Select } from "@/components/ui/select"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 
@@ -172,13 +172,17 @@ export default function AuditPage() {
                         <div className="relative w-[240px]">
                             <Select
                                 value={selectedToken}
-                                onChange={(e) => handleFilterChange(e.target.value)}
-                                className="pl-9"
+                                onValueChange={(val) => handleFilterChange(val)}
                             >
-                                <option value="all">All Tokens</option>
-                                {tokens.map(t => (
-                                    <option key={t.id} value={t.id}>{t.name}</option>
-                                ))}
+                                <SelectTrigger className="pl-9">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">All Tokens</SelectItem>
+                                    {tokens.map(t => (
+                                        <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                                    ))}
+                                </SelectContent>
                             </Select>
                             <Filter className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
                         </div>

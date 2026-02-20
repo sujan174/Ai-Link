@@ -49,8 +49,8 @@ async fn main() -> anyhow::Result<()> {
 
     use opentelemetry_sdk::{trace as sdktrace, Resource};
 
-    let tracer =
-        opentelemetry_otlp::new_pipeline()
+    let telemetry_layer = if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
+        let tracer = opentelemetry_otlp::new_pipeline()
             .tracing()
             .with_exporter(opentelemetry_otlp::new_exporter().tonic())
             .with_trace_config(sdktrace::config().with_resource(Resource::new(vec![
@@ -58,8 +58,10 @@ async fn main() -> anyhow::Result<()> {
             ])))
             .install_batch(opentelemetry_sdk::runtime::Tokio)
             .expect("failed to install OpenTelemetry tracer");
-
-    let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+        Some(tracing_opentelemetry::layer().with_tracer(tracer))
+    } else {
+        None
+    };
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
@@ -444,6 +446,7 @@ async fn handle_token_command(
                 upstream_url: upstream,
                 scopes: serde_json::json!([]),
                 policy_ids: p_ids,
+                log_level: Some(1), // Default to redacted logging for CLI
             };
 
             state.db.insert_token(&new_token).await?;

@@ -47,6 +47,29 @@ impl PgStore {
         Ok(rows)
     }
 
+    pub async fn update_project(&self, id: Uuid, org_id: Uuid, name: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE projects SET name = $1 WHERE id = $2 AND org_id = $3"
+        )
+        .bind(name)
+        .bind(id)
+        .bind(org_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn delete_project(&self, id: Uuid, org_id: Uuid) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM projects WHERE id = $1 AND org_id = $2"
+        )
+        .bind(id)
+        .bind(org_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Verify that a project belongs to the given org.
     /// Used by API handlers to enforce project isolation.
     pub async fn project_belongs_to_org(&self, project_id: Uuid, org_id: Uuid) -> anyhow::Result<bool> {
@@ -98,8 +121,8 @@ impl PgStore {
 
     pub async fn insert_token(&self, token: &NewToken) -> anyhow::Result<()> {
         sqlx::query(
-            r#"INSERT INTO tokens (id, project_id, name, credential_id, upstream_url, scopes, policy_ids)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)"#
+            r#"INSERT INTO tokens (id, project_id, name, credential_id, upstream_url, scopes, policy_ids, log_level)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 1::SMALLINT))"#
         )
         .bind(&token.id)
         .bind(token.project_id)
@@ -108,6 +131,7 @@ impl PgStore {
         .bind(&token.upstream_url)
         .bind(&token.scopes)
         .bind(&token.policy_ids)
+        .bind(token.log_level)
         .execute(&self.pool)
         .await?;
 
@@ -779,6 +803,7 @@ pub struct NewToken {
     pub upstream_url: String,
     pub scopes: serde_json::Value,
     pub policy_ids: Vec<Uuid>,
+    pub log_level: Option<i16>,
 }
 
 // -- Output structs --
