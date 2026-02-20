@@ -82,6 +82,32 @@ impl WebhookEvent {
             details: serde_json::json!({ "reason": reason }),
         }
     }
+
+    pub fn approval_requested(
+        token_id: &str,
+        token_name: &str,
+        project_id: &str,
+        approval_id: &str,
+        method: &str,
+        path: &str,
+        upstream: &str,
+        full_body: Option<serde_json::Value>,
+    ) -> Self {
+        Self {
+            event_type: "approval_requested".to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            token_id: token_id.to_string(),
+            token_name: token_name.to_string(),
+            project_id: project_id.to_string(),
+            details: serde_json::json!({
+                "approval_id": approval_id,
+                "method": method,
+                "path": path,
+                "upstream": upstream,
+                "full_body": full_body,
+            }),
+        }
+    }
 }
 
 // ── HMAC Signing ─────────────────────────────────────────────

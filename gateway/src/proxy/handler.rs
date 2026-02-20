@@ -681,11 +681,12 @@ pub async fn proxy_handler(
             .await
             .map_err(AppError::Internal)?;
 
-        // Phase 5: Emit notification
+        // Phase 5: Emit notifications
+        // 1. Dashboard Notification
         let state_clone = state.clone();
         let project_id = token.project_id;
         let title = "Approval Required".to_string();
-        let body = format!("Request to {} requires approval.", path);
+        let body_text = format!("Request to {} requires approval.", path);
         let metadata = serde_json::json!({ "approval_id": approval_id });
         tokio::spawn(async move {
             let _ = state_clone
@@ -694,13 +695,30 @@ pub async fn proxy_handler(
                     project_id,
                     "approval_needed",
                     &title,
-                    Some(&body),
+                    Some(&body_text),
                     Some(metadata),
                 )
                 .await;
         });
 
-        // Send Slack notification (async)
+        // 2. Webhook Notification (includes full request body for app parsing)
+        let webhook_event = crate::notification::webhook::WebhookEvent::approval_requested(
+            &token.id,
+            &token.name,
+            &token.project_id.to_string(),
+            &approval_id.to_string(),
+            method.as_str(),
+            &path,
+            &token.upstream_url,
+            parsed_body.clone(),
+        );
+        let webhook_urls = state.config.webhook_urls.clone();
+        let webhook_notifier = state.webhook.clone();
+        tokio::spawn(async move {
+            webhook_notifier.dispatch(&webhook_urls, webhook_event).await;
+        });
+
+        // 3. Send Slack notification (async)
         let notifier = state.notifier.clone();
         let app_id = approval_id;
         let summary_clone = summary.clone();

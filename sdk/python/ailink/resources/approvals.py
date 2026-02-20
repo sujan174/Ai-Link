@@ -38,6 +38,21 @@ class ApprovalsResource:
         raise_for_status(resp)
         return ApprovalDecision(**resp.json())
 
+    def decide(self, approval_id: str, action: str) -> ApprovalDecision:
+        """
+        Make a decision on a pending request.
+        
+        Args:
+            approval_id: The ID of the approval request.
+            action: Either "approved" or "rejected".
+        """
+        resp = self._client._http.post(
+            f"/api/v1/approvals/{approval_id}/decision",
+            json={"decision": action.lower()},
+        )
+        raise_for_status(resp)
+        return ApprovalDecision(**resp.json())
+
 
 class AsyncApprovalsResource:
     """Async Management API resource for HITL approval requests."""
@@ -68,6 +83,21 @@ class AsyncApprovalsResource:
         resp = await self._client._http.post(
             f"/api/v1/approvals/{approval_id}/decision",
             json={"decision": "rejected"},
+        )
+        raise_for_status(resp)
+        return ApprovalDecision(**resp.json())
+
+    async def decide(self, approval_id: str, action: str) -> ApprovalDecision:
+        """
+        Make a decision on a pending request.
+        
+        Args:
+            approval_id: The ID of the approval request.
+            action: Either "approved" or "rejected".
+        """
+        resp = await self._client._http.post(
+            f"/api/v1/approvals/{approval_id}/decision",
+            json={"decision": action.lower()},
         )
         raise_for_status(resp)
         return ApprovalDecision(**resp.json())
