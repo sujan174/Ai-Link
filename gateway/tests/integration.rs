@@ -418,7 +418,7 @@ mod error_tests {
     #[test]
     fn test_spend_cap_reached_error_exists() {
         // Verify the error variant exists and can be constructed
-        let err = AppError::SpendCapReached;
+        let err = AppError::SpendCapReached { message: "daily spend cap exceeded".into() };
         let err_str = format!("{}", err);
         assert!(
             err_str.contains("spend") || err_str.contains("cap"),
