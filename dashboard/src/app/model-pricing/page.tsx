@@ -16,20 +16,45 @@ import {
     Check,
     X,
 } from "lucide-react";
+import { AlertTriangle, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { PageSkeleton } from "@/components/page-skeleton";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
-const PROVIDERS = ["openai", "anthropic", "google", "mistral", "cohere", "custom"];
+const PROVIDERS = ["openai", "anthropic", "google", "mistral", "deepseek", "meta", "cohere", "custom"];
+
+const MODELS_BY_PROVIDER: Record<string, string[]> = {
+    openai: ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "o4-mini", "o3", "o3-mini", "o1", "o1-mini", "gpt-3.5-turbo"],
+    anthropic: ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307"],
+    google: ["gemini-2.5-pro-preview-06-05", "gemini-2.5-flash-preview-05-20", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash"],
+    mistral: ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest", "mistral-embed"],
+    deepseek: ["deepseek-chat", "deepseek-reasoner"],
+    meta: ["llama-4-maverick-17b-128e", "llama-4-scout-17b-16e", "llama-3.3-70b", "llama-3.1-405b", "llama-3.1-70b", "llama-3.1-8b"],
+    cohere: ["command-r-plus", "command-r", "command-light"],
+    custom: [],
+};
 
 const SEED_MODELS = [
+    { provider: "openai", model: "gpt-4.1", input_usd_per_1m: 2.00, output_usd_per_1m: 8.00 },
+    { provider: "openai", model: "gpt-4.1-mini", input_usd_per_1m: 0.40, output_usd_per_1m: 1.60 },
+    { provider: "openai", model: "gpt-4.1-nano", input_usd_per_1m: 0.10, output_usd_per_1m: 0.40 },
     { provider: "openai", model: "gpt-4o", input_usd_per_1m: 2.50, output_usd_per_1m: 10.00 },
     { provider: "openai", model: "gpt-4o-mini", input_usd_per_1m: 0.15, output_usd_per_1m: 0.60 },
-    { provider: "anthropic", model: "claude-opus-4-5", input_usd_per_1m: 15.00, output_usd_per_1m: 75.00 },
+    { provider: "openai", model: "o4-mini", input_usd_per_1m: 1.10, output_usd_per_1m: 4.40 },
+    { provider: "openai", model: "o3", input_usd_per_1m: 2.00, output_usd_per_1m: 8.00 },
+    { provider: "openai", model: "o3-mini", input_usd_per_1m: 1.10, output_usd_per_1m: 4.40 },
+    { provider: "anthropic", model: "claude-sonnet-4-20250514", input_usd_per_1m: 3.00, output_usd_per_1m: 15.00 },
+    { provider: "anthropic", model: "claude-opus-4-20250514", input_usd_per_1m: 15.00, output_usd_per_1m: 75.00 },
+    { provider: "anthropic", model: "claude-3-7-sonnet-20250219", input_usd_per_1m: 3.00, output_usd_per_1m: 15.00 },
     { provider: "anthropic", model: "claude-3-5-sonnet-20241022", input_usd_per_1m: 3.00, output_usd_per_1m: 15.00 },
-    { provider: "google", model: "gemini-2.0-flash", input_usd_per_1m: 0.075, output_usd_per_1m: 0.30 },
+    { provider: "anthropic", model: "claude-3-5-haiku-20241022", input_usd_per_1m: 0.80, output_usd_per_1m: 4.00 },
+    { provider: "google", model: "gemini-2.5-pro-preview-06-05", input_usd_per_1m: 1.25, output_usd_per_1m: 10.00 },
+    { provider: "google", model: "gemini-2.5-flash-preview-05-20", input_usd_per_1m: 0.15, output_usd_per_1m: 0.60 },
+    { provider: "google", model: "gemini-2.0-flash", input_usd_per_1m: 0.10, output_usd_per_1m: 0.40 },
+    { provider: "deepseek", model: "deepseek-chat", input_usd_per_1m: 0.27, output_usd_per_1m: 1.10 },
+    { provider: "deepseek", model: "deepseek-reasoner", input_usd_per_1m: 0.55, output_usd_per_1m: 2.19 },
 ];
 
 interface EditingRow {
@@ -165,13 +190,41 @@ export default function ModelPricingPage() {
                             </div>
                             <div>
                                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Model ID</label>
-                                <input
-                                    type="text"
-                                    placeholder="gpt-4o-mini"
-                                    value={editing.model}
-                                    onChange={(e) => setEditing({ ...editing, model: e.target.value })}
-                                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
-                                />
+                                {(MODELS_BY_PROVIDER[editing.provider] || []).length > 0 ? (
+                                    <>
+                                        <select
+                                            value={(MODELS_BY_PROVIDER[editing.provider] || []).includes(editing.model) ? editing.model : "__custom__"}
+                                            onChange={(e) => {
+                                                if (e.target.value !== "__custom__") {
+                                                    setEditing({ ...editing, model: e.target.value });
+                                                }
+                                            }}
+                                            className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                        >
+                                            {MODELS_BY_PROVIDER[editing.provider].map((m) => (
+                                                <option key={m} value={m}>{m}</option>
+                                            ))}
+                                            <option value="__custom__">Custom model ID…</option>
+                                        </select>
+                                        {!(MODELS_BY_PROVIDER[editing.provider] || []).includes(editing.model) && (
+                                            <input
+                                                type="text"
+                                                placeholder="Type a custom model ID"
+                                                value={editing.model}
+                                                onChange={(e) => setEditing({ ...editing, model: e.target.value })}
+                                                className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                            />
+                                        )}
+                                    </>
+                                ) : (
+                                    <input
+                                        type="text"
+                                        placeholder="model-name"
+                                        value={editing.model}
+                                        onChange={(e) => setEditing({ ...editing, model: e.target.value })}
+                                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    />
+                                )}
                             </div>
                             <div>
                                 <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Input ($/1M tokens)</label>
@@ -287,6 +340,26 @@ export default function ModelPricingPage() {
                     </div>
                 </div>
             ))}
+            {/* Alias Billing Info Card */}
+            <Card className="border-border/40 bg-muted/20">
+                <CardContent className="py-4 px-5">
+                    <div className="flex gap-3">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 flex-shrink-0 mt-0.5">
+                            <Info className="h-4 w-4 text-emerald-500" />
+                        </div>
+                        <div className="space-y-1">
+                            <p className="text-sm font-medium">Model Aliases & Billing</p>
+                            <p className="text-xs text-muted-foreground">
+                                Pricing is always based on the <strong>real model ID</strong> returned by the upstream provider — not the alias.
+                                If an agent sends <code className="font-mono bg-muted px-1 rounded">model: &quot;fast&quot;</code> and
+                                the alias maps to <code className="font-mono bg-muted px-1 rounded">gpt-4.1-mini</code>,
+                                cost is calculated using the <code className="font-mono bg-muted px-1 rounded">gpt-4.1-mini</code> pricing row.
+                                Always add pricing for the <strong>real model ID</strong>, not the alias name.
+                            </p>
+                        </div>
+                    </div>
+                </CardContent>
+            </Card>
         </div>
     );
 }

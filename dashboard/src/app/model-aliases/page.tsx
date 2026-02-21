@@ -22,10 +22,52 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 const PROVIDERS = [
-    { label: "OpenAI", models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"] },
-    { label: "Anthropic", models: ["claude-opus-4-5", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"] },
-    { label: "Google", models: ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-flash-2.0"] },
-    { label: "Mistral", models: ["mistral-large-latest", "mistral-small-latest"] },
+    {
+        label: "OpenAI", models: [
+            "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
+            "gpt-4o", "gpt-4o-mini",
+            "gpt-4-turbo", "gpt-4",
+            "o4-mini", "o3", "o3-mini", "o1", "o1-mini",
+            "gpt-3.5-turbo",
+        ]
+    },
+    {
+        label: "Anthropic", models: [
+            "claude-sonnet-4-20250514", "claude-opus-4-20250514",
+            "claude-3-7-sonnet-20250219",
+            "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022",
+            "claude-3-opus-20240229", "claude-3-haiku-20240307",
+        ]
+    },
+    {
+        label: "Google", models: [
+            "gemini-2.5-pro-preview-06-05", "gemini-2.5-flash-preview-05-20",
+            "gemini-2.0-flash", "gemini-2.0-flash-lite",
+            "gemini-1.5-pro", "gemini-1.5-flash",
+        ]
+    },
+    {
+        label: "Mistral", models: [
+            "mistral-large-latest", "mistral-medium-latest", "mistral-small-latest",
+            "codestral-latest", "mistral-embed",
+        ]
+    },
+    {
+        label: "Meta (via providers)", models: [
+            "llama-4-maverick-17b-128e", "llama-4-scout-17b-16e",
+            "llama-3.3-70b", "llama-3.1-405b", "llama-3.1-70b", "llama-3.1-8b",
+        ]
+    },
+    {
+        label: "DeepSeek", models: [
+            "deepseek-chat", "deepseek-reasoner",
+        ]
+    },
+    {
+        label: "Cohere", models: [
+            "command-r-plus", "command-r", "command-light",
+        ]
+    },
 ];
 
 const ALL_MODELS = PROVIDERS.flatMap((p) => p.models);
@@ -192,10 +234,11 @@ export default function ModelAliasesPage() {
                         </p>
                         <div className="flex flex-wrap gap-2 justify-center mt-2">
                             {[
-                                { alias: "fast", model: "gpt-4o-mini" },
-                                { alias: "smart", model: "claude-opus-4-5" },
+                                { alias: "fast", model: "gpt-4.1-mini" },
+                                { alias: "smart", model: "claude-sonnet-4-20250514" },
                                 { alias: "cheap", model: "gemini-2.0-flash" },
-                                { alias: "premium", model: "gpt-4o" },
+                                { alias: "premium", model: "gpt-4.1" },
+                                { alias: "reasoning", model: "o3" },
                             ].map((t) => (
                                 <Button
                                     key={t.alias}
