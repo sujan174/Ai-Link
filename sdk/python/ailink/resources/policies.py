@@ -1,7 +1,7 @@
 """Resource for managing security policies."""
 
 from typing import List, Dict, Any, Optional
-from ..types import Policy
+from ..types import Policy, PolicyCreateResponse
 from ..exceptions import raise_for_status
 
 
@@ -28,7 +28,7 @@ class PoliciesResource:
         phase: str = "pre",
         retry: Optional[Dict[str, Any]] = None,
         project_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> PolicyCreateResponse:
         """
         Create a new policy with rules.
 
@@ -53,7 +53,7 @@ class PoliciesResource:
             payload["project_id"] = project_id
         resp = self._client._http.post("/api/v1/policies", json=payload)
         raise_for_status(resp)
-        return resp.json()
+        return PolicyCreateResponse(**resp.json())
 
     def update(
         self,
@@ -110,7 +110,7 @@ class AsyncPoliciesResource:
         phase: str = "pre",
         retry: Optional[Dict[str, Any]] = None,
         project_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> PolicyCreateResponse:
         """Create a new policy with rules."""
         payload: Dict[str, Any] = {
             "name": name,
@@ -124,7 +124,7 @@ class AsyncPoliciesResource:
             payload["project_id"] = project_id
         resp = await self._client._http.post("/api/v1/policies", json=payload)
         raise_for_status(resp)
-        return resp.json()
+        return PolicyCreateResponse(**resp.json())
 
     async def update(
         self,

@@ -10,7 +10,7 @@
 //! - **Risk scoring**: 0.0–1.0 composite score; threshold configurable per policy.
 
 use once_cell::sync::Lazy;
-use regex::{Regex, RegexSet};
+use regex::RegexSet;
 use serde_json::Value;
 
 use crate::models::policy::Action;
@@ -179,8 +179,12 @@ pub fn check_content(body: &Value, action: &Action) -> GuardrailResult {
     }
 
     // 5. Custom patterns
+    // SEC: compile with size limit to prevent ReDoS from policy-authored patterns
     for (i, pattern) in custom_patterns.iter().enumerate() {
-        if let Ok(re) = Regex::new(pattern) {
+        let compiled = regex::RegexBuilder::new(pattern)
+            .size_limit(1_000_000)
+            .build();
+        if let Ok(re) = compiled {
             if re.is_match(&text) {
                 matched_patterns.push(format!("custom_{}", i));
                 risk_score = (risk_score + 0.6).min(1.0);

@@ -1,8 +1,44 @@
 """Pydantic models for AIlink API responses."""
 
+from dataclasses import dataclass, field as dataclass_field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
+
+
+@dataclass
+class Upstream:
+    """A single upstream target with weight and priority for load balancing.
+
+    Usage::
+
+        from ailink.types import Upstream
+
+        admin.tokens.create(
+            name="my-token",
+            upstream_url="https://api.openai.com",
+            upstreams=[
+                Upstream(url="https://api.openai.com", weight=80),
+                Upstream(url="https://api.backup.com", weight=20, priority=2),
+            ],
+        )
+    """
+
+    url: str
+    weight: int = 100
+    priority: int = 1
+    credential_id: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to the gateway's upstream JSON format."""
+        d: Dict[str, Any] = {"url": self.url, "weight": self.weight, "priority": self.priority}
+        if self.credential_id is not None:
+            d["credential_id"] = self.credential_id
+        return d
+
+    def __repr__(self) -> str:
+        return f"Upstream(url={self.url!r}, weight={self.weight}, priority={self.priority})"
+
 
 
 class AIlinkModel(BaseModel):
@@ -137,4 +173,29 @@ class Response(AIlinkModel):
     """Generic API response wrapper."""
     message: Optional[str] = None
     data: Optional[Dict[str, Any]] = None
+
+
+class TokenCreateResponse(AIlinkModel):
+    """Response from creating a new token."""
+    token_id: Optional[str] = None   # the ailink_v1_... key (only returned once)
+    id: Optional[str] = None         # internal UUID
+    name: Optional[str] = None
+    upstream_url: Optional[str] = None
+    credential_id: Optional[str] = None
+    project_id: Optional[str] = None
+
+
+class CredentialCreateResponse(AIlinkModel):
+    """Response from creating a credential."""
+    id: Optional[str] = None
+    name: Optional[str] = None
+    provider: Optional[str] = None
+
+
+class PolicyCreateResponse(AIlinkModel):
+    """Response from creating a policy."""
+    id: Optional[str] = None
+    name: Optional[str] = None
+    mode: Optional[str] = None
+    phase: Optional[str] = None
 

@@ -24,8 +24,11 @@ Route LLM requests through the gateway:
 ```python
 from ailink import AIlinkClient
 
-# Create a client with your virtual token
-client = AIlinkClient(api_key="ailink_v1_...")
+# Reads AILINK_API_KEY and AILINK_GATEWAY_URL from environment
+client = AIlinkClient()
+
+# Check gateway health
+print(client.health())  # -> {"status": "ok", ...}
 
 # Use OpenAI's SDK — requests go through the gateway
 oai = client.openai()
@@ -42,7 +45,8 @@ Manage tokens, credentials, policies, and view audit logs:
 ```python
 from ailink import AIlinkClient
 
-admin = AIlinkClient.admin(admin_key="your-admin-key")
+# Reads AILINK_ADMIN_KEY from environment
+admin = AIlinkClient.admin()
 
 # Credentials
 cred = admin.credentials.create(name="prod-openai", provider="openai", secret="sk-...")
@@ -53,24 +57,49 @@ token = admin.tokens.create(
     name="billing-bot",
     credential_id=cred["id"],
     upstream_url="https://api.openai.com",
+    circuit_breaker={"enabled": True, "failure_threshold": 5},  # optional
 )
 api_key = token["token_id"]  # → "ailink_v1_..."
 
 tokens = admin.tokens.list()           # → List[Token]
 admin.tokens.revoke(api_key)           # Soft-delete
 
-# Policies (with optional retry config)
+# Circuit Breaker — read/update per-token CB config at runtime
+config = admin.tokens.get_circuit_breaker(api_key)
+admin.tokens.set_circuit_breaker(api_key, enabled=False)           # disable
+admin.tokens.set_circuit_breaker(
+    api_key, enabled=True, failure_threshold=3, recovery_cooldown_secs=30
+)
+
+# Upstream Health — view CB state of all tracked upstreams
+health = admin.tokens.upstream_health()
+# → [{"token_id": ..., "url": ..., "is_healthy": True, "failure_count": 0, ...}]
+
+# Policies — using fluent DSL
+from ailink.policy import PolicyBuilder
+rules = PolicyBuilder().when("prompt", "contains", "ignore instructions").deny("prompt injection detected").build()
+
 policy = admin.policies.create(
-    name="rate-limit-100",
+    name="secure-agents",
     mode="enforce",
-    rules=[{"type": "rate_limit", "window": "1m", "max_requests": 100}],
+    rules=rules,
     retry={"max_retries": 3, "base_delay_ms": 500, "max_backoff_ms": 10000},
 )
 admin.policies.update(policy["id"], mode="shadow")
 admin.policies.delete(policy["id"])
 
-# Audit logs
-logs = admin.audit.list(limit=50)      # → List[AuditLog]
+# Model Aliases
+alias = admin.model_aliases.create(alias="smart", model="gpt-4o")
+aliases = admin.model_aliases.list()
+admin.model_aliases.delete("smart")
+
+# Webhooks
+webhook = admin.webhooks.create(url="https://mylogger.com/webhook", events=["token.created"])
+admin.webhooks.test(webhook["url"])
+
+# Audit logs auto-pagination
+for log in admin.audit.list_all():
+    print(f"{log.method} {log.path} -> {log.upstream_status}")
 
 # HITL approvals
 pending = admin.approvals.list()       # → List[ApprovalRequest]
@@ -83,7 +112,7 @@ admin.approvals.reject(pending[1].id)
 ```python
 from ailink import AsyncClient
 
-async with AsyncClient(api_key="ailink_v1_...") as client:
+async with AsyncClient() as client:
     oai = client.openai()
     tokens = await client.tokens.list()
 ```

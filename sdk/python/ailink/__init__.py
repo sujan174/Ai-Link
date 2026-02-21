@@ -13,16 +13,20 @@ Usage:
     tokens = admin.tokens.list()
 """
 
-from .client import AIlinkClient, AsyncClient
+from .client import AIlinkClient, AsyncClient, HealthPoller, AsyncHealthPoller
 from .types import (
     Token,
+    TokenCreateResponse,
     Credential,
+    CredentialCreateResponse,
     Service,
     Policy,
+    PolicyCreateResponse,
     AuditLog,
     ApprovalRequest,
     ApprovalDecision,
     RequestSummary,
+    Response,
 )
 from .exceptions import (
     AIlinkError,
@@ -31,6 +35,10 @@ from .exceptions import (
     RateLimitError,
     ValidationError,
     GatewayError,
+    SpendCapError,
+    PermissionError,
+    PolicyDeniedError,
+    PayloadTooLargeError,
 )
 
 # Backward-compatible alias
@@ -43,15 +51,22 @@ __all__ = [
     "AIlinkClient",
     "AsyncClient",
     "Client",
+    # Health monitoring
+    "HealthPoller",
+    "AsyncHealthPoller",
     # Types
     "Token",
+    "TokenCreateResponse",
     "Credential",
+    "CredentialCreateResponse",
     "Service",
     "Policy",
+    "PolicyCreateResponse",
     "AuditLog",
     "ApprovalRequest",
     "ApprovalDecision",
     "RequestSummary",
+    "Response",
     # Exceptions
     "AIlinkError",
     "AuthenticationError",
@@ -59,6 +74,10 @@ __all__ = [
     "RateLimitError",
     "ValidationError",
     "GatewayError",
+    "SpendCapError",
+    "PermissionError",
+    "PolicyDeniedError",
+    "PayloadTooLargeError",
     # Metadata
     "__version__",
 ]

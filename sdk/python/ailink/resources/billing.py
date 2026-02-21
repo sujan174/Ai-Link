@@ -1,4 +1,5 @@
 from typing import Dict, Any, Optional
+from ..exceptions import raise_for_status
 
 class BillingResource:
     def __init__(self, client):
@@ -17,7 +18,9 @@ class BillingResource:
         params = {}
         if period:
             params["period"] = period
-        return self._client.get("/billing/usage", params=params).json()
+        resp = self._client.get("/billing/usage", params=params)
+        raise_for_status(resp)
+        return resp.json()
 
 class AsyncBillingResource:
     def __init__(self, client):
@@ -28,4 +31,5 @@ class AsyncBillingResource:
         if period:
             params["period"] = period
         response = await self._client.get("/billing/usage", params=params)
+        raise_for_status(response)
         return response.json()

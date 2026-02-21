@@ -222,20 +222,30 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 }
 
 /// Regex matching against a string value.
+/// SEC: all user-supplied patterns compiled with a 1MB size limit to prevent ReDoS.
 fn check_regex(actual: &Value, pattern: &Value) -> bool {
     let actual_str = value_as_str(actual);
     let pattern_str = value_as_str(pattern);
+
+    /// Compile a regex with a size limit. Returns None on invalid/too-complex patterns.
+    fn compile_safe(pat: &str) -> Option<Regex> {
+        regex::RegexBuilder::new(pat)
+            .size_limit(1_000_000) // 1MB limit prevents catastrophic backtracking
+            .build()
+            .ok()
+    }
+
     match (actual_str, pattern_str) {
         (Some(text), Some(pat)) => {
             // For array values (from wildcard extraction), check any element
             if let Value::Array(arr) = actual {
                 return arr.iter().any(|elem| {
                     value_as_str(elem)
-                        .and_then(|s| Regex::new(&pat).ok().map(|re| re.is_match(&s)))
+                        .and_then(|s| compile_safe(&pat).map(|re| re.is_match(&s)))
                         .unwrap_or(false)
                 });
             }
-            Regex::new(&pat)
+            compile_safe(&pat)
                 .map(|re| re.is_match(&text))
                 .unwrap_or(false)
         }
@@ -245,7 +255,7 @@ fn check_regex(actual: &Value, pattern: &Value) -> bool {
                 if let Some(pat) = value_as_str(pattern) {
                     return arr.iter().any(|elem| {
                         value_as_str(elem)
-                            .and_then(|s| Regex::new(&pat).ok().map(|re| re.is_match(&s)))
+                            .and_then(|s| compile_safe(&pat).map(|re| re.is_match(&s)))
                             .unwrap_or(false)
                     });
                 }

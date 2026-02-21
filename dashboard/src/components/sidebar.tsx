@@ -23,6 +23,8 @@ import {
     User,
     ChevronLeft,
     ChevronRight,
+    Map,
+    DollarSign,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -142,6 +144,16 @@ export function Sidebar({ className }: SidebarProps) {
                     href: "/credentials",
                     label: "Credentials",
                     icon: Fingerprint,
+                },
+                {
+                    href: "/model-aliases",
+                    label: "Model Aliases",
+                    icon: Map,
+                },
+                {
+                    href: "/model-pricing",
+                    label: "Model Pricing",
+                    icon: DollarSign,
                 },
             ]
         },

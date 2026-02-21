@@ -55,9 +55,17 @@ Create a new virtual token linked to a real credential.
     { "url": "https://api.backup.com", "weight": 30, "priority": 1 }
   ],
   "policies": ["policy-uuid-1", "policy-uuid-2"],
-  "scopes": ["read", "write"]
+  "scopes": ["read", "write"],
+  "circuit_breaker": {
+    "enabled": true,
+    "failure_threshold": 3,
+    "recovery_cooldown_secs": 30,
+    "half_open_max_requests": 1
+  }
 }
 ```
+
+All `circuit_breaker` fields are optional — omit to use gateway defaults (`enabled: true`, threshold: 3, cooldown: 30s). To disable circuit breaking for a dev/test token, pass `{"enabled": false}`.
 
 **Response**:
 ```json
@@ -76,6 +84,49 @@ Immediately invalidates the token. Active connections are terminated.
 `POST /tokens/{token_id}/rotate`
 
 Triggers an immediate rotation of the *real* credential associated with this token. The virtual token ID (`ailink_v1_...`) remains unchanged, so the agent doesn't need a restart.
+
+---
+
+### Circuit Breaker
+
+Per-token circuit breaker configuration. Controls how the load balancer handles unhealthy upstreams.
+
+#### Get Circuit Breaker Config
+`GET /tokens/{token_id}/circuit-breaker`
+
+Returns the current circuit breaker configuration for a token.
+
+**Response:**
+```json
+{
+  "enabled": true,
+  "failure_threshold": 3,
+  "recovery_cooldown_secs": 30,
+  "half_open_max_requests": 1
+}
+```
+
+#### Update Circuit Breaker Config
+`PATCH /tokens/{token_id}/circuit-breaker`
+
+Update circuit breaker settings at runtime — no gateway restart required.
+
+```json
+{
+  "enabled": false
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Toggle CB on/off per token |
+| `failure_threshold` | int | `3` | Consecutive failures before circuit opens |
+| `recovery_cooldown_secs` | int | `30` | Seconds before retrying an unhealthy upstream |
+| `half_open_max_requests` | int | `1` | Requests allowed in half-open state |
+
+> **Response headers on every proxied request:**
+> - `X-AILink-CB-State: closed | open | half_open | disabled`
+> - `X-AILink-Upstream: https://api.primary.com/v1`
 
 ---
 
@@ -295,3 +346,28 @@ Returns `200 OK` if the process is running.
 #### Readiness
 `GET /readyz`
 Returns `200 OK` if the gateway can connect to Postgres and Redis.
+
+#### Upstream Health
+`GET /health/upstreams`
+
+Returns the circuit breaker health status of all tracked upstream targets across all tokens.
+
+**Response:**
+```json
+[
+  {
+    "token_id": "ailink_v1_proj_abc_tok_xyz",
+    "url": "https://api.openai.com",
+    "is_healthy": true,
+    "failure_count": 0,
+    "cooldown_remaining_secs": null
+  },
+  {
+    "token_id": "ailink_v1_proj_abc_tok_xyz",
+    "url": "https://api.backup.com",
+    "is_healthy": false,
+    "failure_count": 3,
+    "cooldown_remaining_secs": 18
+  }
+]
+```

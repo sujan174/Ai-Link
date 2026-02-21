@@ -81,7 +81,12 @@ Requests flow through a stack of **Tower Middleware** layers. Each layer is isol
     *   Executes actions: `deny`, `rate_limit` (Redis-backed), `spend_cap` (DB-backed atomic check).
 8.  **Human-in-the-Loop (HITL)**: If triggered, suspends the request, notifies Slack/Dashboard via Redis Stream, and waits for `approval` or `rejection`.
 9.  **Response Cache (Read)**: Checks Redis for a semantic match (hash of model + messages + args). Returns immediately on hit.
-10. **Load Balancer**: Selects an upstream target based on `weight` and `availability` (Circuit Breaker status).
+10. **Load Balancer + Circuit Breaker**:
+    *   Reads per-token `CircuitBreakerConfig` from the resolved token (`circuit_breaker` JSONB).
+    *   Selects an upstream using **weighted round-robin within priority tiers**.
+    *   CB states: `closed` (healthy) → `open` (blocked after N failures) → `half_open` (cooldown elapsed) → `closed` (recovered).
+    *   When `enabled: false`, CB is bypassed entirely — all upstreams are always routable (useful for dev tokens).
+    *   Adds `X-AILink-CB-State` and `X-AILink-Upstream` response headers for client-side observability.
 11. **Model Router**:
     *   **Detection**: Identifies provider (OpenAI, Anthropic, Gemini) via model prefix (e.g. `claude-3`).
     *   **Translation**: Converts incoming OpenAI-format body to target provider format (e.g., specific JSON structure for Gemini).
@@ -167,12 +172,13 @@ The heart of AIlink's control plane. Policies are JSON documents that bind **Con
 ## 4. Data Architecture
 
 ### 4.1. PostgreSQL (System of Record)
-*   **`tokens`**: Virtual identities settings.
+*   **`tokens`**: Virtual identities, upstream config, policy attachment, log level, and `circuit_breaker` (JSONB) per-token CB config.
 *   **`credentials`**: Encrypted provider keys.
 *   **`policies`**: Rulesets (JSONB).
 *   **`api_keys`**: Management API access (RBAC).
 *   **`audit_logs`**: Partitioned by month. High-volume write target.
 *   **`spend_caps`**: Daily/Monthly limits per token.
+*   **`model_pricing`**: Dynamic cost-per-1k-token by model and provider.
 
 ### 4.2. Redis (System of Speed)
 *   **Cache (`cache:*`)**:

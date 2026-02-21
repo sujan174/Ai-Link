@@ -30,6 +30,7 @@ pub struct AuthContext {
     pub user_id: Option<Uuid>,
     pub role: ApiKeyRole,
     pub scopes: Vec<String>,
+    #[allow(dead_code)]
     pub key_id: Option<Uuid>,
 }
 
@@ -86,6 +87,8 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/tokens/:id", delete(handlers::revoke_token))
         .route("/tokens/:id/usage", get(handlers::get_token_usage))
+        .route("/tokens/:id/circuit-breaker",
+            get(handlers::get_circuit_breaker).patch(handlers::update_circuit_breaker))
         .route(
             "/policies",
             get(handlers::list_policies).post(handlers::create_policy),

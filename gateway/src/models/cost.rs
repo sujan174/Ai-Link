@@ -103,6 +103,7 @@ pub fn get_model_pricing_fallback(provider: &str, model: &str) -> ModelPricing {
 /// Falls back to hardcoded table if the cache is empty.
 ///
 /// This is the async version used by the proxy handler.
+#[allow(dead_code)]
 pub async fn calculate_cost_with_cache(
     pricing: &crate::models::pricing_cache::PricingCache,
     provider: &str,

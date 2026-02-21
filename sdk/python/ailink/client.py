@@ -4,6 +4,9 @@ import httpx
 from contextlib import contextmanager, asynccontextmanager
 from functools import cached_property
 from typing import Optional, TYPE_CHECKING
+import os
+import time
+from ._logging import log_request, log_response
 
 if TYPE_CHECKING:
     import openai
@@ -35,22 +38,31 @@ class AIlinkClient:
 
     def __init__(
         self,
-        api_key: str,
-        gateway_url: str = "http://localhost:8443",
+        api_key: Optional[str] = None,
+        gateway_url: Optional[str] = None,
         agent_name: Optional[str] = None,
         idempotency_key: Optional[str] = None,
         timeout: float = 30.0,
+        max_retries: int = 2,
         **kwargs,
     ):
         """
         Args:
-            api_key: AIlink virtual token (starts with 'ailink_v1_')
-            gateway_url: URL of the AIlink gateway (default: http://localhost:8443)
+            api_key: AIlink virtual token (starts with 'ailink_v1_'). Defaults to AILINK_API_KEY env var.
+            gateway_url: URL of the AIlink gateway (default: http://localhost:8443 or AILINK_GATEWAY_URL env var)
             agent_name: Optional name for this agent (sent as X-AIlink-Agent-Name)
             idempotency_key: Optional key for idempotent requests
             timeout: Request timeout in seconds (default: 30)
+            max_retries: Number of connection retries (default: 2)
             **kwargs: Additional arguments passed to httpx.Client
         """
+        api_key = api_key or os.environ.get("AILINK_API_KEY")
+        if not api_key:
+            from .exceptions import AIlinkError
+            raise AIlinkError("No API key provided. Pass api_key= or set AILINK_API_KEY env var.")
+        
+        gateway_url = gateway_url or os.environ.get("AILINK_GATEWAY_URL", "http://localhost:8443")
+        
         self.api_key = api_key
         self.gateway_url = gateway_url.rstrip("/")
         self._agent_name = agent_name
@@ -60,11 +72,31 @@ class AIlinkClient:
             headers["X-AIlink-Agent-Name"] = agent_name
         if idempotency_key:
             headers["X-AIlink-Idempotency-Key"] = idempotency_key
+        # Send SDK version on every request so the gateway can log it and
+        # detect breaking incompatibilities (currently only logged, future: 426 upgrade hint)
+        from . import __version__
+        headers["X-AILink-SDK-Version"] = __version__
 
+        # Only set retry transport if user hasn't provided their own transport
+        if "transport" not in kwargs and max_retries > 0:
+            kwargs["transport"] = httpx.HTTPTransport(retries=max_retries)
+        
+        _timings: dict = {}
+        
+        def _log_req(request: httpx.Request):
+            _timings[id(request)] = time.perf_counter()
+            log_request(request.method, str(request.url))
+            
+        def _log_res(response: httpx.Response):
+            start = _timings.pop(id(response.request), time.perf_counter())
+            elapsed = (time.perf_counter() - start) * 1000
+            log_response(response.status_code, str(response.url), elapsed)
+            
         self._http = httpx.Client(
             base_url=self.gateway_url,
             headers=headers,
             timeout=timeout,
+            event_hooks={"request": [_log_req], "response": [_log_res]},
             **kwargs,
         )
 
@@ -148,6 +180,85 @@ class AIlinkClient:
         finally:
             pass
 
+    # ── Health Check ───────────────────────────────────────────
+
+    def is_healthy(self, timeout: float = 3.0) -> bool:
+        """
+        Returns True if the gateway is reachable and healthy, False otherwise.
+
+        A fast, non-raising alternative to :meth:`health` — designed for
+        conditional fallback logic::
+
+            if client.is_healthy():
+                oai = client.openai()   # use gateway
+            else:
+                oai = openai.OpenAI()   # bypass directly
+        """
+        try:
+            resp = self._http.get("/healthz", timeout=timeout)
+            return resp.status_code < 500
+        except Exception:
+            return False
+
+    def health(self, timeout: float = 5.0) -> dict:
+        """
+        Check gateway health. Returns a status dict or raises GatewayError if unreachable.
+
+        Returns::
+
+            {"status": "ok", "gateway_url": "...", "http_status": 200}
+        """
+        from .exceptions import GatewayError
+        try:
+            resp = self._http.get("/healthz", timeout=timeout)
+            return {"status": "ok", "gateway_url": self.gateway_url, "http_status": resp.status_code}
+        except httpx.ConnectError:
+            raise GatewayError(f"Gateway unreachable at {self.gateway_url}")
+        except httpx.TimeoutException:
+            raise GatewayError(f"Gateway health check timed out after {timeout}s")
+
+    @contextmanager
+    def with_fallback(self, fallback, *, health_timeout: float = 3.0):
+        """
+        Context manager for automatic gateway fallback.  Checks gateway health
+        before entering the block and yields either a gateway-backed client or
+        the provided fallback.
+
+        Best practice — always supply a fallback so your agent keeps working
+        even when the AIlink gateway is temporarily unreachable::
+
+            import openai
+
+            # Fallback: raw OpenAI client (no policy enforcement / audit)
+            fallback_oai = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+            with client.with_fallback(fallback_oai) as oai:
+                # `oai` is client.openai() if gateway is healthy,
+                # or fallback_oai if gateway is down.
+                response = oai.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "user", "content": "Hello"}],
+                )
+
+        The ``fallback`` can be any object — a raw provider SDK client,
+        a lambda, a cached response dict, or ``None`` if you want to handle
+        the down case yourself (``oai`` will be ``None``).
+
+        Args:
+            fallback:       Object to yield when the gateway is unhealthy.
+            health_timeout: Seconds to wait for the health probe (default: 3).
+        """
+        if self.is_healthy(timeout=health_timeout):
+            yield self.openai()
+        else:
+            import warnings
+            warnings.warn(
+                f"AIlink gateway at {self.gateway_url} is unreachable — "
+                "using fallback client. Requests will bypass policy enforcement and audit logging.",
+                stacklevel=3,
+            )
+            yield fallback
+
     # ── HTTP Methods ───────────────────────────────────────────
 
     def request(self, method: str, url: str, **kwargs) -> httpx.Response:
@@ -177,14 +288,21 @@ class AIlinkClient:
     # ── Admin Factory ──────────────────────────────────────────
 
     @classmethod
-    def admin(cls, admin_key: str, gateway_url: str = "http://localhost:8443", **kwargs) -> "AIlinkClient":
+    def admin(cls, admin_key: Optional[str] = None, gateway_url: Optional[str] = None, **kwargs) -> "AIlinkClient":
         """
         Create an admin client for Management API operations.
 
         Args:
-            admin_key: Admin key (X-Admin-Key header value)
+            admin_key: Admin key (X-Admin-Key header value). Defaults to AILINK_ADMIN_KEY.
             gateway_url: URL of the AIlink gateway
         """
+        admin_key = admin_key or os.environ.get("AILINK_ADMIN_KEY")
+        if not admin_key:
+            from .exceptions import AIlinkError
+            raise AIlinkError("No admin key provided. Pass admin_key= or set AILINK_ADMIN_KEY env var.")
+            
+        gateway_url = gateway_url or os.environ.get("AILINK_GATEWAY_URL", "http://localhost:8443")
+        
         instance = cls.__new__(cls)
         instance.api_key = admin_key
         instance.gateway_url = gateway_url.rstrip("/")
@@ -210,11 +328,16 @@ class AIlinkClient:
         try:
             import openai
         except ImportError:
-            raise ImportError("Please install 'openai' package: pip install ailink[openai]")
+            raise ImportError(
+                "The 'openai' package is required for client.openai(). "
+                "Install it with: pip install ailink[openai]\n"
+                "Or standalone: pip install openai"
+            ) from None
 
         return openai.Client(
             api_key=self.api_key,
             base_url=self.gateway_url,
+            default_headers={"X-AIlink-Agent-Name": self._agent_name} if self._agent_name else None,
             max_retries=0,
         )
 
@@ -227,7 +350,11 @@ class AIlinkClient:
         try:
             import anthropic
         except ImportError:
-            raise ImportError("Please install 'anthropic' package: pip install ailink[anthropic]")
+            raise ImportError(
+                "The 'anthropic' package is required for client.anthropic(). "
+                "Install it with: pip install ailink[anthropic]\n"
+                "Or standalone: pip install anthropic"
+            ) from None
 
         return anthropic.Client(
             api_key="AILINK_GATEWAY_MANAGED",
@@ -279,6 +406,23 @@ class AIlinkClient:
         return ApiKeysResource(self)
 
     @cached_property
+    def webhooks(self):
+        """Webhook subscription management — create, list, delete, test."""
+        from .resources.webhooks import WebhooksResource
+        return WebhooksResource(self)
+
+    @cached_property
+    def model_aliases(self):
+        """Model alias management — map short names to real model identifiers."""
+        from .resources.model_aliases import ModelAliasesResource
+        return ModelAliasesResource(self)
+
+    @cached_property
+    def experiments(self):
+        """Experiment tracking (A/B testing) — stub until P4.2 API ships."""
+        from .resources.experiments import ExperimentsResource
+        return ExperimentsResource(self)
+
     def billing(self) -> "BillingResource":
         from .resources.billing import BillingResource
         return BillingResource(self)
@@ -301,22 +445,31 @@ class AsyncClient:
 
     def __init__(
         self,
-        api_key: str,
-        gateway_url: str = "http://localhost:8443",
+        api_key: Optional[str] = None,
+        gateway_url: Optional[str] = None,
         agent_name: Optional[str] = None,
         idempotency_key: Optional[str] = None,
         timeout: float = 30.0,
+        max_retries: int = 2,
         **kwargs,
     ):
         """
         Args:
-            api_key: AIlink virtual token
-            gateway_url: Gateway URL
+            api_key: AIlink virtual token. Defaults to AILINK_API_KEY env var.
+            gateway_url: Gateway URL (default: http://localhost:8443 or AILINK_GATEWAY_URL)
             agent_name: Optional name for this agent
             idempotency_key: Optional key for idempotent requests
             timeout: Request timeout in seconds (default: 30)
+            max_retries: Number of connection retries (default: 2)
             **kwargs: Arguments for httpx.AsyncClient
         """
+        api_key = api_key or os.environ.get("AILINK_API_KEY")
+        if not api_key:
+            from .exceptions import AIlinkError
+            raise AIlinkError("No API key provided. Pass api_key= or set AILINK_API_KEY env var.")
+            
+        gateway_url = gateway_url or os.environ.get("AILINK_GATEWAY_URL", "http://localhost:8443")
+        
         self.api_key = api_key
         self.gateway_url = gateway_url.rstrip("/")
         self._agent_name = agent_name
@@ -327,10 +480,26 @@ class AsyncClient:
         if idempotency_key:
             headers["X-AIlink-Idempotency-Key"] = idempotency_key
 
+        # Only set retry transport if user hasn't provided their own transport
+        if "transport" not in kwargs and max_retries > 0:
+            kwargs["transport"] = httpx.AsyncHTTPTransport(retries=max_retries)
+        
+        _timings: dict = {}
+        
+        async def _alog_req(request: httpx.Request):
+            _timings[id(request)] = time.perf_counter()
+            log_request(request.method, str(request.url))
+            
+        async def _alog_res(response: httpx.Response):
+            start = _timings.pop(id(response.request), time.perf_counter())
+            elapsed = (time.perf_counter() - start) * 1000
+            log_response(response.status_code, str(response.url), elapsed)
+            
         self._http = httpx.AsyncClient(
             base_url=self.gateway_url,
             headers=headers,
             timeout=timeout,
+            event_hooks={"request": [_alog_req], "response": [_alog_res]},
             **kwargs,
         )
 
@@ -395,6 +564,62 @@ class AsyncClient:
             yield scoped
         finally:
             pass
+
+    # ── Health Check ───────────────────────────────────────────
+
+    async def is_healthy(self, timeout: float = 3.0) -> bool:
+        """
+        Returns True if the gateway is reachable and healthy, False otherwise.
+        Non-raising — safe to use in conditional fallback logic.
+        """
+        try:
+            resp = await self._http.get("/healthz", timeout=timeout)
+            return resp.status_code < 500
+        except Exception:
+            return False
+
+    async def health(self, timeout: float = 5.0) -> dict:
+        """
+        Check gateway health. Returns a status dict or raises GatewayError if unreachable.
+        """
+        from .exceptions import GatewayError
+        try:
+            resp = await self._http.get("/healthz", timeout=timeout)
+            return {"status": "ok", "gateway_url": self.gateway_url, "http_status": resp.status_code}
+        except httpx.ConnectError:
+            raise GatewayError(f"Gateway unreachable at {self.gateway_url}")
+        except httpx.TimeoutException:
+            raise GatewayError(f"Gateway health check timed out after {timeout}s")
+
+    @asynccontextmanager
+    async def with_fallback(self, fallback, *, health_timeout: float = 3.0):
+        """
+        Async context manager for automatic gateway fallback.
+        Yields a gateway-backed async client, or ``fallback`` if the gateway is down::
+
+            import openai
+            fallback_oai = openai.AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+            async with client.with_fallback(fallback_oai) as oai:
+                response = await oai.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "user", "content": "Hello"}],
+                )
+
+        Args:
+            fallback:       Object to yield when the gateway is unhealthy.
+            health_timeout: Seconds to wait for the health probe (default: 3).
+        """
+        if await self.is_healthy(timeout=health_timeout):
+            yield self.openai()
+        else:
+            import warnings
+            warnings.warn(
+                f"AIlink gateway at {self.gateway_url} is unreachable — "
+                "using fallback client. Requests will bypass policy enforcement and audit logging.",
+                stacklevel=3,
+            )
+            yield fallback
 
     # ── HTTP Methods ───────────────────────────────────────────
 
@@ -566,3 +791,163 @@ class _AsyncScopedClient:
 
     async def delete(self, url: str, **kwargs) -> httpx.Response:
         return await self._http.delete(url, **self._merge(kwargs))
+
+
+# ── Health Poller ─────────────────────────────────────────────────────────────
+#
+# Optional background health-monitoring helpers for agents that make many
+# successive LLM calls and don't want to probe /healthz on every single request.
+#
+# Usage (sync):
+#
+#   poller = HealthPoller(client, interval=10)
+#   poller.start()
+#
+#   # Hot path — zero extra HTTP requests:
+#   if poller.is_healthy:
+#       oai = client.openai()
+#   else:
+#       oai = fallback_client
+#
+#   poller.stop()
+#
+# Usage (async):
+#
+#   async with AsyncHealthPoller(client, interval=10) as poller:
+#       if poller.is_healthy:
+#           oai = client.openai()
+
+
+class HealthPoller:
+    """
+    Background thread that continuously polls the AIlink gateway's ``/healthz``
+    endpoint and caches the result, so agents can check health on the critical
+    path without paying an HTTP round-trip per request.
+
+    Args:
+        client:   An ``AIlinkClient`` instance.
+        interval: Seconds between health probes (default: 15).
+        timeout:  Per-probe connect timeout in seconds (default: 3).
+
+    Example::
+
+        import openai
+        from ailink import AIlinkClient, HealthPoller
+
+        client = AIlinkClient(api_key=\"ailink_v1_...\")
+        fallback = openai.OpenAI(api_key=os.environ[\"OPENAI_API_KEY\"])
+
+        poller = HealthPoller(client, interval=10)
+        poller.start()
+
+        try:
+            # Zero extra latency — uses cached health state
+            oai = client.openai() if poller.is_healthy else fallback
+            response = oai.chat.completions.create(
+                model=\"gpt-4o\",
+                messages=[{\"role\": \"user\", \"content\": \"Hello\"}],
+            )
+        finally:
+            poller.stop()
+    """
+
+    def __init__(self, client: AIlinkClient, interval: float = 15.0, timeout: float = 3.0):
+        self._client = client
+        self._interval = interval
+        self._timeout = timeout
+        self._healthy: bool = True  # optimistic default
+        self._thread: Optional[object] = None
+        self._stop_event: Optional[object] = None
+
+    @property
+    def is_healthy(self) -> bool:
+        """True if the last health probe succeeded."""
+        return self._healthy
+
+    def start(self) -> "HealthPoller":
+        """Start the background polling thread. Returns self for chaining."""
+        import threading
+        self._stop_event = threading.Event()
+
+        def _loop():
+            while not self._stop_event.is_set():  # type: ignore[union-attr]
+                self._healthy = self._client.is_healthy(timeout=self._timeout)
+                self._stop_event.wait(self._interval)  # type: ignore[union-attr]
+
+        self._thread = threading.Thread(target=_loop, daemon=True, name="ailink-health-poller")
+        self._thread.start()  # type: ignore[union-attr]
+        return self
+
+    def stop(self):
+        """Stop the background polling thread."""
+        if self._stop_event:
+            self._stop_event.set()  # type: ignore[union-attr]
+        if self._thread:
+            self._thread.join(timeout=2)  # type: ignore[union-attr]
+
+    def __enter__(self) -> "HealthPoller":
+        return self.start()
+
+    def __exit__(self, *_):
+        self.stop()
+
+
+class AsyncHealthPoller:
+    """
+    Asyncio-native health poller for use in async agents.  Runs a background
+    task that probes ``/healthz`` at a configurable interval.
+
+    Use as an async context manager::
+
+        import openai
+        from ailink import AsyncClient, AsyncHealthPoller
+
+        client = AsyncClient(api_key=\"ailink_v1_...\")
+        fallback = openai.AsyncOpenAI(api_key=os.environ[\"OPENAI_API_KEY\"])
+
+        async with AsyncHealthPoller(client, interval=10) as poller:
+            oai = client.openai() if poller.is_healthy else fallback
+            response = await oai.chat.completions.create(
+                model=\"gpt-4o\",
+                messages=[{\"role\": \"user\", \"content\": \"Hello\"}],
+            )
+    """
+
+    def __init__(self, client: "AsyncClient", interval: float = 15.0, timeout: float = 3.0):
+        self._client = client
+        self._interval = interval
+        self._timeout = timeout
+        self._healthy: bool = True
+        self._task: Optional[object] = None
+
+    @property
+    def is_healthy(self) -> bool:
+        """True if the last health probe succeeded."""
+        return self._healthy
+
+    async def start(self) -> "AsyncHealthPoller":
+        """Start the background polling asyncio task. Returns self for chaining."""
+        import asyncio
+
+        async def _loop():
+            while True:
+                self._healthy = await self._client.is_healthy(timeout=self._timeout)
+                await asyncio.sleep(self._interval)
+
+        self._task = asyncio.create_task(_loop())
+        return self
+
+    async def stop(self):
+        """Cancel the background polling task."""
+        if self._task:
+            self._task.cancel()  # type: ignore[union-attr]
+            try:
+                await self._task  # type: ignore[union-attr]
+            except Exception:
+                pass
+
+    async def __aenter__(self) -> "AsyncHealthPoller":
+        return await self.start()
+
+    async def __aexit__(self, *_):
+        await self.stop()

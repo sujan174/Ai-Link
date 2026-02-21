@@ -2,9 +2,9 @@
 Custom exceptions for the AIlink SDK.
 
 Provides clear, actionable error messages instead of raw httpx.HTTPStatusError.
-Parses the OpenAI-compatible error format returned by the gateway:
+Parses the canonical AILink error format:
 
-    {"error": {"message": "...", "type": "...", "code": "..."}}
+    {"error": {"code": "...", "message": "...", "type": "...", "request_id": "...", "details": {...}}}
 """
 
 import httpx
@@ -83,22 +83,25 @@ class PolicyDeniedError(PermissionError):
     """Request was blocked by a gateway policy."""
     pass
 
+class ContentBlockedError(PermissionError):
+    """Request was blocked by a content filter (jailbreak, harmful content, etc.)."""
+
+    def __init__(self, message: str, matched_patterns: list = None, confidence: float = None, **kwargs):
+        self.matched_patterns = matched_patterns or []
+        self.confidence = confidence
+        super().__init__(message, **kwargs)
+
 
 class GatewayError(AIlinkError):
     """Gateway returned a 5xx error."""
     pass
 
 
-def _parse_error_body(response: httpx.Response) -> tuple[str, str, str]:
+def _parse_error_body(response: httpx.Response) -> tuple:
     """
     Parse the gateway error response body.
 
-    Supports both the new structured format:
-        {"error": {"message": "...", "type": "...", "code": "..."}}
-    and the legacy flat format:
-        {"error": "message string"}
-
-    Returns (message, error_type, code).
+    Returns (message, error_type, code, request_id, details).
     """
     try:
         body = response.json()
@@ -108,13 +111,14 @@ def _parse_error_body(response: httpx.Response) -> tuple[str, str, str]:
                 error.get("message", response.text),
                 error.get("type", ""),
                 error.get("code", ""),
+                error.get("request_id", ""),
+                error.get("details"),
             )
         elif isinstance(error, str):
-            # Legacy flat format
-            return error, "", ""
-        return response.text, "", ""
+            return error, "", "", "", None
+        return response.text, "", "", "", None
     except Exception:
-        return response.text, "", ""
+        return response.text, "", "", "", None
 
 
 def raise_for_status(response: httpx.Response) -> None:
@@ -125,14 +129,15 @@ def raise_for_status(response: httpx.Response) -> None:
     The exception will include:
     - error_type: machine-readable category (e.g. "rate_limit_error")
     - code: specific error code (e.g. "rate_limit_exceeded")
-    - request_id: from X-Request-Id header for log correlation
+    - request_id: from error body + X-Request-Id header
+    - details: feature-specific metadata dict (e.g. matched_patterns for content filters)
     """
     if response.is_success:
         return
 
     status = response.status_code
-    message, error_type, code = _parse_error_body(response)
-    request_id = response.headers.get("x-request-id", "")
+    message, error_type, code, body_req_id, details = _parse_error_body(response)
+    request_id = body_req_id or response.headers.get("x-request-id", "")
 
     kwargs = {
         "status_code": status,
@@ -149,6 +154,15 @@ def raise_for_status(response: httpx.Response) -> None:
     elif status == 403:
         if code == "policy_denied":
             raise PolicyDeniedError(f"Policy denied: {message}", **kwargs)
+        if code == "content_blocked":
+            matched = (details or {}).get("matched_patterns", [])
+            confidence = (details or {}).get("confidence")
+            raise ContentBlockedError(
+                f"Content blocked: {message}",
+                matched_patterns=matched,
+                confidence=confidence,
+                **kwargs,
+            )
         raise PermissionError(f"Permission denied: {message}", **kwargs)
     elif status == 404:
         raise NotFoundError(f"Resource not found: {message}", **kwargs)

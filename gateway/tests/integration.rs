@@ -345,7 +345,8 @@ mod webhook_tests {
         Mock::given(method("POST"))
             .and(path("/fail"))
             .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
-            .expect(1)
+            // We expect the original request plus 3 retries = 4 requests
+            .expect(4)
             .mount(&mock_server)
             .await;
 
@@ -353,9 +354,9 @@ mod webhook_tests {
         let event = WebhookEvent::spend_cap_exceeded("t", "n", "p", "cap exceeded");
 
         let url = format!("{}/fail", mock_server.uri());
-        // send() should return Ok even for 500 — it logs the failure but doesn't error
+        // send() should return Err when all retries are exhausted
         let result = notifier.send(&url, &event).await;
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 }
 

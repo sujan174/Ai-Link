@@ -33,7 +33,38 @@ pub struct CreateTokenRequest {
     pub upstream_url: String,
     pub project_id: Option<Uuid>,
     pub policy_ids: Option<Vec<Uuid>>,
-    pub log_level: Option<i16>,
+    /// Numeric log level (0/1/2) — deprecated in favour of log_level_name.
+    #[serde(rename = "log_level")]
+    pub log_level_num: Option<i16>,
+    /// String log level: "metadata" | "redacted" | "full"
+    /// Takes precedence over log_level (numeric) if both are supplied.
+    #[serde(rename = "log_level_name")]
+    pub log_level_str: Option<String>,
+    /// Optional circuit breaker config override. Omit to use gateway defaults.
+    /// Example: `{"enabled": false}` to disable CB for dev/test tokens.
+    pub circuit_breaker: Option<serde_json::Value>,
+    /// Convenience shorthand: set a single fallback URL (priority 2).
+    /// Equivalent to specifying two entries in `upstreams` with priority 1 and 2.
+    pub fallback_url: Option<String>,
+    /// Optional full upstream list with weights and priorities.
+    /// If provided, `upstream_url` is used as a fallback only if this list is empty.
+    /// Each entry: {"url": "...", "weight": 100, "priority": 1, "credential_id": null}
+    pub upstreams: Option<Vec<crate::proxy::loadbalancer::UpstreamTarget>>,
+}
+
+impl CreateTokenRequest {
+    /// Resolve the numeric log level from either the string name or the numeric field.
+    pub fn resolved_log_level(&self) -> Option<i16> {
+        if let Some(ref name) = self.log_level_str {
+            return match name.as_str() {
+                "metadata" => Some(0),
+                "redacted"  => Some(1),
+                "full"      => Some(2),
+                _ => self.log_level_num,
+            };
+        }
+        self.log_level_num
+    }
 }
 
 #[derive(Serialize)]
@@ -74,11 +105,13 @@ pub struct ProjectResponse {
 }
 
 // ── Default org ID for MVP ───────────────────────────────
+#[allow(dead_code)]
 fn default_org_id() -> Uuid {
     Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
 }
 
 // ── Default project ID for MVP ───────────────────────────────
+#[allow(dead_code)]
 fn default_project_id() -> Uuid {
     Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()
 }
@@ -269,6 +302,22 @@ pub async fn create_token(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    // P1.4: Validate upstreams list if provided (weight > 0, no duplicate URLs)
+    if let Some(ref upstreams) = payload.upstreams {
+        // Check for zero/negative weights
+        for u in upstreams {
+            if u.weight == 0 {
+                return Err(StatusCode::UNPROCESSABLE_ENTITY);
+            }
+        }
+        // Check for duplicate URLs
+        let urls: Vec<_> = upstreams.iter().map(|u| u.url.as_str()).collect();
+        let unique: std::collections::HashSet<_> = urls.iter().copied().collect();
+        if unique.len() != urls.len() {
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+
     // Generate token ID
     let proj_short = &project_id.to_string()[..8];
     let mut random_bytes = [0u8; 16];
@@ -277,6 +326,7 @@ pub async fn create_token(
     OsRng.fill_bytes(&mut random_bytes);
     let token_id = format!("ailink_v1_{}_tok_{}", proj_short, hex::encode(random_bytes));
 
+    let resolved_log_level = payload.resolved_log_level();
     let new_token = crate::store::postgres::NewToken {
         id: token_id.clone(),
         project_id,
@@ -285,7 +335,8 @@ pub async fn create_token(
         upstream_url: payload.upstream_url,
         scopes: serde_json::json!([]),
         policy_ids: payload.policy_ids.unwrap_or_default(),
-        log_level: payload.log_level,
+        log_level: resolved_log_level,
+        circuit_breaker: payload.circuit_breaker,
     };
 
     state.db.insert_token(&new_token).await.map_err(|e| {
@@ -535,6 +586,7 @@ pub struct CreateCredentialResponse {
 
 // ── Revoke DTO ───────────────────────────────────────────────
 
+#[allow(dead_code)]
 #[derive(Serialize)]
 pub struct RevokeResponse {
     pub token_id: String,
@@ -587,13 +639,23 @@ pub async fn create_policy(
         ).into_response();
     }
 
-    
     // Validate phase
     if phase != "pre" && phase != "post" {
         tracing::warn!("create_policy: invalid phase: {}", phase);
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": format!("invalid phase: {}", phase) })),
+        ).into_response();
+    }
+
+    // SEC: enforce max size on rules JSON to prevent oversized payloads clogging DB+memory
+    const MAX_RULES_BYTES: usize = 64 * 1024; // 64KB
+    let rules_str = payload.rules.to_string();
+    if rules_str.len() > MAX_RULES_BYTES {
+        tracing::warn!("create_policy: rules JSON too large: {} bytes", rules_str.len());
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": format!("rules JSON exceeds maximum size of {}KB", MAX_RULES_BYTES / 1024) })),
         ).into_response();
     }
 
@@ -618,7 +680,6 @@ pub async fn create_policy(
             ).into_response()
         }
     }
-
 }
 
 /// PUT /api/v1/policies/:id — update a policy
@@ -940,6 +1001,8 @@ pub async fn mark_notification_read(
     Extension(auth): Extension<AuthContext>,
     Path(id_str): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    // SEC: require scope (was missing)
+    auth.require_scope("notifications:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
     let project_id = auth.default_project_id();
 
@@ -961,7 +1024,10 @@ pub async fn mark_all_notifications_read(
     Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    // SEC: require scope and project isolation (both were missing)
+    auth.require_scope("notifications:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     let success = state
         .db
@@ -1143,11 +1209,22 @@ pub async fn create_api_key(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreateApiKeyRequest>,
-) -> Result<(StatusCode, Json<CreateApiKeyResponse>), StatusCode> {
-    auth.require_scope("keys:manage").map_err(|_| StatusCode::FORBIDDEN)?;
+) -> Result<(StatusCode, Json<CreateApiKeyResponse>), (StatusCode, Json<serde_json::Value>)> {
+    auth.require_scope("keys:manage").map_err(|_| {
+        (StatusCode::FORBIDDEN, Json(json!({ "error": { "code": "forbidden", "message": "Insufficient permissions: requires scope 'keys:manage'" } })))
+    })?;
+
+    // P1.11: Role escalation guard — a non-admin caller cannot create an admin key
+    let caller_is_admin = matches!(auth.role, crate::api::ApiKeyRole::SuperAdmin | crate::api::ApiKeyRole::Admin);
+    let target_is_admin = matches!(payload.role.as_str(), "admin" | "superadmin");
+    if target_is_admin && !caller_is_admin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": { "code": "role_escalation", "message": format!("Cannot create a key with role '{}' when your role is '{:?}'. Only admin keys can create other admin keys.", payload.role, auth.role) } })),
+        ));
+    }
 
     // Generate key: ak_live_<8-char-prefix>_<32-char-hex>
-    // Prefix comes from org_id (first 8 chars)
     let org_prefix = &auth.org_id.to_string()[..8];
     let mut random_bytes = [0u8; 16];
     use aes_gcm::aead::OsRng;
@@ -1179,7 +1256,7 @@ pub async fn create_api_key(
         .await
         .map_err(|e| {
             tracing::error!("create_api_key failed: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": { "code": "internal_server_error", "message": "Failed to create API key" } })))
         })?;
 
     Ok((
@@ -1197,18 +1274,34 @@ pub async fn revoke_api_key(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, StatusCode> {
-    auth.require_scope("keys:manage").map_err(|_| StatusCode::FORBIDDEN)?;
+) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    auth.require_scope("keys:manage").map_err(|_| {
+        (StatusCode::FORBIDDEN, Json(json!({ "error": { "code": "forbidden", "message": "Insufficient permissions: requires scope 'keys:manage'" } })))
+    })?;
+
+    // P1.11: Last admin key guard — prevent revoking the last admin key
+    let all_keys = state.db.list_api_keys(auth.org_id).await.map_err(|e| {
+        tracing::error!("revoke_api_key: list_api_keys failed: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": { "code": "internal_server_error", "message": "Failed to check admin key count" } })))
+    })?;
+    let admin_keys: Vec<_> = all_keys.iter().filter(|k| k.role == "admin" && k.is_active).collect();
+    let is_revoking_admin = admin_keys.iter().any(|k| k.id == id);
+    if is_revoking_admin && admin_keys.len() <= 1 {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": { "code": "last_admin_key", "message": "Cannot revoke the last admin key. Create another admin key first to avoid losing access." } })),
+        ));
+    }
 
     let found = state.db.revoke_api_key(id, auth.org_id).await.map_err(|e| {
         tracing::error!("revoke_api_key failed: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": { "code": "internal_server_error", "message": "Failed to revoke API key" } })))
     })?;
 
     if found {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(StatusCode::NOT_FOUND)
+        Err((StatusCode::NOT_FOUND, Json(json!({ "error": { "code": "not_found", "message": "API key not found" } }))))
     }
 }
 
@@ -1337,6 +1430,88 @@ pub async fn get_upstream_health(
     Extension(_auth): Extension<AuthContext>,
 ) -> Json<Vec<crate::proxy::loadbalancer::UpstreamStatus>> {
     Json(state.lb.get_all_status())
+}
+
+/// GET /api/v1/tokens/:id/circuit-breaker — get circuit breaker config for a token
+pub async fn get_circuit_breaker(
+    State(state): State<Arc<AppState>>,
+    Extension(_auth): Extension<AuthContext>,
+    Path(token_id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let token = state.db.get_token(&token_id).await
+        .map_err(|e| {
+            tracing::error!("get_circuit_breaker: db error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Return the stored config, or the default if not set
+    let config = token.circuit_breaker
+        .unwrap_or_else(|| serde_json::json!({
+            "enabled": true,
+            "failure_threshold": 3,
+            "recovery_cooldown_secs": 30,
+            "half_open_max_requests": 1
+        }));
+
+    Ok(Json(config))
+}
+
+/// PATCH /api/v1/tokens/:id/circuit-breaker — update circuit breaker config for a token
+pub async fn update_circuit_breaker(
+    State(state): State<Arc<AppState>>,
+    Extension(_auth): Extension<AuthContext>,
+    Path(token_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // P1.6: Validate the payload before deserializing to catch missing fields
+    let cb_config: crate::proxy::loadbalancer::CircuitBreakerConfig =
+        serde_json::from_value(payload.clone())
+            .map_err(|e| {
+                tracing::warn!("update_circuit_breaker: invalid config: {}", e);
+                (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": { "code": "invalid_config", "message": format!("Invalid circuit breaker config: {}", e) } })))
+            })?;
+
+    // P1.6: Range validation with actionable messages
+    if cb_config.failure_threshold < 1 {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": { "code": "invalid_config", "message": "failure_threshold must be >= 1. Set to 1 to open the circuit after a single failure." } })),
+        ));
+    }
+    if cb_config.recovery_cooldown_secs < 1 {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": { "code": "invalid_config", "message": "recovery_cooldown_secs must be >= 1 (minimum 1 second before retrying an open circuit)." } })),
+        ));
+    }
+    if cb_config.half_open_max_requests < 1 {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": { "code": "invalid_config", "message": "half_open_max_requests must be >= 1 (number of probe requests allowed in half-open state)." } })),
+        ));
+    }
+
+    // Verify the token exists
+    let _token = state.db.get_token(&token_id).await
+        .map_err(|e| {
+            tracing::error!("update_circuit_breaker: db error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": { "code": "internal_server_error", "message": "Database error" } })))
+        })?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": { "code": "not_found", "message": "Token not found" } }))))?;
+
+    let updated = state.db.update_circuit_breaker(&token_id, payload.clone()).await
+        .map_err(|e| {
+            tracing::error!("update_circuit_breaker: update failed: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": { "code": "internal_server_error", "message": "Failed to update circuit breaker config" } })))
+        })?;
+
+    if !updated {
+        return Err((StatusCode::NOT_FOUND, Json(json!({ "error": { "code": "not_found", "message": "Token not found" } }))));
+    }
+
+    tracing::info!(token_id = %token_id, "circuit breaker config updated");
+    Ok(Json(payload))
 }
 
 // ── Spend Cap Handlers ───────────────────────────────────────────
@@ -1716,7 +1891,11 @@ pub async fn get_analytics_summary(
     let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
     verify_project_ownership(&state, auth.org_id, project_id).await?;
 
-    let hours = range.get("range").and_then(|s| s.parse().ok()).unwrap_or(24);
+    let hours = range
+        .get("range")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(24)
+        .clamp(1, 8760); // 1 hour minimum, 1 year maximum
 
     let summary = state.db.get_analytics_summary(project_id, hours).await.map_err(|e| {
         tracing::error!("get_analytics_summary failed: {}", e);
@@ -1737,7 +1916,11 @@ pub async fn get_analytics_timeseries(
     let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
     verify_project_ownership(&state, auth.org_id, project_id).await?;
 
-    let hours = range.get("range").and_then(|s| s.parse().ok()).unwrap_or(24);
+    let hours = range
+        .get("range")
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(24)
+        .clamp(1, 8760); // 1 hour minimum, 1 year maximum
 
     let points = state.db.get_analytics_timeseries(project_id, hours).await.map_err(|e| {
         tracing::error!("get_analytics_timeseries failed: {}", e);
@@ -1787,7 +1970,7 @@ pub async fn upsert_pricing(
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
-    let id = state.db.upsert_model_pricing(
+    let _id = state.db.upsert_model_pricing(
         &payload.provider,
         &payload.model_pattern,
         payload.input_per_m,
@@ -1874,7 +2057,26 @@ pub async fn update_settings(
     Json(payload): Json<UpdateSettingsRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     auth.require_role("admin")?;
-    
+
+    // SEC: allowlist of permitted setting keys — prevents arbitrary key injection
+    const ALLOWED_KEYS: &[&str] = &[
+        "default_rate_limit",
+        "default_rate_limit_window",
+        "hitl_timeout_minutes",
+        "max_request_body_bytes",
+        "audit_retention_days",
+        "enable_response_cache",
+        "enable_guardrails",
+        "slack_webhook_url",
+    ];
+
+    for key in payload.settings.keys() {
+        if !ALLOWED_KEYS.contains(&key.as_str()) {
+            tracing::warn!(key = %key, "update_settings: rejected unknown setting key");
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    }
+
     for (key, value) in payload.settings {
         state.db.set_system_setting(&key, &value, None).await
             .map_err(|e| {
@@ -1891,34 +2093,55 @@ pub async fn flush_cache(
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     auth.require_role("admin")?;
-    
-    // We need to use Redis directly, not the cache abstraction, or expose a flush method on Cache
-    // Since TieredCache doesn't expose flush, let's use the low-level connection if possible
-    // Or just use the cache.invalidate_all() if it existed.
-    // Looking at main.rs, TieredCache is used.
-    // Let's assume for now we can get a connection from the pool.
-    // Actually TieredCache wraps the connection manager.
-    // Let's just create a new ephemeral connection since we have the URL in config.
-    
-    let client = redis::Client::open(state.config.redis_url.as_str()).map_err(|e| {
-         tracing::error!("Failed to create Redis client: {}", e);
-         StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    
-    let mut conn = client.get_async_connection().await.map_err(|e| {
-        tracing::error!("Failed to connect to Redis: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    
-    redis::cmd("FLUSHDB")
-        .query_async::<_, ()>(&mut conn)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to flush Redis: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-        
-    tracing::info!("Redis cache flushed by user {}", auth.user_id.unwrap_or_default());
-    
-    Ok(Json(serde_json::json!({ "success": true, "message": "Cache flushed successfully" })))
+
+    // SEC: Use targeted SCAN+DEL on the `cache:*` namespace ONLY.
+    // FLUSHDB was dangerous because it also wiped spend tracking (`spend:*`),
+    // rate limit state (`rl:*`), and HITL decisions (`hitl:*`), which would
+    // silently reset budget enforcement and bypass rate limits.
+    let mut conn = state.cache.redis();
+
+    let mut cursor: u64 = 0;
+    let mut deleted: u64 = 0;
+    loop {
+        // SCAN with match pattern and count hint
+        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg("llm_cache:*")
+            .arg("COUNT")
+            .arg(200u32)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| {
+                tracing::error!("flush_cache SCAN failed: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        if !keys.is_empty() {
+            let n = keys.len() as u64;
+            let _: () = redis::cmd("DEL")
+                .arg(keys)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(());
+            deleted += n;
+        }
+
+        cursor = next_cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    tracing::info!(
+        user_id = %auth.user_id.unwrap_or_default(),
+        keys_deleted = deleted,
+        "Response cache (cache:*) flushed — spend/rate-limit/HITL keys preserved"
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Response cache flushed successfully",
+        "keys_deleted": deleted
+    })))
 }

@@ -121,8 +121,8 @@ impl PgStore {
 
     pub async fn insert_token(&self, token: &NewToken) -> anyhow::Result<()> {
         sqlx::query(
-            r#"INSERT INTO tokens (id, project_id, name, credential_id, upstream_url, scopes, policy_ids, log_level)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 1::SMALLINT))"#
+            r#"INSERT INTO tokens (id, project_id, name, credential_id, upstream_url, scopes, policy_ids, log_level, circuit_breaker)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 1::SMALLINT), $9)"#
         )
         .bind(&token.id)
         .bind(token.project_id)
@@ -132,6 +132,7 @@ impl PgStore {
         .bind(&token.scopes)
         .bind(&token.policy_ids)
         .bind(token.log_level)
+        .bind(&token.circuit_breaker)
         .execute(&self.pool)
         .await?;
 
@@ -140,7 +141,7 @@ impl PgStore {
 
     pub async fn get_token(&self, token_id: &str) -> anyhow::Result<Option<TokenRow>> {
         let row = sqlx::query_as::<_, TokenRow>(
-            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams FROM tokens WHERE id = $1"
+            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams, circuit_breaker FROM tokens WHERE id = $1"
         )
         .bind(token_id)
         .fetch_optional(&self.pool)
@@ -151,7 +152,7 @@ impl PgStore {
 
     pub async fn list_tokens(&self, project_id: Uuid) -> anyhow::Result<Vec<TokenRow>> {
         let rows = sqlx::query_as::<_, TokenRow>(
-            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams FROM tokens WHERE project_id = $1 AND is_active = true ORDER BY created_at DESC"
+            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams, circuit_breaker FROM tokens WHERE project_id = $1 AND is_active = true ORDER BY created_at DESC"
         )
         .bind(project_id)
         .fetch_all(&self.pool)
@@ -167,6 +168,23 @@ impl PgStore {
                 .execute(&self.pool)
                 .await?;
 
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Update the circuit breaker configuration for a token.
+    /// Returns `true` if the token was found and updated, `false` if not found.
+    pub async fn update_circuit_breaker(
+        &self,
+        token_id: &str,
+        config: serde_json::Value,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE tokens SET circuit_breaker = $1 WHERE id = $2 AND is_active = true"
+        )
+        .bind(&config)
+        .bind(token_id)
+        .execute(&self.pool)
+        .await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -804,6 +822,8 @@ pub struct NewToken {
     pub scopes: serde_json::Value,
     pub policy_ids: Vec<Uuid>,
     pub log_level: Option<i16>,
+    /// Optional circuit breaker config. `None` uses gateway defaults.
+    pub circuit_breaker: Option<serde_json::Value>,
 }
 
 // -- Output structs --
@@ -834,6 +854,8 @@ pub struct TokenRow {
     pub log_level: i16,
     /// Optional multi-upstream configuration for loadbalancing
     pub upstreams: Option<serde_json::Value>,
+    /// Optional per-token circuit breaker configuration
+    pub circuit_breaker: Option<serde_json::Value>,
 }
 
 #[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]

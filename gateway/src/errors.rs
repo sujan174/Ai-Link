@@ -1,13 +1,33 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde_json::json;
+use serde_json::{json, Value};
 use thiserror::Error;
 
+/// Canonical error body emitted by every AILink endpoint.
+///
+/// Shape:
+/// ```json
+/// {
+///   "error": {
+///     "code":       "spend_cap_reached",
+///     "message":    "Daily spend cap of $50.00 reached (USD)",
+///     "request_id": "req_01J9...",
+///     "type":       "billing_error",
+///     "details":    { ... }
+///   }
+/// }
+/// ```
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("token not found")]
     TokenNotFound,
+
+    #[error("token revoked")]
+    TokenRevoked,
+
+    #[error("credential missing")]
+    CredentialMissing,
 
     #[error("policy denied: {reason}")]
     PolicyDenied { policy: String, reason: String },
@@ -21,11 +41,23 @@ pub enum AppError {
     #[error("rate limit exceeded")]
     RateLimitExceeded,
 
-    #[error("spend cap reached")]
-    SpendCapReached,
+    #[error("spend cap reached: {message}")]
+    SpendCapReached { message: String },
 
     #[error("payload too large")]
     PayloadTooLarge,
+
+    #[error("content blocked: {reason}")]
+    ContentBlocked { reason: String, details: Option<Value> },
+
+    #[error("all upstreams exhausted")]
+    AllUpstreamsExhausted { details: Option<Value> },
+
+    #[error("invalid config: {message}")]
+    InvalidConfig { message: String },
+
+    #[error("validation error: {message}")]
+    ValidationError { message: String },
 
     #[error("upstream error: {0}")]
     Upstream(String),
@@ -42,95 +74,173 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, error_type, code, msg) = match &self {
+        self.into_response_with_id(None)
+    }
+}
+
+impl AppError {
+    /// Emit an error response with a specific request ID attached.
+    ///
+    /// Use this in handlers that already hold a `request_id`:
+    /// ```rust
+    /// return AppError::TokenNotFound.into_response_with_id(Some(&request_id.to_string()));
+    /// ```
+    pub fn into_response_with_id(self, request_id: Option<&str>) -> Response {
+        let req_id = request_id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("req_{}", uuid::Uuid::new_v4().simple()));
+
+        let (status, error_type, code, msg, details) = match &self {
             AppError::TokenNotFound => (
                 StatusCode::UNAUTHORIZED,
                 "authentication_error",
                 "token_not_found",
-                "invalid or missing token".to_string(),
+                "Invalid or missing API token. Ensure AILINK_API_KEY is set correctly.".to_string(),
+                None,
+            ),
+            AppError::TokenRevoked => (
+                StatusCode::UNAUTHORIZED,
+                "authentication_error",
+                "token_revoked",
+                "This token has been revoked. Create a new one at your AILink dashboard.".to_string(),
+                None,
+            ),
+            AppError::CredentialMissing => (
+                StatusCode::BAD_GATEWAY,
+                "configuration_error",
+                "credential_missing",
+                "The credential linked to this token no longer exists. Re-attach a credential via the dashboard.".to_string(),
+                None,
             ),
             AppError::PolicyDenied { policy, reason } => (
                 StatusCode::FORBIDDEN,
                 "permission_error",
                 "policy_denied",
-                format!("request blocked by policy '{}': {}", policy, reason),
+                format!("Request blocked by policy '{}': {}", policy, reason),
+                None,
             ),
             AppError::ApprovalTimeout => (
                 StatusCode::REQUEST_TIMEOUT,
                 "timeout_error",
                 "approval_timeout",
-                "approval timed out".to_string(),
+                "Request timed out waiting for human approval.".to_string(),
+                None,
             ),
             AppError::ApprovalRejected => (
                 StatusCode::FORBIDDEN,
                 "permission_error",
                 "approval_rejected",
-                "request rejected by reviewer".to_string(),
+                "Request was rejected by a reviewer.".to_string(),
+                None,
             ),
             AppError::RateLimitExceeded => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate_limit_error",
                 "rate_limit_exceeded",
-                "rate limit exceeded".to_string(),
+                "Rate limit exceeded. See X-RateLimit-Reset for when the window resets.".to_string(),
+                None,
             ),
-            AppError::SpendCapReached => (
+            AppError::SpendCapReached { message } => (
                 StatusCode::PAYMENT_REQUIRED,
                 "billing_error",
                 "spend_cap_reached",
-                "spend cap reached".to_string(),
+                message.clone(),
+                None,
             ),
             AppError::PayloadTooLarge => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "invalid_request_error",
                 "payload_too_large",
-                "request body exceeds size limit".to_string(),
+                "Request body exceeds the maximum allowed size.".to_string(),
+                None,
+            ),
+            AppError::ContentBlocked { reason, details } => (
+                StatusCode::FORBIDDEN,
+                "content_policy_error",
+                "content_blocked",
+                format!("Request blocked by content filter: {}", reason),
+                details.clone(),
+            ),
+            AppError::AllUpstreamsExhausted { details } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "upstream_error",
+                "all_upstreams_exhausted",
+                "All upstream targets are currently unhealthy. See 'details' for cooldown information.".to_string(),
+                details.clone(),
+            ),
+            AppError::InvalidConfig { message } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_request_error",
+                "invalid_config",
+                message.clone(),
+                None,
+            ),
+            AppError::ValidationError { message } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_request_error",
+                "validation_error",
+                message.clone(),
+                None,
             ),
             AppError::Upstream(e) => (
                 StatusCode::BAD_GATEWAY,
                 "upstream_error",
                 "upstream_failed",
                 e.clone(),
+                None,
             ),
             AppError::Database(e) => {
-                tracing::error!("Database error: {}", e);
+                tracing::error!(error = %e, "Database error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal_error",
                     "internal_server_error",
-                    "internal server error".to_string(),
+                    "An internal server error occurred. Please retry or contact support.".to_string(),
+                    None,
                 )
             }
             AppError::Redis(e) => {
-                tracing::error!("Redis error: {}", e);
+                tracing::error!(error = %e, "Redis error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal_error",
                     "internal_server_error",
-                    "internal server error".to_string(),
+                    "An internal server error occurred. Please retry or contact support.".to_string(),
+                    None,
                 )
             }
             AppError::Internal(e) => {
-                tracing::error!("Internal error: {}", e);
+                tracing::error!(error = %e, "Internal error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal_error",
                     "internal_server_error",
-                    "internal server error".to_string(),
+                    "An internal server error occurred. Please retry or contact support.".to_string(),
+                    None,
                 )
             }
         };
 
-        let body = Json(json!({
-            "error": {
-                "message": msg,
-                "type": error_type,
-                "code": code,
-            }
-        }));
+        let mut error_obj = json!({
+            "code":       code,
+            "message":    msg,
+            "type":       error_type,
+            "request_id": req_id,
+        });
 
+        if let Some(d) = details {
+            error_obj["details"] = d;
+        }
+
+        let body = Json(json!({ "error": error_obj }));
         let mut response = (status, body).into_response();
 
-        // Add Retry-After header for rate limit errors
+        // Attach request ID as response header for easy debugging
+        if let Ok(val) = axum::http::HeaderValue::from_str(&req_id) {
+            response.headers_mut().insert("x-request-id", val);
+        }
+
+        // Retry-After header for rate limit responses
         if matches!(self, AppError::RateLimitExceeded) {
             response.headers_mut().insert(
                 "retry-after",
@@ -139,5 +249,12 @@ impl IntoResponse for AppError {
         }
 
         response
+    }
+}
+
+/// Convenience: convert old-style `SpendCapReached` (no message) usages
+impl From<&str> for AppError {
+    fn from(msg: &str) -> Self {
+        AppError::SpendCapReached { message: msg.to_string() }
     }
 }

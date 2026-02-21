@@ -2,6 +2,7 @@ use axum::http::StatusCode;
 
 /// Roles supported by the RBAC system.
 /// Matches the `role` column in the `api_keys` table.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Role {
     Admin,
@@ -11,6 +12,7 @@ pub enum Role {
 }
 
 impl Role {
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "admin" => Role::Admin,
@@ -31,6 +33,7 @@ impl Role {
 }
 
 /// Permission levels for RBAC enforcement.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Permission {
     Read,
@@ -41,6 +44,7 @@ pub enum Permission {
 /// Scope-based access control.
 /// Scopes are fine-grained permissions beyond the role level.
 /// Format: "resource:action" (e.g., "tokens:write", "projects:read")
+#[allow(dead_code)]
 pub fn check_scope(scopes: &[String], required_scope: &str) -> bool {
     // Wildcard scope grants all access
     if scopes.iter().any(|s| s == "*") {
@@ -65,6 +69,7 @@ pub fn check_scope(scopes: &[String], required_scope: &str) -> bool {
 }
 
 /// RBAC context extracted from the API key authentication.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RbacContext {
     pub role: Role,
@@ -107,6 +112,7 @@ impl RbacContext {
 }
 
 /// Helper to check RBAC in API handlers and return 403 on failure.
+#[allow(dead_code)]
 pub fn enforce(
     ctx: &RbacContext,
     permission: &Permission,

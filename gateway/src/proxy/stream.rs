@@ -25,6 +25,7 @@ pub struct StreamResult {
     /// Time to first token (TTFT) in milliseconds
     pub ttft_ms: Option<u64>,
     /// Total chunks received
+    #[allow(dead_code)]
     pub chunk_count: u32,
 }
 
@@ -51,6 +52,7 @@ pub struct StreamAccumulator {
 
 #[derive(Debug, Clone)]
 struct ToolCallDelta {
+    #[allow(dead_code)]
     index: usize,
     call_id: Option<String>,
     name: String,

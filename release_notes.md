@@ -1,5 +1,28 @@
 # AIlink Release Notes
 
+## v0.8.0 — Circuit Breaker DX
+
+### New
+
+- **Per-token Circuit Breaker Configuration** — each virtual token now carries a `circuit_breaker` JSONB config with a master `enabled` toggle and configurable `failure_threshold`, `recovery_cooldown_secs`, and `half_open_max_requests` fields. Defaults to `{enabled: true, threshold: 3, cooldown: 30s}`.
+- **`GET /api/v1/tokens/:id/circuit-breaker`** — read current CB config for any token.
+- **`PATCH /api/v1/tokens/:id/circuit-breaker`** — update CB config at runtime without a gateway restart.
+- **`GET /api/v1/health/upstreams`** — view health status, failure count, and cooldown remaining for all tracked upstreams across all tokens.
+- **`X-AILink-CB-State` response header** — every proxied request now returns `closed`, `open`, `half_open`, or `disabled`.
+- **`X-AILink-Upstream` response header** — indicates which upstream URL served the request.
+- **SDK: `tokens.upstream_health()`** — fetch upstream health status (sync + async).
+- **SDK: `tokens.get_circuit_breaker(token_id)`** — read CB config via Python SDK.
+- **SDK: `tokens.set_circuit_breaker(token_id, enabled=..., failure_threshold=...)`** — tune CB per-token at runtime.
+- **SDK: `tokens.create(circuit_breaker={...})`** — set CB config at token creation time.
+- **Database migration** `027_circuit_breaker.sql` — `circuit_breaker JSONB` column on `tokens`.
+
+### Tests
+
+- **21 Rust loadbalancer tests** (7 new): `get_circuit_state` transitions, custom thresholds, `mark_failed` no-op when disabled, `get_all_status` accuracy, config roundtrip, empty-JSON defaults.
+- **64 Python SDK unit tests** (7 new): `upstream_health`, `get/set_circuit_breaker`, `create` with CB param, omit-field behavior.
+
+---
+
 ## v0.7.0 — Dashboard UX Overhaul
 
 ### New

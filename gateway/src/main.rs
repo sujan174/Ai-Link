@@ -255,6 +255,24 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
         tracing::info!("Budget check job started (project spend alerts every 15min)");
     }
 
+    // Phase 2.4: Periodic in-memory cache eviction (every 60s)
+    {
+        let eviction_cache = state.cache.local.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let now = std::time::Instant::now();
+                let before = eviction_cache.len();
+                eviction_cache.retain(|_, entry| entry.expires_at > now);
+                let removed = before - eviction_cache.len();
+                if removed > 0 {
+                    tracing::debug!(removed, remaining = eviction_cache.len(), "evicted expired local cache entries");
+                }
+            }
+        });
+        tracing::info!("Local cache eviction job started (every 60s)");
+    }
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -463,6 +481,7 @@ async fn handle_token_command(
                 scopes: serde_json::json!([]),
                 policy_ids: p_ids,
                 log_level: Some(1), // Default to redacted logging for CLI
+                circuit_breaker: None, // Use gateway defaults
             };
 
             state.db.insert_token(&new_token).await?;

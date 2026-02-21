@@ -666,3 +666,51 @@ export const flushCache = () =>
   api<{ success: boolean; message: string }>("/system/flush-cache", {
     method: "POST",
   });
+
+// ── Model Aliases ─────────────────────────────────────────────
+
+export interface ModelAlias {
+  id: string;
+  alias: string;
+  model: string;
+  project_id: string | null;
+  created_at: string;
+}
+
+export const listModelAliases = () => api<ModelAlias[]>("/model-aliases");
+
+export const createModelAlias = (alias: string, model: string) =>
+  api<ModelAlias>("/model-aliases", {
+    method: "POST",
+    body: JSON.stringify({ alias, model }),
+  });
+
+export const deleteModelAlias = (alias: string) =>
+  api<void>(`/model-aliases/${alias}`, { method: "DELETE" });
+
+// ── Model Pricing ─────────────────────────────────────────────
+
+export interface ModelPricing {
+  id: string;
+  provider: string;
+  model: string;
+  input_usd_per_1m: number;
+  output_usd_per_1m: number;
+  updated_at: string;
+}
+
+export const listModelPricing = () => api<ModelPricing[]>("/model-pricing");
+
+export const upsertModelPricing = (data: {
+  provider: string;
+  model: string;
+  input_usd_per_1m: number;
+  output_usd_per_1m: number;
+}) =>
+  api<ModelPricing>("/model-pricing", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const deleteModelPricing = (id: string) =>
+  api<void>(`/model-pricing/${id}`, { method: "DELETE" });

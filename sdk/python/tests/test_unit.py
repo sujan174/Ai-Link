@@ -117,6 +117,7 @@ class TestProviderFactories:
         mock_openai.Client.assert_called_once_with(
             api_key="ailink_v1_abc123",
             base_url="http://localhost:8443",
+            default_headers=None,
             max_retries=0,
         )
         assert result == mock_instance
@@ -290,6 +291,154 @@ class TestTokensResource:
         client = make_admin(transport=httpx.MockTransport(handler))
         result = client.tokens.revoke("ailink_v1_tok")
         assert result["message"] == "Token revoked"
+
+    def test_create_with_circuit_breaker_disabled(self):
+        """tokens.create() passes circuit_breaker config to the gateway."""
+        def handler(request):
+            data = json.loads(request.read())
+            assert data["name"] == "dev-token"
+            assert data["circuit_breaker"] == {"enabled": False}
+            return httpx.Response(201, json={
+                "token_id": "ailink_v1_proj_tok_abc",
+                "name": "dev-token",
+                "message": "Token created",
+            })
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        result = client.tokens.create(
+            name="dev-token",
+            upstream_url="https://api.openai.com/v1",
+            circuit_breaker={"enabled": False},
+        )
+        assert result["token_id"].startswith("ailink_v1_")
+
+    def test_create_with_circuit_breaker_custom_thresholds(self):
+        """tokens.create() sends custom CB thresholds."""
+        def handler(request):
+            data = json.loads(request.read())
+            cb = data["circuit_breaker"]
+            assert cb["enabled"] is True
+            assert cb["failure_threshold"] == 5
+            assert cb["recovery_cooldown_secs"] == 60
+            return httpx.Response(201, json={
+                "token_id": "ailink_v1_proj_tok_xyz",
+                "name": "prod-token",
+                "message": "Token created",
+            })
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        result = client.tokens.create(
+            name="prod-token",
+            upstream_url="https://api.anthropic.com/v1",
+            circuit_breaker={
+                "enabled": True,
+                "failure_threshold": 5,
+                "recovery_cooldown_secs": 60,
+            },
+        )
+        assert result["name"] == "prod-token"
+
+    def test_create_without_circuit_breaker_omits_field(self):
+        """When circuit_breaker is not passed, it should not be in the payload."""
+        def handler(request):
+            data = json.loads(request.read())
+            assert "circuit_breaker" not in data
+            return httpx.Response(201, json={
+                "token_id": "ailink_v1_proj_tok_def",
+                "name": "default-token",
+                "message": "Token created",
+            })
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        result = client.tokens.create(
+            name="default-token",
+            upstream_url="https://api.openai.com/v1",
+        )
+        assert result["token_id"] == "ailink_v1_proj_tok_def"
+
+    def test_upstream_health(self):
+        """tokens.upstream_health() returns list of upstream status dicts."""
+        def handler(request):
+            assert request.url.path == "/api/v1/health/upstreams"
+            return httpx.Response(200, json=[
+                {
+                    "token_id": "tok_123",
+                    "url": "https://api.openai.com",
+                    "is_healthy": True,
+                    "failure_count": 0,
+                    "cooldown_remaining_secs": None,
+                },
+                {
+                    "token_id": "tok_123",
+                    "url": "https://backup.openai.com",
+                    "is_healthy": False,
+                    "failure_count": 3,
+                    "cooldown_remaining_secs": 15,
+                },
+            ])
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        health = client.tokens.upstream_health()
+        assert len(health) == 2
+        assert health[0]["is_healthy"] is True
+        assert health[1]["is_healthy"] is False
+        assert health[1]["failure_count"] == 3
+
+    def test_get_circuit_breaker(self):
+        """tokens.get_circuit_breaker() returns CB config for a token."""
+        def handler(request):
+            assert "/circuit-breaker" in str(request.url)
+            assert request.method == "GET"
+            return httpx.Response(200, json={
+                "enabled": True,
+                "failure_threshold": 3,
+                "recovery_cooldown_secs": 30,
+                "half_open_max_requests": 1,
+            })
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        config = client.tokens.get_circuit_breaker("ailink_v1_tok_abc")
+        assert config["enabled"] is True
+        assert config["failure_threshold"] == 3
+        assert config["recovery_cooldown_secs"] == 30
+
+    def test_set_circuit_breaker_disable(self):
+        """tokens.set_circuit_breaker() sends PATCH with CB config."""
+        def handler(request):
+            assert request.method == "PATCH"
+            assert "/circuit-breaker" in str(request.url)
+            data = json.loads(request.read())
+            assert data["enabled"] is False
+            assert data["failure_threshold"] == 3  # default
+            return httpx.Response(200, json=data)
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        result = client.tokens.set_circuit_breaker(
+            "ailink_v1_tok_abc",
+            enabled=False,
+        )
+        assert result["enabled"] is False
+
+    def test_set_circuit_breaker_custom_thresholds(self):
+        """tokens.set_circuit_breaker() sends custom thresholds."""
+        def handler(request):
+            data = json.loads(request.read())
+            assert data["enabled"] is True
+            assert data["failure_threshold"] == 5
+            assert data["recovery_cooldown_secs"] == 60
+            assert data["half_open_max_requests"] == 2
+            return httpx.Response(200, json=data)
+
+        client = make_admin(transport=httpx.MockTransport(handler))
+        result = client.tokens.set_circuit_breaker(
+            "ailink_v1_tok_abc",
+            enabled=True,
+            failure_threshold=5,
+            recovery_cooldown_secs=60,
+            half_open_max_requests=2,
+        )
+        assert result["failure_threshold"] == 5
+        assert result["recovery_cooldown_secs"] == 60
 
 
 # ──────────────────────────────────────────────
@@ -596,21 +745,26 @@ class TestAsyncClient:
 
     async def test_async_openai_factory(self):
         """AsyncClient.openai() returns an async OpenAI client."""
-        with patch("openai.AsyncClient") as MockAsyncClient:
+        with patch.dict("sys.modules", {"openai": MagicMock()}):
+            import sys
+            mock_openai = sys.modules["openai"]
             async with AsyncClient(api_key="key") as client:
                 client.openai()
-                MockAsyncClient.assert_called_with(
+                mock_openai.AsyncOpenAI.assert_called_with(
                     api_key="key",
                     base_url="http://localhost:8443",
+                    default_headers=None,
                     max_retries=0,
                 )
 
     async def test_async_anthropic_factory(self):
         """AsyncClient.anthropic() returns an async Anthropic client."""
-        with patch("anthropic.AsyncAnthropic") as MockAsyncAnthropic:
+        with patch.dict("sys.modules", {"anthropic": MagicMock()}):
+            import sys
+            mock_anthropic = sys.modules["anthropic"]
             async with AsyncClient(api_key="key") as client:
                 client.anthropic()
-                MockAsyncAnthropic.assert_called()
+                mock_anthropic.AsyncAnthropic.assert_called()
 
 
 # ──────────────────────────────────────────────

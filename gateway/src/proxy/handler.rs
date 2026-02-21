@@ -146,6 +146,13 @@ pub async fn proxy_handler(
         }
     }
 
+    // -- 2.1 Parse per-token circuit breaker configuration --
+    let cb_config: crate::proxy::loadbalancer::CircuitBreakerConfig = token
+        .circuit_breaker
+        .as_ref()
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
     // -- 3. Load policies --
     let path = uri.path().to_string();
 
@@ -533,9 +540,16 @@ pub async fn proxy_handler(
                             patterns = ?result.matched_patterns,
                             "content filter blocked request"
                         );
-                        return Err(AppError::PolicyDenied {
-                            policy: triggered.policy_name.clone(),
-                            reason,
+                        // P1.9: Return rich ContentBlocked error with matched patterns + confidence
+                        // This feeds ContentBlockedError in the Python SDK with actionable details.
+                        return Err(AppError::ContentBlocked {
+                            reason: reason.clone(),
+                            details: Some(serde_json::json!({
+                                "policy": triggered.policy_name,
+                                "reason": reason,
+                                "matched_patterns": result.matched_patterns,
+                                "confidence": result.risk_score,
+                            })),
                         });
                     } else if !result.matched_patterns.is_empty() {
                         // Patterns matched but below threshold — log as warning
@@ -647,7 +661,9 @@ pub async fn proxy_handler(
         let webhook_urls = state.config.webhook_urls.clone();
         state.webhook.dispatch(&webhook_urls, webhook_event).await;
 
-        return Err(AppError::SpendCapReached);
+        return Err(AppError::SpendCapReached {
+            message: format!("Spend cap reached (USD): {}. Check your limits at the AILink dashboard.", e),
+        });
     }
 
     // -- 3.6 Handle HITL --
@@ -661,8 +677,16 @@ pub async fn proxy_handler(
             "agent": agent_name,
             "upstream": token.upstream_url,
             "body_preview": parsed_body.as_ref().map(|b| {
+                // SEC: use char-based truncation to avoid panicking on multi-byte UTF-8 boundaries.
+                // Limit raised to 2000 chars so HITL reviewers see enough context.
                 let s = b.to_string();
-                if s.len() > 500 { format!("{}...", &s[..500]) } else { s }
+                let char_count = s.chars().count();
+                if char_count > 2000 {
+                    let truncated: String = s.chars().take(2000).collect();
+                    format!("{}…", truncated)
+                } else {
+                    s
+                }
             }),
         });
 
@@ -739,6 +763,7 @@ pub async fn proxy_handler(
         // we use a 500ms async sleep loop with non-blocking LPOP.
         let mut redis_conn = state.cache.redis();
         let hitl_key = format!("hitl:decision:{}", approval_id);
+        #[allow(unused_assignments)]
         let mut approved = false;
 
         let start_wait = std::time::Instant::now();
@@ -874,7 +899,7 @@ pub async fn proxy_handler(
             tracing::info!(token_id = %token.id, upstream_count = lb_upstreams.len(), "Calling LB select");
 
             // Always route through LB to ensure health tracking
-            if let Some(idx) = state.lb.select(&token.id, &lb_upstreams) {
+            if let Some(idx) = state.lb.select(&token.id, &lb_upstreams, &cb_config) {
                 let target = &lb_upstreams[idx];
                 tracing::info!(token_id = %token.id, selected_url = %target.url, "LB selected target");
                 // Use target-specific credential if set, otherwise token default
@@ -915,7 +940,7 @@ pub async fn proxy_handler(
     let upstream_url = proxy::transform::rewrite_url(&effective_upstream_url, &effective_path);
 
     // ── Response Cache: check for cache hit BEFORE upstream call ──
-    let skip_cache = proxy::response_cache::should_skip_cache(&headers)
+    let skip_cache = proxy::response_cache::should_skip_cache(&headers, parsed_body.as_ref())
         || is_streaming_req
         || method != Method::POST;
     let cache_key = if !skip_cache {
@@ -1141,10 +1166,22 @@ pub async fn proxy_handler(
 
     // -- 5.1 Resolve Retry Config --
     // Use the first policy that specifies a retry config, or default
-    let retry_config = policies
+    let mut retry_config = policies
         .iter()
         .find_map(|p| p.retry.clone())
         .unwrap_or_default();
+
+    // P1.7: Idempotency safety guard — skip retries for mutating requests without an idempotency key.
+    // Retrying POST/PUT/PATCH without idempotency guarantees can cause duplicate charges/operations.
+    let is_mutating = matches!(method, Method::POST | Method::PUT | Method::PATCH);
+    let has_idempotency_key = headers.contains_key("idempotency-key")
+        || headers.contains_key("x-idempotency-key");
+    let idempotency_warning = if is_mutating && !has_idempotency_key && retry_config.max_retries > 0 {
+        retry_config.max_retries = 0; // Disable retries for safety
+        Some("POST/PUT/PATCH request not retried (no Idempotency-Key header). Add 'Idempotency-Key: <unique-id>' to enable safe retries.")
+    } else {
+        None
+    };
 
     // Forward with explicit timeout safety — scale for retries
     // For streaming requests, use forward_raw (no retry, returns raw response for piping)
@@ -1168,7 +1205,7 @@ pub async fn proxy_handler(
             }
             Ok(Err(e)) => {
                 tracing::error!("Upstream streaming request failed: {}", e);
-                state.lb.mark_failed(&token.id, &final_upstream_url);
+                state.lb.mark_failed(&token.id, &final_upstream_url, &cb_config);
                 let mut audit = base_audit(
                     request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
@@ -1183,7 +1220,7 @@ pub async fn proxy_handler(
             }
             Err(_) => {
                 tracing::error!("Upstream streaming request timed out (safety net)");
-                state.lb.mark_failed(&token.id, &final_upstream_url);
+                state.lb.mark_failed(&token.id, &final_upstream_url, &cb_config);
                 let mut audit = base_audit(
                     request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
@@ -1218,7 +1255,7 @@ pub async fn proxy_handler(
             Ok(Err(e)) => {
                 tracing::error!("Upstream request failed: {}", e);
                 // Loadbalancer: mark upstream as failed
-                state.lb.mark_failed(&token.id, &final_upstream_url);
+                state.lb.mark_failed(&token.id, &final_upstream_url, &cb_config);
                 let mut audit = base_audit(
                     request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
@@ -1240,7 +1277,7 @@ pub async fn proxy_handler(
             Err(_) => {
                 tracing::error!("Upstream request timed out (safety net)");
                 // Loadbalancer: mark upstream as failed
-                state.lb.mark_failed(&token.id, &final_upstream_url);
+                state.lb.mark_failed(&token.id, &final_upstream_url, &cb_config);
                 let mut audit = base_audit(
                     request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
@@ -1442,7 +1479,7 @@ pub async fn proxy_handler(
     }
 
 
-    let mut parsed_resp_body: Option<serde_json::Value> = serde_json::from_slice(&resp_body_vec).ok();
+    let parsed_resp_body: Option<serde_json::Value> = serde_json::from_slice(&resp_body_vec).ok();
 
     // Convert reqwest headers to axum headers for RequestContext
     let axum_resp_headers = {
@@ -1776,6 +1813,32 @@ pub async fn proxy_handler(
                     response = response.header(name, val);
                 }
             }
+        }
+    }
+
+    // -- Circuit breaker visibility headers --
+    // X-AILink-Upstream: which upstream was selected for this request
+    // X-AILink-CB-State: closed | open | half_open | disabled
+    // X-Request-Id: correlation ID for debugging and support
+    let cb_state: &'static str = if cb_config.enabled {
+        state.lb.get_circuit_state(&token.id, &final_upstream_url, cb_config.recovery_cooldown_secs)
+    } else {
+        "disabled"
+    };
+    response = response.header("x-ailink-cb-state", axum::http::HeaderValue::from_static(cb_state));
+    if let Ok(upstream_hv) = axum::http::HeaderValue::from_str(&final_upstream_url) {
+        response = response.header("x-ailink-upstream", upstream_hv);
+    }
+    // Attach request ID to every response for support correlation
+    let req_id_str = format!("req_{}", request_id.simple());
+    if let Ok(req_id_hv) = axum::http::HeaderValue::from_str(&req_id_str) {
+        response = response.header("x-request-id", req_id_hv);
+    }
+
+    // P1.7: Attach idempotency warning if retries were skipped for safety
+    if let Some(warning_msg) = idempotency_warning {
+        if let Ok(warning_hv) = axum::http::HeaderValue::from_str(warning_msg) {
+            response = response.header("x-ailink-warning", warning_hv);
         }
     }
 

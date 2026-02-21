@@ -1,7 +1,7 @@
 """Resource for managing encrypted credentials."""
 
 from typing import List, Dict, Any, Optional
-from ..types import Credential
+from ..types import Credential, CredentialCreateResponse
 from ..exceptions import raise_for_status
 
 
@@ -28,7 +28,7 @@ class CredentialsResource:
         project_id: Optional[str] = None,
         injection_mode: Optional[str] = None,
         injection_header: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> CredentialCreateResponse:
         """
         Create a new encrypted credential.
 
@@ -48,7 +48,7 @@ class CredentialsResource:
             payload["injection_header"] = injection_header
         resp = self._client._http.post("/api/v1/credentials", json=payload)
         raise_for_status(resp)
-        return resp.json()
+        return CredentialCreateResponse(**resp.json())
 
 
 class AsyncCredentialsResource:
@@ -74,7 +74,7 @@ class AsyncCredentialsResource:
         project_id: Optional[str] = None,
         injection_mode: Optional[str] = None,
         injection_header: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> CredentialCreateResponse:
         """Create a new encrypted credential."""
         payload: Dict[str, Any] = {
             "name": name,
@@ -89,4 +89,4 @@ class AsyncCredentialsResource:
             payload["injection_header"] = injection_header
         resp = await self._client._http.post("/api/v1/credentials", json=payload)
         raise_for_status(resp)
-        return resp.json()
+        return CredentialCreateResponse(**resp.json())

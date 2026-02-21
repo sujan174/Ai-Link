@@ -52,6 +52,9 @@ AIlink sits between your agent and every external API. Instead of handing agents
 | 🛡️ **PII Scrubbing** | Auto-redact credit cards, SSNs, emails, API keys from responses |
 | 📊 **Audit Trail** | Every request logged — who, what, when, which policy fired |
 | 🔌 **Service Registry** | Register APIs as named services — one token accesses multiple APIs |
+| 🏷️ **Model Aliases** | Decouple agents from specific models; swap upstream providers without changing agent code |
+| 🎣 **Webhooks** | Get real-time event notifications for automated workflows (e.g. token created, approval needed) |
+| 💲 **Pricing Overrides** | Accurate, per-model custom spend tracking and cost accounting |
 | ⚡ **Fast** | Rust gateway, tiered caching, <1ms overhead on the hot path |
 
 ---
@@ -81,11 +84,14 @@ Open [http://localhost:3000](http://localhost:3000) and:
 Point your existing AI SDKs or agents to the AILink Gateway:
 
 ```python
-import openai
+import os
 from ailink import AIlinkClient
 
-# Use the virtual token you generated
-client = AIlinkClient(api_key="ailink_v1_...")
+# Use the virtual token you generated (reads AILINK_API_KEY from env by default)
+os.environ["AILINK_API_KEY"] = "ailink_v1_..."
+os.environ["AILINK_GATEWAY_URL"] = "http://localhost:8443"
+
+client = AIlinkClient()
 oai = client.openai()
 
 # Business as usual — AILink handles the proxying, policies, and cost tracking!

@@ -18,6 +18,7 @@ pub struct ToolCallInfo {
 }
 
 /// Extract tool calls from a complete (non-streaming) LLM response body.
+#[allow(dead_code)]
 pub fn extract_tool_calls(body: &[u8]) -> Vec<ToolCallInfo> {
     let json: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
@@ -147,6 +148,7 @@ fn extract_gemini_tool_calls(json: &Value) -> Vec<ToolCallInfo> {
 // ── Finish Reason ───────────────────────────────────────────────
 
 /// Extract finish_reason from an LLM response.
+#[allow(dead_code)]
 pub fn extract_finish_reason(body: &[u8]) -> Option<String> {
     let json: Value = serde_json::from_slice(body).ok()?;
     extract_finish_reason_from_value(&json)
@@ -217,6 +219,7 @@ impl std::fmt::Display for LlmErrorType {
 }
 
 /// Classify an LLM error from status code and response body.
+#[allow(dead_code)]
 pub fn classify_error(status: u16, body: &[u8]) -> Option<String> {
     let body_str = std::str::from_utf8(body).unwrap_or("");
     let json: Option<Value> = serde_json::from_slice(body).ok();

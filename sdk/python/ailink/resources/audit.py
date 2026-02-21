@@ -1,6 +1,6 @@
 """Resource for querying audit logs."""
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Iterator, AsyncIterator
 from ..types import AuditLog
 from ..exceptions import raise_for_status
 
@@ -32,6 +32,22 @@ class AuditResource:
         raise_for_status(resp)
         return [AuditLog(**item) for item in resp.json()]
 
+    def list_all(
+        self,
+        project_id: Optional[str] = None,
+        batch_size: int = 100,
+    ) -> Iterator[AuditLog]:
+        """Auto-paginating iterator over all audit logs."""
+        offset = 0
+        while True:
+            batch = self.list(limit=batch_size, offset=offset, project_id=project_id)
+            if not batch:
+                break
+            yield from batch
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+
 
 class AsyncAuditResource:
     """Async Management API resource for audit logs."""
@@ -52,3 +68,20 @@ class AsyncAuditResource:
         resp = await self._client._http.get("/api/v1/audit", params=params)
         raise_for_status(resp)
         return [AuditLog(**item) for item in resp.json()]
+
+    async def list_all(
+        self,
+        project_id: Optional[str] = None,
+        batch_size: int = 100,
+    ) -> AsyncIterator[AuditLog]:
+        """Auto-paginating async iterator over all audit logs."""
+        offset = 0
+        while True:
+            batch = await self.list(limit=batch_size, offset=offset, project_id=project_id)
+            if not batch:
+                break
+            for log in batch:
+                yield log
+            if len(batch) < batch_size:
+                break
+            offset += batch_size

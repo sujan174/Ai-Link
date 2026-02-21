@@ -95,7 +95,13 @@ pub async fn set_cached(
 }
 
 /// Check if caching should be skipped for this request.
-pub fn should_skip_cache(headers: &axum::http::HeaderMap) -> bool {
+///
+/// Skips caching when:
+/// - `x-ailink-no-cache: true` header is present (explicit opt-out)
+/// - `Cache-Control: no-cache` / `no-store` header is present
+/// - `temperature > 0.1` in the request body (non-deterministic — caching is misleading)
+/// - `stream: true` in the request body (streaming responses cannot be cached)
+pub fn should_skip_cache(headers: &axum::http::HeaderMap, body: Option<&serde_json::Value>) -> bool {
     // Explicit opt-out
     if headers
         .get("x-ailink-no-cache")
@@ -110,6 +116,21 @@ pub fn should_skip_cache(headers: &axum::http::HeaderMap) -> bool {
     if let Some(cc) = headers.get("cache-control").and_then(|v| v.to_str().ok()) {
         let lower = cc.to_lowercase();
         if lower.contains("no-cache") || lower.contains("no-store") {
+            return true;
+        }
+    }
+
+    // Body-based skips (temperature > 0.1 or streaming)
+    if let Some(body) = body {
+        // Skip non-deterministic requests — caller expects varied output
+        if let Some(temp) = body.get("temperature").and_then(|v| v.as_f64()) {
+            if temp > 0.1 {
+                tracing::debug!(temperature = temp, "skipping cache: temperature > 0.1");
+                return true;
+            }
+        }
+        // Streaming responses cannot be cached
+        if body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false) {
             return true;
         }
     }
@@ -190,20 +211,41 @@ mod tests {
     #[test]
     fn test_should_skip_cache_header() {
         let mut headers = axum::http::HeaderMap::new();
-        assert!(!should_skip_cache(&headers));
+        assert!(!should_skip_cache(&headers, None));
 
         headers.insert("x-ailink-no-cache", "true".parse().unwrap());
-        assert!(should_skip_cache(&headers));
+        assert!(should_skip_cache(&headers, None));
     }
 
     #[test]
     fn test_should_skip_cache_control() {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("cache-control", "no-cache".parse().unwrap());
-        assert!(should_skip_cache(&headers));
+        assert!(should_skip_cache(&headers, None));
 
         let mut headers2 = axum::http::HeaderMap::new();
         headers2.insert("cache-control", "no-store".parse().unwrap());
-        assert!(should_skip_cache(&headers2));
+        assert!(should_skip_cache(&headers2, None));
+    }
+
+    #[test]
+    fn test_should_skip_cache_high_temperature() {
+        let headers = axum::http::HeaderMap::new();
+        // temperature > 0.1 should skip
+        let body = serde_json::json!({"temperature": 0.9, "model": "gpt-4o"});
+        assert!(should_skip_cache(&headers, Some(&body)));
+        // temperature == 0.0 should cache
+        let body2 = serde_json::json!({"temperature": 0.0, "model": "gpt-4o"});
+        assert!(!should_skip_cache(&headers, Some(&body2)));
+        // temperature == 0.1 is at the edge — should NOT skip
+        let body3 = serde_json::json!({"temperature": 0.1, "model": "gpt-4o"});
+        assert!(!should_skip_cache(&headers, Some(&body3)));
+    }
+
+    #[test]
+    fn test_should_skip_cache_streaming() {
+        let headers = axum::http::HeaderMap::new();
+        let body = serde_json::json!({"stream": true, "model": "gpt-4o"});
+        assert!(should_skip_cache(&headers, Some(&body)));
     }
 }

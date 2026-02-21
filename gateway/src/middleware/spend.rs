@@ -240,6 +240,7 @@ async fn load_spend_caps(db: &sqlx::PgPool, token_id: &str) -> Result<SpendCap> 
 
 /// Track spend for a token.
 /// Increments the Redis counter for daily and monthly windows.
+#[allow(dead_code)]
 pub async fn track_spend(
     cache: &TieredCache,
     db: &sqlx::PgPool,

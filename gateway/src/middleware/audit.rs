@@ -72,7 +72,7 @@ async fn insert_audit_log(pool: &PgPool, entry: &AuditEntry) -> anyhow::Result<(
     .bind(&entry.hitl_decision)
     .bind(entry.hitl_latency_ms)
     .bind(entry.upstream_status.map(|s| s as i16))
-    .bind(entry.response_latency_ms as i32)
+    .bind(entry.response_latency_ms as i64)
     .bind(&entry.fields_redacted)
     .bind(&entry.shadow_violations)
     .bind(entry.estimated_cost_usd)

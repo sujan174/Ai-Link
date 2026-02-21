@@ -226,6 +226,194 @@ response = client.post(
 
 Cache hits are indicated by the `x-ailink-cache: HIT` header in the response.
 
+---
+
+### Circuit Breaker
+
+AIlink has a built-in circuit breaker that stops requests to repeatedly-failing upstreams and automatically recovers them after a cooldown. It's configurable **per token** and can be toggled at runtime.
+
+#### Create token with custom CB config
+
+```python
+admin = AIlinkClient.admin(admin_key="ailink_admin_...")
+
+token = admin.tokens.create(
+    name="prod-gpt",
+    upstream_url="https://api.openai.com/v1",
+    credential_id="cred-uuid",
+    # tighter thresholds for high-stakes environments
+    circuit_breaker={
+        "enabled": True,
+        "failure_threshold": 5,
+        "recovery_cooldown_secs": 60,
+    },
+)
+
+# Or disable CB entirely for dev tokens:
+dev_token = admin.tokens.create(
+    name="dev-test",
+    upstream_url="https://api.openai.com/v1",
+    circuit_breaker={"enabled": False},
+)
+```
+
+#### Read and update CB config at runtime
+
+```python
+# Read current config
+config = admin.tokens.get_circuit_breaker(token["token_id"])
+print(config)  # {"enabled": True, "failure_threshold": 5, ...}
+
+# Update at runtime (no restart needed)
+updated = admin.tokens.set_circuit_breaker(
+    token["token_id"],
+    enabled=True,
+    failure_threshold=3,
+    recovery_cooldown_secs=30,
+    half_open_max_requests=1,
+)
+```
+
+#### Check upstream health across all tokens
+
+```python
+health = admin.tokens.upstream_health()
+for entry in health:
+    status = "✅" if entry["is_healthy"] else f"❌ (cooldown: {entry['cooldown_remaining_secs']}s)"
+    print(f"{entry['url']} [{entry['token_id']}] {status}")
+```
+
+#### Read CB state from response headers
+
+Every proxied request returns these headers:
+```
+X-AILink-CB-State: closed | open | half_open | disabled
+X-AILink-Upstream: https://api.openai.com/v1
+```
+
+#### Async
+
+```python
+from ailink import AsyncClient
+
+async with AsyncClient.admin(admin_key="ailink_admin_...") as admin:
+    config  = await admin.tokens.get_circuit_breaker("ailink_v1_...")
+    health  = await admin.tokens.upstream_health()
+    updated = await admin.tokens.set_circuit_breaker(
+        "ailink_v1_...", enabled=False
+    )
+```
+---
+
+## ⚡ Gateway Resilience & Fallback
+
+> **Best practice**: Always write fallback code for when the AIlink gateway is temporarily unavailable. Your agents should degrade gracefully — not stop working.
+
+> [!IMPORTANT]
+> When the gateway is bypassed, requests go **directly to the LLM provider** — **no policy enforcement, no audit logs, no spend tracking**. Treat fallback as an emergency path only.
+
+---
+
+### Pattern 1 — One-time check (`is_healthy`)
+
+Fastest, simplest option. Best for a single call:
+
+```python
+import os, openai
+from ailink import AIlinkClient
+
+client       = AIlinkClient(api_key="ailink_v1_...")
+fallback_oai = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+if client.is_healthy():              # fast 3s timeout, never raises
+    oai = client.openai()            # audited, policy-enforced
+else:
+    oai = fallback_oai               # emergency direct bypass
+    print("⚠️  AIlink gateway unreachable — running without policy enforcement")
+
+response = oai.chat.completions.create(model="gpt-4o", messages=[...])
+```
+
+---
+
+### Pattern 2 — Automatic fallback (`with_fallback`)
+
+Zero boilerplate. Checks health and yields the right client automatically:
+
+```python
+import os, openai
+from ailink import AIlinkClient
+
+client       = AIlinkClient(api_key="ailink_v1_...")
+fallback_oai = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+with client.with_fallback(fallback_oai) as oai:
+    # oai = client.openai()  if gateway healthy
+    # oai = fallback_oai     if gateway down (emits a UserWarning)
+    response = oai.chat.completions.create(model="gpt-4o", messages=[...])
+```
+
+---
+
+### Pattern 3 — Background polling (`HealthPoller`)
+
+Best for **long-running services**. Health state is cached — zero added latency per request:
+
+```python
+import os, openai
+from ailink import AIlinkClient, HealthPoller
+
+client   = AIlinkClient(api_key="ailink_v1_...")
+fallback = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+with HealthPoller(client, interval=15) as poller:   # polls every 15s in background
+    for user_message in incoming_messages():
+        oai = client.openai() if poller.is_healthy else fallback
+        response = oai.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": user_message}])
+        yield response
+```
+
+---
+
+### Pattern 4 — Async
+
+```python
+import os, openai
+from ailink import AsyncClient, AsyncHealthPoller
+
+client   = AsyncClient(api_key="ailink_v1_...")
+fallback = openai.AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+# One-shot
+if await client.is_healthy():
+    oai = client.openai()
+else:
+    oai = fallback
+
+# Auto fallback context manager
+async with client.with_fallback(fallback) as oai:
+    response = await oai.chat.completions.create(model="gpt-4o", messages=[...])
+
+# Background poller
+async with AsyncHealthPoller(client, interval=15) as poller:
+    oai = client.openai() if poller.is_healthy else fallback
+    response = await oai.chat.completions.create(model="gpt-4o", messages=[...])
+```
+
+---
+
+### Resilience Best Practices
+
+| ✅ Do | ❌ Don't |
+|-------|---------|
+| Always define a `fallback_oai` client | Let your agent crash if the gateway restarts |
+| Log or alert when falling back | Silently bypass in normal operation |
+| Use `HealthPoller` in long-running services | Call `is_healthy()` inside a tight loop |
+| Set polling interval ≥ 10 seconds | Poll faster than every 5 seconds |
+| Test fallback paths in CI | Assume the gateway is always up |
+
+---
+
 ### Configuration
 
 ```python

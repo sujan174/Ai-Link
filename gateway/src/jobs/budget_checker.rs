@@ -165,6 +165,7 @@ pub async fn run_budget_check(pool: &PgPool) -> Result<()> {
 /// Check whether a project has exceeded its hard cap.
 /// Returns `true` if capped, `false` if within budget or no budget configured.
 /// Fails open on DB error to avoid blocking requests.
+#[allow(dead_code)]
 pub async fn is_project_over_hard_cap(pool: &PgPool, project_id: uuid::Uuid) -> bool {
     let result = sqlx::query(
         r#"
