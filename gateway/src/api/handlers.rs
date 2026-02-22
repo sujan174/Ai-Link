@@ -396,7 +396,7 @@ pub async fn list_approvals(
 
     let approvals = state
         .db
-        .list_pending_approvals(project_id)
+        .list_approval_requests(project_id)
         .await
         .map_err(|e| {
             tracing::error!("list_approvals failed: {}", e);
@@ -529,6 +529,72 @@ pub async fn get_audit_log(
         .ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(log))
+}
+
+/// GET /api/v1/sessions/:session_id — cost rollup for an entire agent session.
+///
+/// Returns aggregate totals (cost, tokens, latency, models) plus a per-request
+/// breakdown ordered chronologically. Useful for calculating true agent run cost.
+///
+/// Example response:
+/// ```json
+/// {
+///   "session_id": "agent-run-42",
+///   "total_requests": 5,
+///   "total_cost_usd": "0.0847",
+///   "total_prompt_tokens": 12500,
+///   ...
+///   "requests": [{ "id": "...", "model": "gpt-4o", "cost_usd": "0.03", ... }]
+/// }
+/// ```
+pub async fn get_session(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<crate::store::postgres::SessionSummaryRow>, StatusCode> {
+    auth.require_scope("audit:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    let summary = state
+        .db
+        .get_session_summary(&session_id, project_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(session_id = %session_id, "get_session_summary failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(summary))
+}
+
+/// GET /api/v1/sessions — list recent sessions ordered by latest activity.
+///
+/// Returns per-session aggregates (cost, tokens, latency, models) without
+/// per-request breakdown. Use GET /api/v1/sessions/:id for the full detail.
+pub async fn list_sessions(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Vec<crate::store::postgres::SessionSummaryRow>>, StatusCode> {
+    auth.require_scope("audit:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+    let limit = params.limit.unwrap_or(100).clamp(1, 500);
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    let sessions = state
+        .db
+        .list_sessions(project_id, limit, offset)
+        .await
+        .map_err(|e| {
+            tracing::error!("list_sessions failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(sessions))
 }
 
 // ── Policy DTOs ──────────────────────────────────────────────
@@ -1317,22 +1383,43 @@ pub async fn whoami(Extension(auth): Extension<AuthContext>) -> Json<WhoAmIRespo
 
 // ── Billing / Metering ───────────────────────────────────────
 
-/// GET /api/v1/billing/usage — get current usage
+
+/// GET /api/v1/billing/usage — get current usage meter for the org
 pub async fn get_org_usage(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
-) -> Result<Json<Option<UsageMeterRow>>, StatusCode> {
-    // Current month period (naive date YYYY-MM-01)
+) -> Result<Json<serde_json::Value>, StatusCode> {
     use chrono::{Datelike, Utc};
     let now = Utc::now();
     let period = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap();
 
-    let usage = state.db.get_usage(auth.org_id, period).await.map_err(|e| {
-        tracing::error!("get_org_usage failed: {}", e);
+    // Try the pre-aggregated usage_meters table first
+    let existing = state.db.get_usage(auth.org_id, period).await.map_err(|e| {
+        tracing::error!("get_org_usage (usage_meters) failed: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    Ok(Json(usage))
+    let (total_requests, total_tokens, total_spend) = if let Some(row) = existing {
+        (row.total_requests, row.total_tokens_used, row.total_spend_usd)
+    } else {
+        // Fall back: aggregate live from audit_logs
+        state.db.get_usage_from_audit_logs(auth.org_id, period).await.map_err(|e| {
+            tracing::error!("get_org_usage (audit_logs fallback) failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    };
+
+    let period_str = format!("{}-{:02}", now.year(), now.month());
+    let resp = serde_json::json!({
+        "org_id": auth.org_id,
+        "period": period_str,
+        "total_requests": total_requests,
+        "total_tokens_used": total_tokens,
+        "total_spend_usd": total_spend,
+        "updated_at": now.to_rfc3339(),
+    });
+
+    Ok(Json(resp))
 }
 
 // ── Per-Token Analytics ──────────────────────────────────────

@@ -188,6 +188,23 @@ impl PgStore {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Replace the `policy_ids` array on a token.
+    /// Used by the guardrail presets API to attach auto-generated policies.
+    pub async fn set_token_policy_ids(
+        &self,
+        token_id: &str,
+        policy_ids: &[Uuid],
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE tokens SET policy_ids = $1 WHERE id = $2 AND is_active = true"
+        )
+        .bind(policy_ids)
+        .bind(token_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     // -- Policy Operations --
 
     pub async fn get_policies_for_token(
@@ -392,12 +409,12 @@ impl PgStore {
     }
 
     pub async fn get_approval_status(&self, request_id: Uuid) -> anyhow::Result<String> {
-        let status: String =
+        let status: Option<String> =
             sqlx::query_scalar("SELECT status FROM approval_requests WHERE id = $1")
                 .bind(request_id)
-                .fetch_one(&self.pool)
+                .fetch_optional(&self.pool)
                 .await?;
-        Ok(status)
+        Ok(status.unwrap_or_else(|| "expired".to_string()))
     }
 
     pub async fn list_pending_approvals(
@@ -489,6 +506,132 @@ impl PgStore {
         .await?;
 
         Ok(row)
+    }
+
+    /// Aggregate all audit log entries for a session (by session_id).
+    ///
+    /// Returns total cost, tokens, latency, models used, and per-request breakdown.
+    /// This is the foundation of the "session cost rollup" feature.
+    pub async fn get_session_summary(
+        &self,
+        session_id: &str,
+        project_id: Uuid,
+    ) -> anyhow::Result<Option<SessionSummaryRow>> {
+        // First get the aggregate summary
+        let summary = sqlx::query_as::<_, SessionAggrRow>(
+            r#"
+            SELECT
+                session_id,
+                COUNT(*)::bigint                                   AS total_requests,
+                COALESCE(SUM(estimated_cost_usd), 0)              AS total_cost_usd,
+                COALESCE(SUM(prompt_tokens), 0)::bigint           AS total_prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0)::bigint       AS total_completion_tokens,
+                COALESCE(SUM(response_latency_ms), 0)::bigint     AS total_latency_ms,
+                array_remove(array_agg(DISTINCT model), NULL)     AS models_used,
+                MIN(created_at)                                   AS first_request_at,
+                MAX(created_at)                                   AS last_request_at
+            FROM audit_logs
+            WHERE session_id = $1 AND project_id = $2
+            GROUP BY session_id
+            "#,
+        )
+        .bind(session_id)
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(agg) = summary else {
+            return Ok(None);
+        };
+
+        // Then get per-request breakdown (ordered chronologically)
+        let requests = sqlx::query_as::<_, SessionRequestRow>(
+            r#"
+            SELECT
+                id,
+                created_at,
+                model,
+                estimated_cost_usd,
+                response_latency_ms,
+                prompt_tokens,
+                completion_tokens,
+                tool_call_count,
+                cache_hit,
+                custom_properties,
+                payload_url
+            FROM audit_logs
+            WHERE session_id = $1 AND project_id = $2
+            ORDER BY created_at ASC
+            "#,
+        )
+        .bind(session_id)
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(Some(SessionSummaryRow {
+            session_id: agg.session_id,
+            total_requests: agg.total_requests,
+            total_cost_usd: agg.total_cost_usd,
+            total_prompt_tokens: agg.total_prompt_tokens,
+            total_completion_tokens: agg.total_completion_tokens,
+            total_latency_ms: agg.total_latency_ms,
+            models_used: agg.models_used,
+            first_request_at: agg.first_request_at,
+            last_request_at: agg.last_request_at,
+            requests,
+        }))
+    }
+
+    /// List recent sessions with per-session aggregates (no per-request breakdown).
+    ///
+    /// Used by the Sessions list page to show a table of all agent runs.
+    pub async fn list_sessions(
+        &self,
+        project_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<SessionSummaryRow>> {
+        let rows = sqlx::query_as::<_, SessionAggrRow>(
+            r#"
+            SELECT
+                session_id,
+                COUNT(*)::bigint                                   AS total_requests,
+                COALESCE(SUM(estimated_cost_usd), 0)              AS total_cost_usd,
+                COALESCE(SUM(prompt_tokens), 0)::bigint           AS total_prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0)::bigint       AS total_completion_tokens,
+                COALESCE(SUM(response_latency_ms), 0)::bigint     AS total_latency_ms,
+                array_remove(array_agg(DISTINCT model), NULL)     AS models_used,
+                MIN(created_at)                                   AS first_request_at,
+                MAX(created_at)                                   AS last_request_at
+            FROM audit_logs
+            WHERE project_id = $1 AND session_id IS NOT NULL
+            GROUP BY session_id
+            ORDER BY MAX(created_at) DESC
+            LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(project_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|agg| SessionSummaryRow {
+                session_id: agg.session_id,
+                total_requests: agg.total_requests,
+                total_cost_usd: agg.total_cost_usd,
+                total_prompt_tokens: agg.total_prompt_tokens,
+                total_completion_tokens: agg.total_completion_tokens,
+                total_latency_ms: agg.total_latency_ms,
+                models_used: agg.models_used,
+                first_request_at: agg.first_request_at,
+                last_request_at: agg.last_request_at,
+                requests: vec![], // No per-request breakdown in list view
+            })
+            .collect())
     }
 
     // -- Analytics Operations --
@@ -871,6 +1014,53 @@ pub struct PolicyRow {
     pub created_at: DateTime<Utc>,
 }
 
+// ── Session Summary Types ─────────────────────────────────────
+
+/// Internal aggregate row — result of the GROUP BY query.
+#[derive(Debug, sqlx::FromRow)]
+struct SessionAggrRow {
+    pub session_id: Option<String>,
+    pub total_requests: i64,
+    pub total_cost_usd: Option<rust_decimal::Decimal>,
+    pub total_prompt_tokens: i64,
+    pub total_completion_tokens: i64,
+    pub total_latency_ms: i64,
+    pub models_used: Option<Vec<String>>,
+    pub first_request_at: DateTime<Utc>,
+    pub last_request_at: DateTime<Utc>,
+}
+
+/// Per-request item inside a session summary.
+#[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
+pub struct SessionRequestRow {
+    pub id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub model: Option<String>,
+    pub estimated_cost_usd: Option<rust_decimal::Decimal>,
+    pub response_latency_ms: Option<i64>,
+    pub prompt_tokens: Option<i32>,
+    pub completion_tokens: Option<i32>,
+    pub tool_call_count: Option<i16>,
+    pub cache_hit: Option<bool>,
+    pub custom_properties: Option<serde_json::Value>,
+    pub payload_url: Option<String>,
+}
+
+/// Full session summary (aggregate + per-request breakdown).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionSummaryRow {
+    pub session_id: Option<String>,
+    pub total_requests: i64,
+    pub total_cost_usd: Option<rust_decimal::Decimal>,
+    pub total_prompt_tokens: i64,
+    pub total_completion_tokens: i64,
+    pub total_latency_ms: i64,
+    pub models_used: Option<Vec<String>>,
+    pub first_request_at: DateTime<Utc>,
+    pub last_request_at: DateTime<Utc>,
+    pub requests: Vec<SessionRequestRow>,
+}
+
 #[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
 pub struct AuditLogRow {
     pub id: Uuid,
@@ -1162,6 +1352,56 @@ impl PgStore {
         Ok(usage)
     }
 
+    /// Aggregate usage directly from audit_logs for the given calendar month.
+    /// Used as a fallback / live view when usage_meters has not been populated.
+    pub async fn get_usage_from_audit_logs(
+        &self,
+        org_id: Uuid,
+        period: NaiveDate,
+    ) -> anyhow::Result<(i64, i64, rust_decimal::Decimal)> {
+        use chrono::Datelike;
+        // Calculate the first day of the next month as the exclusive upper bound
+        let period_end = {
+            let (y, m) = if period.month() == 12 {
+                (period.year() + 1, 1u32)
+            } else {
+                (period.year(), period.month() + 1)
+            };
+            chrono::NaiveDate::from_ymd_opt(y, m, 1).unwrap()
+        };
+
+        let period_start_dt = period.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let period_end_dt   = period_end.and_hms_opt(0, 0, 0).unwrap().and_utc();
+
+        // Use sqlx::query() (runtime form) so SQLX_OFFLINE=true builds aren't affected.
+        let row = sqlx::query(
+            r#"
+            SELECT
+                COUNT(*)::bigint                                                   AS total_requests,
+                COALESCE(SUM(a.prompt_tokens + a.completion_tokens), 0)::bigint    AS total_tokens,
+                COALESCE(SUM(a.estimated_cost_usd), 0)                             AS total_spend_usd
+            FROM audit_logs a
+            JOIN projects p ON p.id = a.project_id
+            WHERE p.org_id = $1
+              AND a.created_at >= $2
+              AND a.created_at <  $3
+            "#,
+        )
+        .bind(org_id)
+        .bind(period_start_dt)
+        .bind(period_end_dt)
+        .fetch_one(&self.pool)
+        .await?;
+
+        use sqlx::Row;
+        let total_requests: i64           = row.try_get("total_requests").unwrap_or(0);
+        let total_tokens: i64             = row.try_get("total_tokens").unwrap_or(0);
+        let total_spend: rust_decimal::Decimal = row.try_get("total_spend_usd")
+            .unwrap_or(rust_decimal::Decimal::ZERO);
+
+        Ok((total_requests, total_tokens, total_spend))
+    }
+
     // ── Per-Token Analytics ──────────────────────────────────────
 
     pub async fn get_token_summary(
@@ -1402,7 +1642,51 @@ impl PgStore {
         }
         Ok(settings)
     }
+
+    // -- Additional Approval Operations --
+
+    /// List ALL approval requests for a project (pending + historical) for the dashboard.
+    pub async fn list_approval_requests(
+        &self,
+        project_id: Uuid,
+    ) -> anyhow::Result<Vec<crate::models::approval::ApprovalRequest>> {
+        let rows = sqlx::query_as::<_, crate::models::approval::ApprovalRequest>(
+            r#"SELECT id, token_id, project_id, idempotency_key, request_summary,
+                      status, reviewed_by, reviewed_at, expires_at, created_at
+               FROM approval_requests
+               WHERE project_id = $1
+               ORDER BY created_at DESC
+               LIMIT 200"#,
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Set the status of an approval request. Returns true if updated.
+    pub async fn decide_approval_request(
+        &self,
+        id: Uuid,
+        project_id: Uuid,
+        decision: &str,    // "approved" | "rejected"
+        reviewer_id: Option<Uuid>,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"UPDATE approval_requests
+               SET status = $1, reviewed_by = $2, reviewed_at = NOW()
+               WHERE id = $3 AND project_id = $4 AND status = 'pending'"#,
+        )
+        .bind(decision)
+        .bind(reviewer_id)
+        .bind(id)
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }
+
 
 // -- Model Pricing Row --
 

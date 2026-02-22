@@ -26,10 +26,11 @@ import { toast } from "sonner";
 
 export default function OverviewPage() {
     // SWR Hooks for real-time data
-    const { data: logs = [], isLoading: logsLoading } = useSWR<AuditLog[]>("/audit-logs?limit=100", swrFetcher, { refreshInterval: 5000 });
+    const { data: logs = [], isLoading: logsLoading } = useSWR<AuditLog[]>("/audit?limit=100", swrFetcher, { refreshInterval: 5000 });
     const { data: tokens = [], isLoading: tokensLoading } = useSWR<Token[]>("/tokens", swrFetcher);
     const { data: credentials = [], isLoading: credentialsLoading } = useSWR<Credential[]>("/credentials", swrFetcher);
     const { data: approvals = [], isLoading: approvalsLoading } = useSWR<ApprovalRequest[]>("/approvals", swrFetcher, { refreshInterval: 10000 });
+    const { data: usage, isLoading: usageLoading } = useSWR<any>("/billing/usage", swrFetcher, { refreshInterval: 10000 });
 
     // UI State
     const [dismissed, setDismissed] = useState(false);
@@ -40,15 +41,15 @@ export default function OverviewPage() {
         }
     }, []);
 
-    const loading = logsLoading || tokensLoading || credentialsLoading || approvalsLoading;
+    const loading = logsLoading || tokensLoading || credentialsLoading || approvalsLoading || usageLoading;
 
     // Computed metrics
-    const totalRequests = logs.length;
+    const totalRequests = usage ? Number(usage.total_requests || 0) : 0;
     const avgLatency = logs.length > 0
         ? Math.round(logs.reduce((sum, l) => sum + l.response_latency_ms, 0) / logs.length)
         : 0;
     const activeTokens = tokens.filter(t => t.is_active).length;
-    const totalSpend = logs.reduce((sum, l) => sum + parseFloat(l.estimated_cost_usd || "0"), 0);
+    const totalSpend = usage ? Number(usage.total_spend_usd || 0) : 0;
     const pendingApprovals = approvals.filter(a => a.status === "pending").length;
     const successRate = logs.length > 0
         ? Math.round((logs.filter(l => l.upstream_status && l.upstream_status < 400).length / logs.length) * 100)
@@ -196,7 +197,7 @@ export default function OverviewPage() {
                     <KPICard
                         title="Total Requests"
                         value={totalRequests.toLocaleString()}
-                        subtitle="Last 100 logged"
+                        subtitle="This month"
                         icon={Activity}
                         iconColor="blue"
                         delay={0}
@@ -224,7 +225,7 @@ export default function OverviewPage() {
                     <KPICard
                         title="Visible Spend"
                         value={`$${totalSpend.toFixed(4)}`}
-                        subtitle="Estimated cost"
+                        subtitle="This month"
                         icon={DollarSign}
                         iconColor="amber"
                         delay={3}

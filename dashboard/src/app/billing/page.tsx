@@ -123,7 +123,7 @@ export default function BillingPage() {
                         <DollarSign className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">${usage?.total_spend_usd?.toFixed(2) ?? "0.00"}</div>
+                        <div className="text-2xl font-bold">${Number(usage?.total_spend_usd || 0).toFixed(2)}</div>
                         <p className="text-xs text-muted-foreground">Based on provider pricing</p>
                     </CardContent>
                 </Card>

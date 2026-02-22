@@ -111,6 +111,38 @@ export interface AuditLogDetail extends AuditLog {
   response_headers: Record<string, string> | null;
   // Router
   router_info: { detected_provider?: string; original_model?: string; translated_model?: string } | null;
+  // Phase 6: Just Enough Observability
+  custom_properties: Record<string, unknown> | null;
+  payload_url: string | null;
+}
+
+// ── Session Types ─────────────────────────────────────────────
+
+export interface SessionRequest {
+  id: string;
+  created_at: string;
+  model: string | null;
+  estimated_cost_usd: string | null;
+  response_latency_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  tool_call_count: number | null;
+  cache_hit: boolean | null;
+  custom_properties: Record<string, unknown> | null;
+  payload_url: string | null;
+}
+
+export interface SessionSummary {
+  session_id: string | null;
+  total_requests: number;
+  total_cost_usd: string | null;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_latency_ms: number;
+  models_used: string[] | null;
+  first_request_at: string;
+  last_request_at: string;
+  requests: SessionRequest[];
 }
 
 export interface ExperimentSummary {
@@ -180,6 +212,12 @@ export const listAuditLogs = (limit = 50, offset = 0, filters?: { token_id?: str
 
 export const getAuditLogDetail = (id: string) =>
   api<AuditLogDetail>(`/audit/${id}`);
+
+export const listSessions = (limit = 100, offset = 0) =>
+  api<SessionSummary[]>(`/sessions?limit=${limit}&offset=${offset}`);
+
+export const getSession = (id: string) =>
+  api<SessionSummary>(`/sessions/${encodeURIComponent(id)}`);
 
 export const swrFetcher = <T>(path: string) => api<T>(path);
 
@@ -508,7 +546,29 @@ export interface UsageMeter {
 
 export async function getUsage(period?: string): Promise<UsageMeter> {
   const query = period ? `?period=${period}` : "";
-  return api(`/billing/usage${query}`);
+  const res: any = await api(`/billing/usage${query}`);
+  if (!res) {
+    const d = new Date();
+    return {
+      org_id: "unknown",
+      period: period || `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+      total_requests: 0,
+      total_tokens_used: 0,
+      total_spend_usd: 0,
+      updated_at: new Date().toISOString()
+    };
+  }
+
+  // The backend serializes some numeric types (like Rust Decimal or BigInt)
+  // as strings to preserve precision. We cast them to JS numbers for the UI.
+  return {
+    org_id: res.org_id,
+    period: res.period,
+    updated_at: res.updated_at,
+    total_requests: Number(res.total_requests) || 0,
+    total_tokens_used: Number(res.total_tokens_used) || 0,
+    total_spend_usd: Number(res.total_spend_usd) || 0,
+  };
 }
 
 // ── Analytics ─────────────────────────────────────────────
