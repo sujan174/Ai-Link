@@ -12,6 +12,8 @@ use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 pub mod analytics;
+pub mod config;
+pub mod guardrail_presets;
 pub mod handlers;
 
 // ── Auth Context ─────────────────────────────────────────────
@@ -133,6 +135,14 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/audit/stream",
             get(handlers::stream_audit_logs),
         )
+        .route(
+            "/sessions",
+            get(handlers::list_sessions),
+        )
+        .route(
+            "/sessions/:id",
+            get(handlers::get_session),
+        )
         // Services
         .route("/services", get(handlers::list_services).post(handlers::create_service))
         .route("/services/:id", delete(handlers::delete_service))
@@ -178,6 +188,7 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/analytics/experiments", get(handlers::get_analytics_experiments))
         // Settings & System
         .route("/settings", get(handlers::get_settings).put(handlers::update_settings))
+        .route("/system/cache-stats", get(handlers::get_cache_stats))
         .route("/system/flush-cache", post(handlers::flush_cache))
         // Upstream Health
         .route("/health/upstreams", get(handlers::get_upstream_health))
@@ -188,9 +199,19 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/webhooks", get(handlers::list_webhooks).post(handlers::create_webhook))
         .route("/webhooks/:id", delete(handlers::delete_webhook))
         .route("/webhooks/test", post(handlers::test_webhook))
-        // Model Pricing (Fix #3: DB-backed dynamic pricing)
+        // Model Pricing
         .route("/pricing", get(handlers::list_pricing).put(handlers::upsert_pricing))
         .route("/pricing/:id", delete(handlers::delete_pricing))
+        // Guardrail Presets — one-call guardrail enablement
+        .route("/guardrails/presets", get(guardrail_presets::list_presets))
+        .route("/guardrails/enable", post(guardrail_presets::enable_guardrails))
+        .route("/guardrails/disable", delete(guardrail_presets::disable_guardrails))
+        .route("/guardrails/status", get(guardrail_presets::guardrails_status))
+        // Config-as-Code — export/import policies+tokens as YAML or JSON
+        .route("/config/export", get(config::export_config))
+        .route("/config/export/policies", get(config::export_policies))
+        .route("/config/export/tokens", get(config::export_tokens))
+        .route("/config/import", post(config::import_config))
         .layer(middleware::from_fn_with_state(state, admin_auth))
         .layer(TraceLayer::new_for_http())
         .fallback(fallback_404)

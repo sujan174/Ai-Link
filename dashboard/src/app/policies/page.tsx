@@ -100,12 +100,8 @@ export default function PoliciesPage() {
 
     return (
         <div className="p-8 space-y-6 max-w-[1600px] mx-auto">
-            {/* Header */}
-            <div className="flex items-center justify-between animate-fade-in">
-                <div className="space-y-1">
-                    <h2 className="text-3xl font-bold tracking-tight">Policy Engine</h2>
-                    <p className="text-muted-foreground text-sm">Condition → action rules for traffic governance, AI safety, and compliance</p>
-                </div>
+            {/* Controls */}
+            <div className="flex items-center justify-end animate-fade-in mb-2">
                 <div className="flex items-center gap-2">
                     <Button variant="outline" size="sm" onClick={() => mutate()} disabled={isLoading}>
                         <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", isLoading && "animate-spin")} />

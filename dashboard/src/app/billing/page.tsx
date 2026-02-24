@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { CustomTooltip, CHART_AXIS_PROPS } from "@/components/ui/chart-utils";
 
 // Simulate daily spend data from the monthly total (real data would come from a time-series endpoint)
 function buildSpendHistory(totalSpend: number): { day: string; spend: number }[] {
@@ -75,14 +76,8 @@ export default function BillingPage() {
 
     return (
         <div className="p-8 space-y-6 max-w-[1600px] mx-auto">
-            {/* Header */}
-            <div className="flex items-center justify-between animate-fade-in">
-                <div className="space-y-1">
-                    <h2 className="text-3xl font-bold tracking-tight">Usage &amp; Billing</h2>
-                    <p className="text-muted-foreground text-sm">
-                        Monitor your organization&apos;s usage and estimated costs
-                    </p>
-                </div>
+            {/* Controls */}
+            <div className="flex items-center justify-end animate-fade-in mb-2">
                 <div className="flex items-center gap-2">
                     <Button variant="outline" size="sm" onClick={fetchAll} disabled={loading}>
                         <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", loading && "animate-spin")} />
@@ -156,35 +151,30 @@ export default function BillingPage() {
                                             <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
                                         </linearGradient>
                                     </defs>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
                                     <XAxis
                                         dataKey="day"
-                                        tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                                        tickLine={false}
-                                        axisLine={false}
+                                        {...CHART_AXIS_PROPS}
                                         interval="preserveStartEnd"
                                     />
                                     <YAxis
-                                        tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                                        tickLine={false}
-                                        axisLine={false}
+                                        {...CHART_AXIS_PROPS}
                                         tickFormatter={(v: number) => `$${v.toFixed(2)}`}
                                     />
                                     <Tooltip
-                                        contentStyle={{
-                                            background: "hsl(var(--card))",
-                                            border: "1px solid hsl(var(--border))",
-                                            borderRadius: "8px",
-                                            fontSize: "12px",
-                                        }}
-                                        formatter={(v: number | undefined) => [`$${(v ?? 0).toFixed(4)}`, "Spend"] as [string, string]}
+                                        content={<CustomTooltip
+                                            valueFormatter={(v: any) => typeof v === 'number' ? `$${v.toFixed(4)}` : v}
+                                        />}
+                                        cursor={{ stroke: 'var(--border)', strokeWidth: 1, strokeDasharray: '4 4' }}
                                     />
                                     <Area
                                         type="monotone"
                                         dataKey="spend"
+                                        name="Spend"
                                         stroke="#8b5cf6"
                                         strokeWidth={2}
                                         fill="url(#spendGrad)"
+                                        activeDot={{ r: 4, strokeWidth: 0, fill: '#8b5cf6' }}
                                     />
                                 </AreaChart>
                             </ResponsiveContainer>

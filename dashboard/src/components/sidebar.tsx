@@ -25,6 +25,8 @@ import {
     ChevronRight,
     Map,
     DollarSign,
+    Layers,
+    Database,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -93,114 +95,44 @@ export function Sidebar({ className }: SidebarProps) {
 
     const groups: Group[] = [
         {
-            label: "Platform",
+            label: "Overview",
             routes: [
-                {
-                    href: "/",
-                    label: "Overview",
-                    icon: LayoutDashboard,
-                },
-                {
-                    href: "/playground",
-                    label: "Playground",
-                    icon: FlaskConical,
-                },
-                {
-                    href: "/audit",
-                    label: "Traces & Logs",
-                    icon: ClipboardList,
-                },
-                {
-                    href: "/analytics",
-                    label: "Analytics",
-                    icon: BarChart3,
-                },
-                {
-                    href: "/billing",
-                    label: "Usage & Billing",
-                    icon: CreditCard,
-                },
+                { href: "/", label: "Command Centre", icon: LayoutDashboard },
             ]
         },
         {
-            label: "Gateway",
+            label: "Observability",
             routes: [
-                {
-                    href: "/upstreams",
-                    label: "Upstreams",
-                    icon: Activity,
-                },
-                {
-                    href: "/services",
-                    label: "Services",
-                    icon: Plug,
-                },
-                {
-                    href: "/policies",
-                    label: "Policies",
-                    icon: ShieldAlert,
-                },
-                {
-                    href: "/credentials",
-                    label: "Credentials",
-                    icon: Fingerprint,
-                },
-                {
-                    href: "/model-aliases",
-                    label: "Model Aliases",
-                    icon: Map,
-                },
-                {
-                    href: "/model-pricing",
-                    label: "Model Pricing",
-                    icon: DollarSign,
-                },
+                { href: "/analytics", label: "Global Analytics", icon: BarChart3 },
+                { href: "/audit", label: "Audit Logs", icon: ClipboardList },
+                { href: "/sessions", label: "Agent Sessions", icon: Layers },
             ]
         },
         {
-            label: "Security",
+            label: "Orchestration",
             routes: [
-                {
-                    href: "/tokens",
-                    label: "Agent Tokens",
-                    icon: Key,
-                },
-                {
-                    href: "/keys",
-                    label: "API Keys",
-                    icon: LockKeyhole,
-                },
-                {
-                    href: "/approvals",
-                    label: "Approvals",
-                    icon: CheckCircle,
-                    badge: approvalCount > 0 ? approvalCount : null,
-                },
+                { href: "/virtual-keys", label: "Virtual Keys", icon: Key },
+                { href: "/upstreams", label: "Upstreams & Models", icon: Activity },
+                { href: "/tools", label: "Managed Tools", icon: Plug },
+                { href: "/approvals", label: "Human-in-the-Loop", icon: CheckCircle, badge: approvalCount > 0 ? approvalCount : null },
             ]
         },
         {
-            label: "Developers",
+            label: "Safety & Optimization",
             routes: [
-                {
-                    href: "/webhooks",
-                    label: "Webhooks",
-                    icon: Webhook,
-                },
-                {
-                    href: "/settings/team",
-                    label: "Team",
-                    icon: User,
-                },
-                {
-                    href: "/settings/project",
-                    label: "Project Settings",
-                    icon: Settings,
-                },
-                {
-                    href: "/settings",
-                    label: "System Settings",
-                    icon: Settings,
-                },
+                { href: "/guardrails", label: "Guardrails", icon: ShieldAlert },
+                { href: "/cache", label: "Cache Management", icon: Database },
+                { href: "/playground", label: "Playground", icon: FlaskConical },
+            ]
+        },
+        {
+            label: "Configuration",
+            routes: [
+                { href: "/vault", label: "The Vault", icon: Fingerprint },
+                { href: "/api-keys", label: "Platform API Keys", icon: LockKeyhole },
+                { href: "/webhooks", label: "Webhooks", icon: Webhook },
+                { href: "/billing", label: "Usage & Billing", icon: CreditCard },
+                { href: "/settings", label: "Settings", icon: Settings },
             ]
         }
     ];
@@ -246,14 +178,14 @@ export function Sidebar({ className }: SidebarProps) {
             </div>
 
             {/* Navigation */}
-            <div className="flex-1 overflow-y-auto overflow-x-hidden py-4 px-3 space-y-6 scrollbar-none">
+            <div className="flex-1 overflow-y-auto overflow-x-hidden py-3 px-2 space-y-4 scrollbar-none">
                 {groups.map((group) => (
                     <div key={group.label} className="space-y-1">
                         {!collapsed && (
                             <motion.h4
                                 initial={{ opacity: 0 }}
                                 animate={{ opacity: 1 }}
-                                className="px-3 text-[10px] uppercase font-bold tracking-[0.15em] text-muted-foreground/60 mb-2 whitespace-nowrap"
+                                className="px-3 text-[10px] uppercase font-bold tracking-[0.1em] text-muted-foreground/60 mb-1 whitespace-nowrap"
                             >
                                 {group.label}
                             </motion.h4>
@@ -267,10 +199,10 @@ export function Sidebar({ className }: SidebarProps) {
                                     key={route.href}
                                     href={route.href}
                                     className={cn(
-                                        "flex items-center gap-3 rounded-md py-2 text-sm font-medium transition-all duration-200 group relative",
+                                        "flex items-center gap-2.5 rounded-md py-1.5 text-sm font-medium transition-all duration-200 group relative",
                                         collapsed ? "justify-center px-2" : "px-3",
                                         isActive
-                                            ? "text-primary bg-muted/30"
+                                            ? "text-primary bg-primary/10"
                                             : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                                     )}
                                     title={collapsed ? route.label : undefined}

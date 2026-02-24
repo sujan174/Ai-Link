@@ -181,6 +181,51 @@ class TokensResource:
         raise_for_status(resp)
         return resp.json()
 
+    def enable_guardrails(
+        self,
+        token_id: str,
+        presets: List[str],
+        topic_allowlist: Optional[List[str]] = None,
+        topic_denylist: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Enable pre-configured guardrail presets for a token.
+        
+        Args:
+            token_id: The token to configure.
+            presets: List of preset names (e.g. 'pii_redaction', 'prompt_injection').
+            topic_allowlist: Optional list for 'topic_fence' preset.
+            topic_denylist: Optional list for 'topic_fence' preset.
+        """
+        payload: Dict[str, Any] = {
+            "token_id": token_id,
+            "presets": presets,
+        }
+        if topic_allowlist:
+            payload["topic_allowlist"] = topic_allowlist
+        if topic_denylist:
+            payload["topic_denylist"] = topic_denylist
+            
+        resp = self._client._http.post("/api/v1/guardrails/enable", json=payload)
+        raise_for_status(resp)
+        return resp.json()
+
+    def disable_guardrails(self, token_id: str, prefix: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Disable auto-generated guardrails for a token.
+        
+        Args:
+            token_id: The token to configure.
+            prefix: Optional specific guardrail policy prefix to disable.
+        """
+        payload: Dict[str, Any] = {"token_id": token_id}
+        if prefix:
+            payload["policy_name_prefix"] = prefix
+            
+        resp = self._client._http.request("DELETE", "/api/v1/guardrails/disable", json=payload)
+        raise_for_status(resp)
+        return resp.json()
+
 
 class AsyncTokensResource:
     """Async Management API resource for virtual tokens."""
@@ -316,6 +361,51 @@ class AsyncTokensResource:
             f"/api/v1/tokens/{token_id}/circuit-breaker",
             json=payload,
         )
+        raise_for_status(resp)
+        return resp.json()
+
+    async def enable_guardrails(
+        self,
+        token_id: str,
+        presets: List[str],
+        topic_allowlist: Optional[List[str]] = None,
+        topic_denylist: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Enable pre-configured guardrail presets for a token.
+        
+        Args:
+            token_id: The token to configure.
+            presets: List of preset names (e.g. 'pii_redaction', 'prompt_injection').
+            topic_allowlist: Optional list for 'topic_fence' preset.
+            topic_denylist: Optional list for 'topic_fence' preset.
+        """
+        payload: Dict[str, Any] = {
+            "token_id": token_id,
+            "presets": presets,
+        }
+        if topic_allowlist:
+            payload["topic_allowlist"] = topic_allowlist
+        if topic_denylist:
+            payload["topic_denylist"] = topic_denylist
+            
+        resp = await self._client._http.post("/api/v1/guardrails/enable", json=payload)
+        raise_for_status(resp)
+        return resp.json()
+
+    async def disable_guardrails(self, token_id: str, prefix: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Disable auto-generated guardrails for a token.
+        
+        Args:
+            token_id: The token to configure.
+            prefix: Optional specific guardrail policy prefix to disable.
+        """
+        payload: Dict[str, Any] = {"token_id": token_id}
+        if prefix:
+            payload["policy_name_prefix"] = prefix
+            
+        resp = await self._client._http.request("DELETE", "/api/v1/guardrails/disable", json=payload)
         raise_for_status(resp)
         return resp.json()
 

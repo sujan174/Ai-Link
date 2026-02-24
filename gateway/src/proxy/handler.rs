@@ -13,7 +13,7 @@ use crate::errors::AppError;
 use crate::middleware;
 use crate::middleware::fields::RequestContext;
 use crate::models::cost::{self, extract_model, extract_usage};
-use crate::models::policy::Action;
+use crate::models::policy::{Action, RedactDirection, RedactOnMatch, TriggeredAction};
 use crate::proxy;
 use crate::vault::SecretStore;
 use crate::AppState;
@@ -45,13 +45,32 @@ pub async fn proxy_handler(
 
     // TEST HOOK: Extract cost override header (only when AILINK_ENABLE_TEST_HOOKS=1)
     // SEC: Gated by runtime env var — ensure this is NOT set in production deployments.
-    let test_cost_override = if std::env::var("AILINK_ENABLE_TEST_HOOKS").unwrap_or_default() == "1" {
-        headers
-            .get("X-AILink-Test-Cost")
+    let (test_cost_override, test_tokens_override, test_latency_override) = if std::env::var("AILINK_ENABLE_TEST_HOOKS").unwrap_or_default() == "1" {
+        let cost = headers
+            .get("x-ailink-test-cost")
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| rust_decimal::Decimal::from_str(s).ok())
+            .and_then(|s| rust_decimal::Decimal::from_str(s).ok());
+            
+        let tokens = headers
+            .get("x-ailink-test-tokens")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| {
+                let parts: Vec<&str> = s.split(',').collect();
+                if parts.len() == 2 {
+                    if let (Ok(p), Ok(c)) = (parts[0].trim().parse::<u32>(), parts[1].trim().parse::<u32>()) {
+                        Some((p, c))
+                    } else { None }
+                } else { None }
+            });
+            
+        let latency = headers
+            .get("x-ailink-test-latency")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok());
+            
+        (cost, tokens, latency)
     } else {
-        None
+        (None, None, None)
     };
 
     // ── Phase 4: Attribution headers ──────────────────────────
@@ -73,6 +92,15 @@ pub async fn proxy_handler(
         .get("x-session-id")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
+
+    // ── Phase 6: Custom properties ────────────────────────────
+    // X-Properties: {"env":"prod","run_id":"agent-run-42","customer":"acme"}
+    // Arbitrary JSON key-values attached to every audit log for this request.
+    // Stored as JSONB and GIN-indexed for fast filtering.
+    let custom_properties: Option<serde_json::Value> = headers
+        .get("x-properties")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| serde_json::from_str(s).ok());
 
     // W3C Trace Context: parse `traceparent` header if present.
     // Format: 00-{trace_id}-{parent_id}-{flags}
@@ -228,7 +256,7 @@ pub async fn proxy_handler(
         .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
 
     // Scope the RequestContext borrow so we can mutate parsed_body after evaluation
-    let (outcome_actions, shadow_violations) = {
+    let (outcome_actions, shadow_violations, pre_async_triggered) = {
         let ctx = RequestContext {
             method: &method,
             path: &path,
@@ -248,9 +276,63 @@ pub async fn proxy_handler(
         };
 
         let outcome = middleware::policy::evaluate_pre_flight(&policies, &ctx);
-        (outcome.actions, outcome.shadow_violations)
+        (outcome.actions, outcome.shadow_violations, outcome.async_triggered)
     };
     // ctx is now dropped — parsed_body can be mutated
+
+    // -- X-AILink-Guardrails header opt-in (per-request guardrails, no policy config needed) --
+    // Header format:  X-AILink-Guardrails: pii_redaction,prompt_injection
+    // Each recognised preset injects synthetic TriggeredAction entries at the front of the queue.
+    let mut outcome_actions = outcome_actions;
+    if let Some(guardrail_header) = headers
+        .get("x-ailink-guardrails")
+        .and_then(|v| v.to_str().ok())
+    {
+        let mut header_actions: Vec<TriggeredAction> = Vec::new();
+        for preset in guardrail_header.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let action = match preset {
+                "pii_redaction" => Some(Action::Redact {
+                    direction: RedactDirection::Both,
+                    patterns: ["ssn","email","credit_card","phone","api_key","iban","dob","ipv4"]
+                        .iter().map(|s| s.to_string()).collect(),
+                    fields: vec![],
+                    on_match: RedactOnMatch::Redact,
+                }),
+                "pii_block" => Some(Action::Redact {
+                    direction: RedactDirection::Request,
+                    patterns: ["ssn","email","credit_card","phone"]
+                        .iter().map(|s| s.to_string()).collect(),
+                    fields: vec![],
+                    on_match: RedactOnMatch::Block,
+                }),
+                "prompt_injection" => Some(Action::ContentFilter {
+                    block_jailbreak: true,
+                    block_harmful: true,
+                    block_code_injection: true,
+                    topic_allowlist: vec![],
+                    topic_denylist: vec![],
+                    custom_patterns: vec![],
+                    risk_threshold: 0.3,
+                    max_content_length: 0,
+                }),
+                other => {
+                    tracing::warn!(preset = other, "X-AILink-Guardrails: unrecognised preset, ignoring");
+                    None
+                }
+            };
+            if let Some(a) = action {
+                header_actions.push(TriggeredAction {
+                    policy_id: uuid::Uuid::nil(),
+                    policy_name: format!("header-guardrail:{}", preset),
+                    rule_index: 0,
+                    action: a,
+                });
+            }
+        }
+        // Prepend header actions so they run before any configured policies
+        header_actions.extend(outcome_actions);
+        outcome_actions = header_actions;
+    }
 
     let mut shadow_violations = shadow_violations;
 
@@ -265,6 +347,10 @@ pub async fn proxy_handler(
     // A/B experiment tracking — set by Split action
     let mut experiment_name: Option<String> = None;
     let mut variant_name: Option<String> = None;
+    // DynamicRoute tracking — set by DynamicRoute action
+    let mut dynamic_upstream_override: Option<String> = None;
+    let mut dynamic_route_strategy: Option<String> = None;
+    let mut dynamic_route_reason:   Option<String> = None;
 
     for triggered in &outcome_actions {
         match &triggered.action {
@@ -279,6 +365,7 @@ pub async fn proxy_handler(
                     &token.upstream_url, &policies, false, None, None,
                     user_id.clone(), tenant_id.clone(), external_request_id.clone(),
                     session_id.clone(), parent_span_id.clone(),
+                    custom_properties.clone(),
                 );
                 audit.policy_result = Some(crate::models::audit::PolicyResult::Deny {
                     policy: triggered.policy_name.clone(),
@@ -355,6 +442,7 @@ pub async fn proxy_handler(
                         &token.upstream_url, &policies, false, None, None,
                         user_id.clone(), tenant_id.clone(), external_request_id.clone(),
                         session_id.clone(), parent_span_id.clone(),
+                        custom_properties.clone(),
                     );
                     audit.policy_result = Some(crate::models::audit::PolicyResult::Deny {
                         policy: triggered.policy_name.clone(),
@@ -463,6 +551,53 @@ pub async fn proxy_handler(
                 }
             }
 
+            // ── DynamicRoute (smart model selection) ──
+            Action::DynamicRoute { strategy, pool, fallback } => {
+                let cb_cooldown = {
+                    // Read CB cooldown from token's circuit breaker config (default 30s)
+                    let cb: proxy::loadbalancer::CircuitBreakerConfig =
+                        token.circuit_breaker
+                            .as_ref()
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            .unwrap_or_default();
+                    cb.recovery_cooldown_secs
+                };
+
+                if let Some(decision) = proxy::smart_router::select_route(
+                    strategy,
+                    pool,
+                    fallback.as_ref(),
+                    &state.pricing,
+                    &state.latency,
+                    &state.lb,
+                    &token.id,
+                    cb_cooldown,
+                ).await {
+                    // Override model in body
+                    if let Some(ref mut body_val) = parsed_body {
+                        if let Some(obj) = body_val.as_object_mut() {
+                            obj.insert("model".into(), serde_json::json!(decision.model));
+                        }
+                    }
+                    tracing::info!(
+                        policy     = %triggered.policy_name,
+                        strategy   = %decision.strategy_used,
+                        model      = %decision.model,
+                        upstream   = %decision.upstream_url,
+                        reason     = %decision.reason,
+                        "dynamic_route: selected target"
+                    );
+                    dynamic_upstream_override = Some(decision.upstream_url);
+                    dynamic_route_strategy    = Some(decision.strategy_used);
+                    dynamic_route_reason      = Some(decision.reason);
+                } else {
+                    tracing::warn!(
+                        policy = %triggered.policy_name,
+                        "dynamic_route: no healthy target selected, proceeding with original model"
+                    );
+                }
+            }
+
             // ── Throttle ──
             Action::Throttle { delay_ms } => {
                 tracing::info!(delay_ms = delay_ms, policy = %triggered.policy_name, "throttling request");
@@ -566,15 +701,30 @@ pub async fn proxy_handler(
             // ── Redact (pre-flight, request-side) ──
             Action::Redact { .. } => {
                 if let Some(ref mut body_val) = parsed_body {
-                    let matched =
+                    let result =
                         middleware::redact::apply_redact(body_val, &triggered.action, true);
-                    if !matched.is_empty() {
+                    if !result.matched_types.is_empty() {
                         tracing::info!(
                             policy = %triggered.policy_name,
-                            patterns = ?matched,
+                            patterns = ?result.matched_types,
+                            blocked = result.should_block,
                             "applied request-side redaction"
                         );
-                        redacted_by_policy.extend(matched);
+                        if result.should_block {
+                            // Block mode: reject the request and tell the caller which PII was found
+                            return Err(AppError::ContentBlocked {
+                                reason: format!(
+                                    "Request contains PII that violates policy '{}'",
+                                    triggered.policy_name
+                                ),
+                                details: Some(serde_json::json!({
+                                    "policy": triggered.policy_name,
+                                    "detected_pii": result.matched_types,
+                                    "action": "Remove sensitive data and retry"
+                                })),
+                            });
+                        }
+                        redacted_by_policy.extend(result.matched_types);
                     }
                 }
             }
@@ -595,6 +745,91 @@ pub async fn proxy_handler(
                     ops = operations.len(),
                     "applied transform operations"
                 );
+            }
+
+
+            // ── ConditionalRoute (request-side) ──
+            Action::ConditionalRoute { branches, fallback } => {
+                let req_body_val = parsed_body.clone().unwrap_or(serde_json::Value::Null);
+                let matched_target = proxy::smart_router::evaluate_conditional_route_branches(
+                    branches, &req_body_val, &headers,
+                );
+                let target = matched_target
+                    .or_else(|| fallback.clone())
+                    .ok_or_else(|| AppError::PolicyDenied {
+                        policy: triggered.policy_name.clone(),
+                        reason: "no conditional route branch matched and no fallback configured".to_string(),
+                    })?;
+                // Override upstream URL and model the same way DynamicRoute does
+                dynamic_upstream_override = Some(target.upstream_url.clone());
+                if let Some(ref mut body_val) = parsed_body {
+                    if let Some(obj) = body_val.as_object_mut() {
+                        obj.insert("model".into(), serde_json::json!(target.model));
+                    }
+                }
+                tracing::info!(
+                    policy = %triggered.policy_name,
+                    model = %target.model,
+                    upstream = %target.upstream_url,
+                    "conditional_route: matched branch"
+                );
+            }
+
+            // ValidateSchema only applies post-flight (response phase) — skip in pre-flight
+            Action::ValidateSchema { .. } => {
+                tracing::debug!(
+                    policy = %triggered.policy_name,
+                    "ValidateSchema is a response-phase action, skipping in pre-flight"
+                );
+            }
+
+            // ExternalGuardrail: call external vendor API, deny or log on violation
+            Action::ExternalGuardrail { vendor, endpoint, api_key_env, threshold, on_fail } => {
+                let text = parsed_body.as_ref()
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                match middleware::external_guardrail::check(
+                    vendor, endpoint, api_key_env.as_deref(), *threshold, &text
+                ).await {
+                    Ok(result) if result.blocked => {
+                        tracing::warn!(
+                            policy = %triggered.policy_name,
+                            vendor = ?vendor,
+                            label = %result.label,
+                            score = %result.score,
+                            "ExternalGuardrail: violation detected"
+                        );
+                        if on_fail != "log" {
+                            let mut audit = base_audit(
+                                request_id, token.project_id, &token.id, agent_name,
+                                method.as_str(), &path, &token.upstream_url, &policies,
+                                false, None, None,
+                                user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+                                session_id.clone(), parent_span_id.clone(),
+                                custom_properties.clone(),
+                            );
+                            audit.policy_result = Some(crate::models::audit::PolicyResult::Deny {
+                                policy: triggered.policy_name.clone(),
+                                reason: format!("external_guardrail({:?}): {}", vendor, result.label),
+                            });
+                            audit.response_latency_ms = start.elapsed().as_millis() as u64;
+                            audit.emit(&state);
+                            return Err(AppError::PolicyDenied {
+                                policy: triggered.policy_name.clone(),
+                                reason: format!("blocked by external guardrail: {}", result.label),
+                            });
+                        }
+                    }
+                    Ok(_) => {} // clean
+                    Err(e) => {
+                        tracing::error!(
+                            policy = %triggered.policy_name,
+                            vendor = ?vendor,
+                            error = %e,
+                            "ExternalGuardrail: vendor call failed (fail-open)"
+                        );
+                    }
+                }
             }
         }
     }
@@ -621,6 +856,7 @@ pub async fn proxy_handler(
                 &token.upstream_url, &policies, false, None, None,
                 user_id.clone(), tenant_id.clone(), external_request_id.clone(),
                 session_id.clone(), parent_span_id.clone(),
+                custom_properties.clone(),
             );
             audit.policy_result = Some(crate::models::audit::PolicyResult::Deny {
                 policy: "DefaultRateLimit".to_string(),
@@ -643,6 +879,7 @@ pub async fn proxy_handler(
             &token.upstream_url, &policies, false, None, None,
             user_id.clone(), tenant_id.clone(), external_request_id.clone(),
             session_id.clone(), parent_span_id.clone(),
+            custom_properties.clone(),
         );
         audit.policy_result = Some(crate::models::audit::PolicyResult::Deny {
             policy: "SpendCap".to_string(),
@@ -663,6 +900,32 @@ pub async fn proxy_handler(
 
         return Err(AppError::SpendCapReached {
             message: format!("Spend cap reached (USD): {}. Check your limits at the AILink dashboard.", e),
+        });
+    }
+
+    // -- 3.5b Project-Level Hard Cap --
+    // Uses a 60s Redis cache to avoid a DB round-trip on every request.
+    if crate::jobs::budget_checker::is_project_over_hard_cap_cached(
+        state.db.pool(),
+        &state.cache,
+        token.project_id,
+    ).await {
+        let mut audit = base_audit(
+            request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+            &token.upstream_url, &policies, false, None, None,
+            user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+            session_id.clone(), parent_span_id.clone(),
+            custom_properties.clone(),
+        );
+        audit.policy_result = Some(crate::models::audit::PolicyResult::Deny {
+            policy: "ProjectBudgetCap".to_string(),
+            reason: "Project hard spend cap exceeded".to_string(),
+        });
+        audit.response_latency_ms = start.elapsed().as_millis() as u64;
+        audit.emit(&state);
+
+        return Err(AppError::SpendCapReached {
+            message: "Project spending limit reached. Contact your administrator or review limits at the AILink dashboard.".to_string(),
         });
     }
 
@@ -815,6 +1078,7 @@ pub async fn proxy_handler(
                     Some(hitl_start.elapsed().as_millis() as i32),
                     user_id.clone(), tenant_id.clone(), external_request_id.clone(),
                     session_id.clone(), parent_span_id.clone(),
+                    custom_properties.clone(),
                 );
                 audit.policy_result = Some(crate::models::audit::PolicyResult::HitlRejected);
                 audit.response_latency_ms = start.elapsed().as_millis() as u64;
@@ -830,6 +1094,7 @@ pub async fn proxy_handler(
                     Some(hitl_start.elapsed().as_millis() as i32),
                     user_id.clone(), tenant_id.clone(), external_request_id.clone(),
                     session_id.clone(), parent_span_id.clone(),
+                    custom_properties.clone(),
                 );
                 audit.policy_result = Some(crate::models::audit::PolicyResult::HitlTimeout);
                 audit.response_latency_ms = start.elapsed().as_millis() as u64;
@@ -847,6 +1112,7 @@ pub async fn proxy_handler(
                 Some(hitl_start.elapsed().as_millis() as i32),
                 user_id.clone(), tenant_id.clone(), external_request_id.clone(),
                 session_id.clone(), parent_span_id.clone(),
+                custom_properties.clone(),
             );
             audit.policy_result = Some(crate::models::audit::PolicyResult::HitlTimeout);
             audit.response_latency_ms = start.elapsed().as_millis() as u64;
@@ -959,6 +1225,7 @@ pub async fn proxy_handler(
                 &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
                 user_id, tenant_id, external_request_id,
                 session_id, parent_span_id,
+                custom_properties.clone(),
             );
             audit.policy_result = Some(crate::models::audit::PolicyResult::Allow);
             audit.upstream_status = Some(cached.status);
@@ -1000,11 +1267,16 @@ pub async fn proxy_handler(
         None
     };
 
-    // Rewrite upstream URL for the target provider
-    let upstream_url = if detected_provider != proxy::model_router::Provider::OpenAI
+    // Rewrite upstream URL for the target provider.
+    // Gemini uses different endpoints for streaming vs non-streaming.
+    // If DynamicRoute selected a different upstream, use that instead.
+    let upstream_url = if let Some(dyn_url) = dynamic_upstream_override {
+        // DynamicRoute override takes precedence — re-detect provider from new URL
+        dyn_url
+    } else if detected_provider != proxy::model_router::Provider::OpenAI
         && detected_provider != proxy::model_router::Provider::Unknown
     {
-        proxy::model_router::rewrite_upstream_url(detected_provider, &upstream_url, &detected_model)
+        proxy::model_router::rewrite_upstream_url(detected_provider, &upstream_url, &detected_model, is_streaming_req)
     } else {
         upstream_url
     };
@@ -1091,6 +1363,15 @@ pub async fn proxy_handler(
         reqwest::header::HeaderValue::from_str(&original_content_type).unwrap_or(
             reqwest::header::HeaderValue::from_static("application/json"),
         ),
+    );
+
+    // ── Provider-specific required header injection ─────────────────────────
+    // Injects headers that the upstream API mandates (e.g. anthropic-version).
+    // Uses entry().or_insert() so policy-level headers always win.
+    proxy::model_router::inject_provider_headers(
+        detected_provider,
+        &mut upstream_headers,
+        is_streaming_req,
     );
 
     // Apply transform header mutations (SetHeader / RemoveHeader)
@@ -1211,6 +1492,7 @@ pub async fn proxy_handler(
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
                     user_id.clone(), tenant_id.clone(), external_request_id.clone(),
                     session_id.clone(), parent_span_id.clone(),
+                    custom_properties.clone(),
                 );
                 audit.upstream_status = Some(502);
                 audit.response_latency_ms = start.elapsed().as_millis() as u64;
@@ -1226,6 +1508,7 @@ pub async fn proxy_handler(
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
                     user_id, tenant_id, external_request_id,
                     session_id, parent_span_id,
+                    custom_properties.clone(),
                 );
                 audit.upstream_status = Some(504);
                 audit.response_latency_ms = start.elapsed().as_millis() as u64;
@@ -1261,6 +1544,7 @@ pub async fn proxy_handler(
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
                     user_id.clone(), tenant_id.clone(), external_request_id.clone(),
                     session_id.clone(), parent_span_id.clone(),
+                    custom_properties.clone(),
                 );
                 audit.policy_result = Some(if hitl_required {
                     crate::models::audit::PolicyResult::HitlApproved
@@ -1283,6 +1567,7 @@ pub async fn proxy_handler(
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
                     user_id, tenant_id, external_request_id,
                     session_id, parent_span_id,
+                    custom_properties.clone(),
                 );
                 audit.policy_result = Some(if hitl_required {
                     crate::models::audit::PolicyResult::HitlApproved
@@ -1398,6 +1683,7 @@ pub async fn proxy_handler(
                 method.as_str(), &path_bg, &upstream_url_bg, &policies_bg,
                 hitl_required, hitl_decision, hitl_latency_ms,
                 user_id_bg, tenant_id_bg, ext_req_id_bg, session_id_bg, parent_span_id_bg,
+                custom_properties.clone(),
             );
             audit.policy_result = Some(if hitl_required {
                 crate::models::audit::PolicyResult::HitlApproved
@@ -1531,18 +1817,18 @@ pub async fn proxy_handler(
                 }
                 Action::Redact { .. } => {
                     if let Some(mut resp_json) = parsed_resp_body.clone() {
-                        let matched = middleware::redact::apply_redact(
+                        let result = middleware::redact::apply_redact(
                             &mut resp_json,
                             &triggered.action,
                             false,
                         );
-                        if !matched.is_empty() {
+                        if !result.matched_types.is_empty() {
                             tracing::info!(
                                 policy = %triggered.policy_name,
-                                patterns = ?matched,
+                                patterns = ?result.matched_types,
                                 "applied response-side redaction"
                             );
-                            redacted_by_policy.extend(matched);
+                            redacted_by_policy.extend(result.matched_types);
                             // Reserialize the redacted response body
                             if let Ok(new_body) = serde_json::to_vec(&resp_json) {
                                 resp_body_vec = new_body;
@@ -1597,6 +1883,137 @@ pub async fn proxy_handler(
                         });
                     }
                 }
+
+                // ── ContentFilter (post-flight, response-side) ──
+                // Scan the LLM response for jailbreak/harmful content, code injection, etc.
+                Action::ContentFilter { .. } => {
+                    if let Some(ref resp_json) = parsed_resp_body {
+                        let result = middleware::guardrail::check_content(resp_json, &triggered.action);
+                        if result.blocked {
+                            let reason = result.reason.clone().unwrap_or_else(|| "Output guardrail blocked response".to_string());
+                            tracing::warn!(
+                                policy = %triggered.policy_name,
+                                risk_score = %result.risk_score,
+                                patterns = ?result.matched_patterns,
+                                "output content filter blocked response"
+                            );
+                            return Err(AppError::ContentBlocked {
+                                reason: reason.clone(),
+                                details: Some(serde_json::json!({
+                                    "phase": "response",
+                                    "policy": triggered.policy_name,
+                                    "reason": reason,
+                                    "matched_patterns": result.matched_patterns,
+                                    "confidence": result.risk_score,
+                                })),
+                            });
+                        } else if !result.matched_patterns.is_empty() {
+                            tracing::info!(
+                                policy = %triggered.policy_name,
+                                risk_score = %result.risk_score,
+                                patterns = ?result.matched_patterns,
+                                "output content filter: patterns matched but below threshold"
+                            );
+                        }
+                    }
+                }
+
+                // ── Transform (post-flight, response-side) ──
+                Action::Transform { operations } => {
+                    if let Some(mut resp_json) = parsed_resp_body.clone() {
+                        let mut resp_header_mutations = middleware::redact::HeaderMutations::default();
+                        for op in operations {
+                            middleware::redact::apply_transform(&mut resp_json, &mut resp_header_mutations, op);
+                        }
+                        tracing::info!(
+                            policy = %triggered.policy_name,
+                            ops = operations.len(),
+                            "applied post-flight transform operations"
+                        );
+                        if let Ok(new_body) = serde_json::to_vec(&resp_json) {
+                            resp_body_vec = new_body;
+                        }
+                    }
+                }
+
+                // ConditionalRoute is request-phase only — skip post-flight
+                Action::ConditionalRoute { .. } => {
+                    tracing::debug!(
+                        policy = %triggered.policy_name,
+                        "ConditionalRoute is a request-phase action, skipping post-flight"
+                    );
+                }
+
+                // ── ValidateSchema (post-flight, response-side) ──
+                Action::ValidateSchema { schema, not, message } => {
+                    if let Some(ref resp_json) = parsed_resp_body {
+                        let result = middleware::guardrail::validate_schema(resp_json, schema);
+                        // `not` mode: invert – pass only if validation FAILS
+                        let should_deny = if *not { result.valid } else { !result.valid };
+                        if should_deny {
+                            let default_msg = if *not {
+                                "Response matches a forbidden schema pattern".to_string()
+                            } else {
+                                format!(
+                                    "Response failed JSON schema validation: {}",
+                                    result.errors.join("; ")
+                                )
+                            };
+                            let reason = message.clone().unwrap_or(default_msg);
+                            tracing::warn!(
+                                policy = %triggered.policy_name,
+                                errors = ?result.errors,
+                                not = not,
+                                "schema validation blocked response"
+                            );
+                            return Err(AppError::PolicyDenied {
+                                policy: triggered.policy_name.clone(),
+                                reason,
+                            });
+                        } else {
+                            tracing::debug!(
+                                policy = %triggered.policy_name,
+                                not = not,
+                                "response passed schema validation"
+                            );
+                        }
+                    }
+                }
+
+                Action::ExternalGuardrail { vendor, endpoint, api_key_env, threshold, on_fail } => {
+                    let text = parsed_resp_body.as_ref()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| String::from_utf8_lossy(&resp_body_vec).to_string());
+                    match middleware::external_guardrail::check(
+                        vendor, endpoint, api_key_env.as_deref(), *threshold, &text
+                    ).await {
+                        Ok(result) if result.blocked => {
+                            tracing::warn!(
+                                policy = %triggered.policy_name,
+                                vendor = ?vendor,
+                                label = %result.label,
+                                score = %result.score,
+                                "ExternalGuardrail: post-flight violation detected"
+                            );
+                            if on_fail != "log" {
+                                return Err(AppError::PolicyDenied {
+                                    policy: triggered.policy_name.clone(),
+                                    reason: format!("external_guardrail({:?}): {}", vendor, result.label),
+                                });
+                            }
+                        }
+                        Ok(_) => {} // clean
+                        Err(e) => {
+                            tracing::error!(
+                                policy = %triggered.policy_name,
+                                vendor = ?vendor,
+                                error = %e,
+                                "ExternalGuardrail: post-flight vendor call failed (fail-open)"
+                            );
+                        }
+                    }
+                }
+
                 _ => {
                     tracing::debug!(
                         policy = %triggered.policy_name,
@@ -1604,6 +2021,7 @@ pub async fn proxy_handler(
                         "post-flight action not applicable"
                     );
                 }
+
             }
         }
 
@@ -1627,7 +2045,14 @@ pub async fn proxy_handler(
     let mut audit_completion_tokens: Option<u32> = None;
     let mut audit_model: Option<String> = None;
 
-    // TEST HOOK: Allow forcing cost via header for deterministic testing
+    // TEST HOOK: Allow forcing cost/tokens via header for deterministic testing
+    if let Some((p, c)) = test_tokens_override {
+        audit_prompt_tokens = Some(p);
+        audit_completion_tokens = Some(c);
+        // Provide a default model if overriding tokens so the dashboard looks normal
+        audit_model = Some(detected_model.clone());
+    }
+    
     if let Some(cost_val) = test_cost_override {
         estimated_cost_usd = Some(cost_val);
         let cost_f64 = cost_val.to_f64().unwrap_or(0.0);
@@ -1728,6 +2153,7 @@ pub async fn proxy_handler(
         &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
         user_id, tenant_id, external_request_id,
         session_id, parent_span_id,
+        custom_properties.clone(),
     );
     audit.policy_result = Some(if hitl_required {
         crate::models::audit::PolicyResult::HitlApproved
@@ -1735,7 +2161,7 @@ pub async fn proxy_handler(
         crate::models::audit::PolicyResult::Allow
     });
     audit.upstream_status = Some(status.as_u16());
-    audit.response_latency_ms = start.elapsed().as_millis() as u64;
+    audit.response_latency_ms = test_latency_override.unwrap_or_else(|| start.elapsed().as_millis() as u64);
     audit.fields_redacted = if sanitization_result.redacted_types.is_empty() {
         None
     } else {
@@ -1829,10 +2255,49 @@ pub async fn proxy_handler(
     if let Ok(upstream_hv) = axum::http::HeaderValue::from_str(&final_upstream_url) {
         response = response.header("x-ailink-upstream", upstream_hv);
     }
+    // DynamicRoute observability: tell developers which strategy won and why
+    if let Some(ref strategy) = dynamic_route_strategy {
+        if let Ok(hv) = axum::http::HeaderValue::from_str(strategy) {
+            response = response.header("x-ailink-route-strategy", hv);
+        }
+    }
+    if let Some(ref reason) = dynamic_route_reason {
+        if let Ok(hv) = axum::http::HeaderValue::from_str(reason) {
+            response = response.header("x-ailink-route-reason", hv);
+        }
+    }
     // Attach request ID to every response for support correlation
     let req_id_str = format!("req_{}", request_id.simple());
     if let Ok(req_id_hv) = axum::http::HeaderValue::from_str(&req_id_str) {
         response = response.header("x-request-id", req_id_hv);
+    }
+
+    // -- Budget-remaining headers (best-effort, non-blocking) --
+    // Lets developers know how much headroom they have left without polling the API.
+    // We read from Redis which is already primed by check_and_increment_spend.
+    if let Ok(status) = middleware::spend::get_spend_status(
+        state.db.pool(),
+        &state.cache,
+        &token.id,
+    ).await {
+        if let Some(daily_limit) = status.daily_limit_usd {
+            let remaining = (daily_limit - status.current_daily_usd).max(0.0);
+            if let Ok(hv) = axum::http::HeaderValue::from_str(&format!("{:.4}", remaining)) {
+                response = response.header("x-ailink-budget-remaining-daily", hv);
+            }
+        }
+        if let Some(monthly_limit) = status.monthly_limit_usd {
+            let remaining = (monthly_limit - status.current_monthly_usd).max(0.0);
+            if let Ok(hv) = axum::http::HeaderValue::from_str(&format!("{:.4}", remaining)) {
+                response = response.header("x-ailink-budget-remaining-monthly", hv);
+            }
+        }
+        if let Some(lifetime_limit) = status.lifetime_limit_usd {
+            let remaining = (lifetime_limit - status.current_lifetime_usd).max(0.0);
+            if let Ok(hv) = axum::http::HeaderValue::from_str(&format!("{:.4}", remaining)) {
+                response = response.header("x-ailink-budget-remaining-lifetime", hv);
+            }
+        }
     }
 
     // P1.7: Attach idempotency warning if retries were skipped for safety
@@ -1840,6 +2305,88 @@ pub async fn proxy_handler(
         if let Ok(warning_hv) = axum::http::HeaderValue::from_str(warning_msg) {
             response = response.header("x-ailink-warning", warning_hv);
         }
+    }
+
+    // ── Feature 8: Async Guardrails ──────────────────────────────────────────
+    // Spawn background evaluation for rules that opted into async_check=true.
+    // The response is committed before these are evaluated — violations are
+    // logged and trigger audit/webhook events but cannot block the response.
+    if !pre_async_triggered.is_empty() {
+        let state_async = state.clone();
+        let token_id_async = token.id.clone();
+        let async_triggered = pre_async_triggered;
+        // Snapshot the sanitized body for async guardrail content checks
+        let async_body_snapshot = parsed_body.clone();
+        tokio::spawn(async move {
+            for triggered in &async_triggered {
+                tracing::info!(
+                    token_id = %token_id_async,
+                    policy = %triggered.policy_name,
+                    rule = triggered.rule_index,
+                    action = ?triggered.action,
+                    "async guardrail: evaluating non-blocking rule"
+                );
+                // Re-evaluate content filter / validate_schema actions
+                // on the captured body. Other action types (rate_limit, deny,
+                // webhook, etc.) are executed directly.
+                match &triggered.action {
+                    crate::models::policy::Action::ContentFilter { .. } => {
+                        if let Some(ref body) = async_body_snapshot {
+                            let result = crate::middleware::guardrail::check_content(body, &triggered.action);
+                            if result.blocked {
+                                tracing::warn!(
+                                    token_id = %token_id_async,
+                                    policy = %triggered.policy_name,
+                                    risk_score = %result.risk_score,
+                                    patterns = ?result.matched_patterns,
+                                    "async guardrail: content filter VIOLATION (response already sent)"
+                                );
+                                // Emit async violation audit
+                                let event = crate::models::audit::AsyncGuardrailViolation {
+                                    token_id: token_id_async.clone(),
+                                    policy_name: triggered.policy_name.clone(),
+                                    matched_patterns: result.matched_patterns,
+                                    risk_score: result.risk_score,
+                                };
+                                crate::models::audit::emit_async_violation(event).await;
+                            }
+                        }
+                    }
+                    crate::models::policy::Action::ValidateSchema { schema, not, .. } => {
+                        if let Some(ref body) = async_body_snapshot {
+                            let result = crate::middleware::guardrail::validate_schema(body, schema);
+                            let violated = if *not { result.valid } else { !result.valid };
+                            if violated {
+                                tracing::warn!(
+                                    token_id = %token_id_async,
+                                    policy = %triggered.policy_name,
+                                    errors = ?result.errors,
+                                    "async guardrail: schema validation VIOLATION (response already sent)"
+                                );
+                            }
+                        }
+                    }
+                    crate::models::policy::Action::Webhook { url, timeout_ms, .. } => {
+                        // Fire webhook asynchronously
+                        let w_url = url.clone();
+                        let w_timeout = *timeout_ms;
+                        let _ = reqwest::Client::new()
+                            .post(&w_url)
+                            .timeout(std::time::Duration::from_millis(w_timeout))
+                            .json(&serde_json::json!({"event": "async_guardrail_webhook"}))
+                            .send()
+                            .await;
+                    }
+                    _other => {
+                        tracing::debug!(
+                            token_id = %token_id_async,
+                            policy = %triggered.policy_name,
+                            "async guardrail: action type not evaluated asynchronously"
+                        );
+                    }
+                }
+            }
+        });
     }
 
     response
@@ -1893,6 +2440,8 @@ struct AuditBuilder {
     // A/B experiment tracking
     experiment_name: Option<String>,
     variant_name: Option<String>,
+    // Phase 6: Just Enough Observability
+    custom_properties: Option<serde_json::Value>,
 }
 
 impl AuditBuilder {
@@ -1940,8 +2489,14 @@ impl AuditBuilder {
             cache_hit: self.cache_hit,
             experiment_name: self.experiment_name,
             variant_name: self.variant_name,
+            custom_properties: self.custom_properties,
+            payload_url: None, // set by audit middleware after potential offload
         };
-        middleware::audit::log_async(state.db.pool().clone(), entry);
+        middleware::audit::log_async(
+            state.db.pool().clone(),
+            state.payload_store.clone(),
+            entry,
+        );
     }
 }
 
@@ -1963,6 +2518,7 @@ fn base_audit(
     external_request_id: Option<String>,
     session_id: Option<String>,
     parent_span_id: Option<String>,
+    custom_properties: Option<serde_json::Value>,
 ) -> AuditBuilder {
     AuditBuilder {
         req_id: Some(req_id),
@@ -1981,6 +2537,7 @@ fn base_audit(
         external_request_id,
         session_id,
         parent_span_id,
+        custom_properties,
         ..Default::default()
     }
 }

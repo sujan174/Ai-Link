@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod engine;
+pub mod external_guardrail;
 pub mod fields;
 pub mod guardrail;
 pub mod hitl;

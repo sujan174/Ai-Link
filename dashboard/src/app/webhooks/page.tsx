@@ -122,19 +122,8 @@ export default function WebhooksPage() {
 
     return (
         <div className="p-8 space-y-6 max-w-[1200px] mx-auto">
-            {/* Header */}
-            <div className="flex items-center justify-between animate-fade-in">
-                <div className="space-y-1">
-                    <h2 className="text-3xl font-bold tracking-tight flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-blue-600 shadow-lg shadow-violet-500/20">
-                            <Bell className="h-5 w-5 text-white" />
-                        </div>
-                        Webhooks
-                    </h2>
-                    <p className="text-muted-foreground text-sm">
-                        Receive real-time HTTP notifications for gateway events
-                    </p>
-                </div>
+            {/* Controls */}
+            <div className="flex items-center justify-end animate-fade-in mb-2">
                 <div className="flex items-center gap-2">
                     <Button variant="outline" size="sm" onClick={fetchWebhooks}>
                         <RefreshCw className="h-3.5 w-3.5 mr-1.5" />

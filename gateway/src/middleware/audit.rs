@@ -1,12 +1,17 @@
+use std::sync::Arc;
+
 use crate::models::audit::{AuditEntry, PolicyResult};
+use crate::store::payload_store::PayloadStore;
 use sqlx::PgPool;
 
 /// Async audit log writer. Fires off a Tokio task to insert
 /// the audit entry into PG without blocking the response path.
+///
 /// Phase 4: Two-phase insert — metadata to audit_logs, bodies to audit_log_bodies.
-pub fn log_async(pool: PgPool, entry: AuditEntry) {
+/// Phase 6: Payload offloading — bodies > threshold go to S3/MinIO/local via PayloadStore.
+pub fn log_async(pool: PgPool, payload_store: Arc<PayloadStore>, entry: AuditEntry) {
     tokio::spawn(async move {
-        if let Err(e) = insert_audit_log(&pool, &entry).await {
+        if let Err(e) = insert_audit_log(&pool, &payload_store, &entry).await {
             tracing::error!(request_id = %entry.request_id, "failed to write audit log: {}", e);
         } else {
             tracing::debug!(request_id = %entry.request_id, "audit log recorded");
@@ -14,7 +19,11 @@ pub fn log_async(pool: PgPool, entry: AuditEntry) {
     });
 }
 
-async fn insert_audit_log(pool: &PgPool, entry: &AuditEntry) -> anyhow::Result<()> {
+async fn insert_audit_log(
+    pool: &PgPool,
+    payload_store: &PayloadStore,
+    entry: &AuditEntry,
+) -> anyhow::Result<()> {
     let (policy_res, policy_mode, deny_reason) = match &entry.policy_result {
         PolicyResult::Allow => ("allowed", None, None),
         PolicyResult::Deny { policy: _, reason } => {
@@ -28,7 +37,49 @@ async fn insert_audit_log(pool: &PgPool, entry: &AuditEntry) -> anyhow::Result<(
         PolicyResult::HitlTimeout => ("timeout", Some("hitl"), None),
     };
 
-    // Phase 1: Insert metadata into audit_logs
+    // ── Payload offloading logic ────────────────────────────────────────────────
+    // Only attempt to offload when log_level > 0 and bodies exist.
+    let mut payload_url: Option<String> = None;
+    let mut should_inline = false;
+
+    if entry.log_level > 0 && (entry.request_body.is_some() || entry.response_body.is_some()) {
+        let req_len = entry.request_body.as_deref().map(|s| s.len()).unwrap_or(0);
+        let resp_len = entry.response_body.as_deref().map(|s| s.len()).unwrap_or(0);
+
+        if payload_store.should_offload(req_len, resp_len) {
+            // Large payload — offload to object store
+            match payload_store
+                .put(
+                    entry.request_id,
+                    entry.project_id,
+                    entry.timestamp,
+                    entry.request_body.as_deref(),
+                    entry.response_body.as_deref(),
+                    entry.request_headers.as_ref(),
+                    entry.response_headers.as_ref(),
+                )
+                .await
+            {
+                Ok(url) => {
+                    payload_url = Some(url);
+                }
+                Err(e) => {
+                    // Fallback to inline Postgres on object store failure
+                    tracing::warn!(
+                        request_id = %entry.request_id,
+                        "payload offload failed, falling back to Postgres: {}",
+                        e
+                    );
+                    should_inline = true;
+                }
+            }
+        } else {
+            // Small payload — store inline in audit_log_bodies
+            should_inline = true;
+        }
+    }
+
+    // ── Phase 1: Insert metadata into audit_logs ───────────────────────────────
     sqlx::query(
         r#"
         INSERT INTO audit_logs (
@@ -40,7 +91,7 @@ async fn insert_audit_log(pool: &PgPool, entry: &AuditEntry) -> anyhow::Result<(
             user_id, tenant_id, external_request_id, log_level,
             tool_calls, tool_call_count, finish_reason,
             session_id, parent_span_id, error_type, is_streaming,
-            cache_hit
+            cache_hit, custom_properties, payload_url
         )
         VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8,
@@ -51,7 +102,7 @@ async fn insert_audit_log(pool: &PgPool, entry: &AuditEntry) -> anyhow::Result<(
             $27, $28, $29, $30,
             $31, $32, $33,
             $34, $35, $36, $37,
-            $38
+            $38, $39, $40
         )
         "#,
     )
@@ -95,11 +146,14 @@ async fn insert_audit_log(pool: &PgPool, entry: &AuditEntry) -> anyhow::Result<(
     .bind(&entry.error_type)
     .bind(entry.is_streaming)
     .bind(entry.cache_hit)
+    // Phase 6 columns
+    .bind(&entry.custom_properties)
+    .bind(&payload_url)
     .execute(pool)
     .await?;
 
-    // Phase 2: Insert bodies into audit_log_bodies (only if log_level > 0)
-    if entry.log_level > 0 && (entry.request_body.is_some() || entry.response_body.is_some()) {
+    // ── Phase 2: Inline bodies into audit_log_bodies (small payloads only) ─────
+    if should_inline {
         sqlx::query(
             r#"
             INSERT INTO audit_log_bodies (

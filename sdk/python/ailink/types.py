@@ -56,7 +56,7 @@ class Token(AIlinkModel):
     """A virtual token that maps an agent to a credential and upstream endpoint."""
     id: str
     name: str
-    credential_id: str
+    credential_id: Optional[str] = None
     upstream_url: str
     project_id: Optional[str] = None
     policy_ids: List[str] = []

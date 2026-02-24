@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import useSWR from "swr";
 import { swrFetcher, AnalyticsSummary, AnalyticsTimeseriesPoint } from "@/lib/api";
 import {
@@ -15,7 +15,10 @@ import {
     Area,
     LineChart,
     Line,
-    Legend
+    Legend,
+    PieChart,
+    Pie,
+    Cell
 } from "recharts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -28,6 +31,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Activity, DollarSign, Clock, Zap, MessageSquare, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { CustomTooltip, CHART_AXIS_PROPS } from "@/components/ui/chart-utils";
 
 export default function AnalyticsPage() {
     const [range, setRange] = useState("24"); // hours
@@ -44,6 +48,36 @@ export default function AnalyticsPage() {
         swrFetcher
     );
 
+    // Fetch Status Distribution
+    const { data: statusData, isLoading: loadingStatus } = useSWR<any[]>(
+        `/analytics/status?range=${range}`,
+        swrFetcher
+    );
+
+    const statusChartData = useMemo(() => {
+        if (!statusData) return [];
+        const groups: Record<string, { count: number; color: string; label: string }> = {
+            "2xx": { count: 0, color: "#10b981", label: "Success (2xx)" }, // Emerald
+            "400/404": { count: 0, color: "#f59e0b", label: "User Error (400/404)" }, // Amber
+            "429": { count: 0, color: "#f97316", label: "Rate Limited (429)" }, // Orange
+            "5xx": { count: 0, color: "#ef4444", label: "Provider Down (5xx)" }, // Red
+            "Other": { count: 0, color: "#6b7280", label: "Other" },
+        };
+
+        statusData.forEach((s) => {
+            const code = s.status_code;
+            if (code >= 200 && code < 300) groups["2xx"].count += s.count;
+            else if (code === 400 || code === 404) groups["400/404"].count += s.count;
+            else if (code === 429) groups["429"].count += s.count;
+            else if (code >= 500 && code < 600) groups["5xx"].count += s.count;
+            else groups["Other"].count += s.count;
+        });
+
+        return Object.entries(groups)
+            .filter(([, data]) => data.count > 0)
+            .map(([, data]) => ({ name: data.label, value: data.count, fill: data.color }));
+    }, [statusData]);
+
     // Formatters
     const formatCost = (val: number) => `$${val.toFixed(4)}`;
     const formatLatency = (val: number) => `${Math.round(val)}ms`;
@@ -56,7 +90,7 @@ export default function AnalyticsPage() {
     };
 
     return (
-        <div className="space-y-6 pb-20 animate-fade-in">
+        <div className="space-y-4 pb-10 animate-fade-in">
             {/* Header */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div className="space-y-1">
@@ -160,49 +194,52 @@ export default function AnalyticsPage() {
                                 <Skeleton className="h-full w-full" />
                             ) : (
                                 <ResponsiveContainer width="100%" height="100%">
-                                    <AreaChart data={timeseries}>
+                                    <AreaChart data={timeseries} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                                         <defs>
                                             <linearGradient id="colorRequests" x1="0" y1="0" x2="0" y2="1">
-                                                <stop offset="5%" stopColor="#8884d8" stopOpacity={0.3} />
-                                                <stop offset="95%" stopColor="#8884d8" stopOpacity={0} />
+                                                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                                                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                                            </linearGradient>
+                                            <linearGradient id="colorErrors" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3} />
+                                                <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
                                             </linearGradient>
                                         </defs>
+
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}
-                                            stroke="#888888"
-                                            fontSize={12}
-                                            tickLine={false}
-                                            axisLine={false}
+                                            {...CHART_AXIS_PROPS}
                                             minTickGap={30}
                                         />
                                         <YAxis
-                                            stroke="#888888"
-                                            fontSize={12}
-                                            tickLine={false}
-                                            axisLine={false}
+                                            {...CHART_AXIS_PROPS}
                                             tickFormatter={(value) => `${value}`}
                                         />
                                         <Tooltip
-                                            contentStyle={{ backgroundColor: 'rgba(23, 23, 23, 0.9)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}
-                                            labelFormatter={formatDate}
+                                            content={<CustomTooltip labelFormatter={formatDate} />}
+                                            cursor={{ stroke: 'var(--border)', strokeWidth: 1, strokeDasharray: '4 4' }}
                                         />
-                                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                                         <Area
                                             type="monotone"
                                             dataKey="request_count"
-                                            stroke="#8884d8"
+                                            stroke="#3b82f6"
+                                            strokeWidth={2}
                                             fillOpacity={1}
                                             fill="url(#colorRequests)"
                                             name="Requests"
+                                            activeDot={{ r: 4, strokeWidth: 0, fill: '#3b82f6' }}
                                         />
                                         <Area
                                             type="monotone"
                                             dataKey="error_count"
                                             stroke="#ef4444"
-                                            fill="#ef4444"
-                                            fillOpacity={0.2}
+                                            strokeWidth={2}
+                                            fillOpacity={1}
+                                            fill="url(#colorErrors)"
                                             name="Errors"
+                                            activeDot={{ r: 4, strokeWidth: 0, fill: '#ef4444' }}
                                         />
                                     </AreaChart>
                                 </ResponsiveContainer>
@@ -225,46 +262,41 @@ export default function AnalyticsPage() {
                                 <Skeleton className="h-full w-full" />
                             ) : (
                                 <ResponsiveContainer width="100%" height="100%">
-                                    <LineChart data={timeseries}>
+                                    <LineChart data={timeseries} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}
-                                            stroke="#888888"
-                                            fontSize={12}
-                                            tickLine={false}
-                                            axisLine={false}
+                                            {...CHART_AXIS_PROPS}
                                             minTickGap={30}
                                         />
                                         <YAxis
                                             yAxisId="left"
-                                            stroke="#888888"
-                                            fontSize={12}
-                                            tickLine={false}
-                                            axisLine={false}
-                                            tickFormatter={(val) => `${val}ms`}
+                                            {...CHART_AXIS_PROPS}
+                                            tickFormatter={(val: any) => `${val}ms`}
                                         />
                                         <YAxis
                                             yAxisId="right"
                                             orientation="right"
-                                            stroke="#888888"
-                                            fontSize={12}
-                                            tickLine={false}
-                                            axisLine={false}
-                                            tickFormatter={(val) => `$${val}`}
+                                            {...CHART_AXIS_PROPS}
+                                            tickFormatter={(val: any) => typeof val === 'number' ? `$${val > 0 && val < 0.01 ? val.toFixed(4) : val.toFixed(2)}` : val}
                                         />
                                         <Tooltip
-                                            contentStyle={{ backgroundColor: 'rgba(23, 23, 23, 0.9)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}
-                                            labelFormatter={formatDate}
+                                            content={<CustomTooltip
+                                                labelFormatter={formatDate}
+                                                valueFormatter={(val: any) => typeof val === 'number' && val > 0 && val < 1 ? `$${val.toFixed(4)}` : val}
+                                            />}
+                                            cursor={{ stroke: 'var(--border)', strokeWidth: 1, strokeDasharray: '4 4' }}
                                         />
-                                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                                         <Line
                                             yAxisId="left"
                                             type="monotone"
                                             dataKey="lat"
-                                            stroke="#22c55e"
+                                            stroke="#10b981"
                                             strokeWidth={2}
                                             dot={false}
                                             name="Latency (ms)"
+                                            activeDot={{ r: 4, strokeWidth: 0, fill: '#10b981' }}
                                         />
                                         <Line
                                             yAxisId="right"
@@ -274,6 +306,7 @@ export default function AnalyticsPage() {
                                             strokeWidth={2}
                                             dot={false}
                                             name="Cost ($)"
+                                            activeDot={{ r: 4, strokeWidth: 0, fill: '#eab308' }}
                                         />
                                     </LineChart>
                                 </ResponsiveContainer>
@@ -283,55 +316,94 @@ export default function AnalyticsPage() {
                 </Card>
             </div>
 
-            {/* Token Breakdown Chart */}
-            <Card className="glass-card">
-                <CardHeader>
-                    <CardTitle>Token Breakdown</CardTitle>
-                    <CardDescription>
-                        Prompt vs. completion tokens over time. Higher completion ratio means more output-heavy workloads.
-                    </CardDescription>
-                </CardHeader>
-                <CardContent className="pl-2">
-                    <div className="h-[280px] w-full">
-                        {loadingTimeseries ? (
-                            <Skeleton className="h-full w-full" />
-                        ) : (
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={timeseries} barCategoryGap="30%">
-                                    <XAxis
-                                        dataKey="bucket"
-                                        tickFormatter={formatDate}
-                                        stroke="#888888"
-                                        fontSize={12}
-                                        tickLine={false}
-                                        axisLine={false}
-                                        minTickGap={30}
-                                    />
-                                    <YAxis
-                                        stroke="#888888"
-                                        fontSize={12}
-                                        tickLine={false}
-                                        axisLine={false}
-                                        tickFormatter={formatNumber}
-                                    />
-                                    <Tooltip
-                                        contentStyle={{ backgroundColor: 'rgba(23, 23, 23, 0.9)', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}
-                                        labelFormatter={formatDate}
-                                        formatter={(value: any, name: any) => [formatNumber(value ?? 0), name ?? '']}
-                                    />
-                                    <Legend
-                                        wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
-                                        formatter={(v) => v === 'input_tokens' ? 'Prompt Tokens' : 'Completion Tokens'}
-                                    />
-                                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                                    <Bar dataKey="input_tokens" name="input_tokens" stackId="a" fill="#6366f1" radius={[0, 0, 0, 0]} />
-                                    <Bar dataKey="output_tokens" name="output_tokens" stackId="a" fill="#22c55e" radius={[3, 3, 0, 0]} />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        )}
-                    </div>
-                </CardContent>
-            </Card>
+            {/* Bottom Row Charts */}
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
+                {/* Granular Status Code Doughnut */}
+                <Card className="col-span-3 glass-card">
+                    <CardHeader>
+                        <CardTitle>Status Code Breakdown</CardTitle>
+                        <CardDescription>
+                            Distribution of routing outcomes and upstream errors.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent className="flex justify-center items-center">
+                        <div className="h-[280px] w-full">
+                            {loadingStatus ? (
+                                <Skeleton className="h-full w-full" />
+                            ) : statusChartData.length > 0 ? (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <PieChart margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                                        <Pie
+                                            data={statusChartData}
+                                            innerRadius={70}
+                                            outerRadius={100}
+                                            paddingAngle={3}
+                                            dataKey="value"
+                                            stroke="none"
+                                        >
+                                            {statusChartData.map((entry, index) => (
+                                                <Cell key={`cell-${index}`} fill={entry.fill} />
+                                            ))}
+                                        </Pie>
+                                        <Tooltip content={<CustomTooltip />} />
+                                        <Legend verticalAlign="bottom" height={36} wrapperStyle={{ fontSize: '12px' }} />
+                                    </PieChart>
+                                </ResponsiveContainer>
+                            ) : (
+                                <div className="h-full w-full flex items-center justify-center text-sm text-muted-foreground border border-dashed border-border/60 rounded-xl bg-card/30">
+                                    No status data
+                                </div>
+                            )}
+                        </div>
+                    </CardContent>
+                </Card>
+
+                {/* Token Breakdown Chart */}
+                <Card className="col-span-4 glass-card">
+                    <CardHeader>
+                        <CardTitle>Token Breakdown</CardTitle>
+                        <CardDescription>
+                            Prompt vs. completion tokens over time. Higher completion ratio means more output-heavy workloads.
+                        </CardDescription>
+                    </CardHeader>
+                    <CardContent className="pl-2">
+                        <div className="h-[280px] w-full">
+                            {loadingTimeseries ? (
+                                <Skeleton className="h-full w-full" />
+                            ) : (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <BarChart data={timeseries} barCategoryGap="30%" margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
+                                        <XAxis
+                                            dataKey="bucket"
+                                            tickFormatter={formatDate}
+                                            {...CHART_AXIS_PROPS}
+                                            minTickGap={30}
+                                        />
+                                        <YAxis
+                                            {...CHART_AXIS_PROPS}
+                                            tickFormatter={formatNumber}
+                                        />
+                                        <Tooltip
+                                            content={<CustomTooltip
+                                                labelFormatter={formatDate}
+                                                valueFormatter={(val: any) => formatNumber(val ?? 0)}
+                                            />}
+                                            cursor={{ fill: 'var(--border)', opacity: 0.1 }}
+                                        />
+                                        <Legend
+                                            wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
+                                            formatter={(v) => v === 'input_tokens' ? 'Prompt Tokens' : 'Completion Tokens'}
+                                        />
+                                        <Bar dataKey="input_tokens" name="input_tokens" stackId="a" fill="#3b82f6" radius={[0, 0, 0, 0]} />
+                                        <Bar dataKey="output_tokens" name="output_tokens" stackId="a" fill="#10b981" radius={[4, 4, 0, 0]} />
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            )}
+                        </div>
+                    </CardContent>
+                </Card>
+            </div>
         </div>
     );
 }

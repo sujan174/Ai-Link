@@ -205,7 +205,54 @@ impl PgStore {
         Ok(result.rows_affected() > 0)
     }
 
-    // -- Policy Operations --
+    /// Update a token's upstream URL, policy bindings, and log level.
+    /// Used by config import to update an existing token without touching its credentials.
+    pub async fn update_token_config(
+        &self,
+        token_id: &str,
+        policy_ids: Vec<Uuid>,
+        log_level: i16,
+        upstream_url: &str,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE tokens SET policy_ids = $1, log_level = $2, upstream_url = $3, updated_at = NOW() WHERE id = $4 AND is_active = true"
+        )
+        .bind(&policy_ids)
+        .bind(log_level)
+        .bind(upstream_url)
+        .bind(token_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Insert a new token without credentials (used by config-as-code import).
+    /// The token will work in passthrough mode until a credential is attached.
+    /// Returns the generated token ID (format: `tok_import_<uuid>`).
+    pub async fn insert_token_stub(
+        &self,
+        project_id: Uuid,
+        name: &str,
+        upstream_url: &str,
+        policy_ids: Vec<Uuid>,
+        log_level: i16,
+    ) -> anyhow::Result<String> {
+        let id = format!("tok_import_{}", Uuid::new_v4().simple());
+        let token = NewToken {
+            id: id.clone(),
+            project_id,
+            name: name.to_string(),
+            credential_id: None,        // no credential — passthrough mode
+            upstream_url: upstream_url.to_string(),
+            scopes: serde_json::json!([]),
+            policy_ids,
+            log_level: Some(log_level),
+            circuit_breaker: None,
+        };
+        self.insert_token(&token).await?;
+        Ok(id)
+    }
+
 
     pub async fn get_policies_for_token(
         &self,
@@ -552,10 +599,10 @@ impl PgStore {
                 created_at,
                 model,
                 estimated_cost_usd,
-                response_latency_ms,
-                prompt_tokens,
-                completion_tokens,
-                tool_call_count,
+                response_latency_ms::bigint,
+                prompt_tokens::integer,
+                completion_tokens::integer,
+                tool_call_count::smallint,
                 cache_hit,
                 custom_properties,
                 payload_url

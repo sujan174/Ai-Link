@@ -8,6 +8,14 @@ pub enum Provider {
     AzureOpenAI,
     Anthropic,
     Gemini,
+    /// Groq — OpenAI-compatible API at api.groq.com
+    Groq,
+    /// Mistral AI — OpenAI-compatible API at api.mistral.ai
+    Mistral,
+    /// Cohere — Command-R models via api.cohere.com (OpenAI-compatible endpoint)
+    Cohere,
+    /// Ollama — local OpenAI-compatible server (default: http://localhost:11434)
+    Ollama,
     Unknown,
 }
 
@@ -79,6 +87,21 @@ pub fn detect_provider(model: &str, upstream_url: &str) -> Provider {
     {
         return Provider::AzureOpenAI;
     }
+    if url_lower.contains("groq.com") {
+        return Provider::Groq;
+    }
+    if url_lower.contains("mistral.ai") {
+        return Provider::Mistral;
+    }
+    if url_lower.contains("cohere.com") || url_lower.contains("cohere.ai") {
+        return Provider::Cohere;
+    }
+    if url_lower.contains("localhost:11434")
+        || url_lower.contains("ollama")
+        || url_lower.contains(":11434")
+    {
+        return Provider::Ollama;
+    }
     if url_lower.contains("openai") {
         return Provider::OpenAI;
     }
@@ -100,8 +123,14 @@ pub fn translate_request(provider: Provider, body: &Value) -> Option<Value> {
     match provider {
         Provider::Anthropic => Some(openai_to_anthropic_request(body)),
         Provider::Gemini => Some(openai_to_gemini_request(body)),
-        // Azure OpenAI uses the same JSON format as OpenAI — no translation needed
-        Provider::OpenAI | Provider::AzureOpenAI | Provider::Unknown => None,
+        // OpenAI-compatible providers — no translation needed
+        Provider::OpenAI
+        | Provider::AzureOpenAI
+        | Provider::Groq
+        | Provider::Mistral
+        | Provider::Cohere
+        | Provider::Ollama
+        | Provider::Unknown => None,
     }
 }
 
@@ -111,8 +140,14 @@ pub fn translate_response(provider: Provider, body: &Value, model: &str) -> Opti
     match provider {
         Provider::Anthropic => Some(anthropic_to_openai_response(body, model)),
         Provider::Gemini => Some(gemini_to_openai_response(body, model)),
-        // Azure OpenAI uses the same JSON format as OpenAI — no translation needed
-        Provider::OpenAI | Provider::AzureOpenAI | Provider::Unknown => None,
+        // OpenAI-compatible providers — no translation needed
+        Provider::OpenAI
+        | Provider::AzureOpenAI
+        | Provider::Groq
+        | Provider::Mistral
+        | Provider::Cohere
+        | Provider::Ollama
+        | Provider::Unknown => None,
     }
 }
 
@@ -124,12 +159,17 @@ pub fn translate_response(provider: Provider, body: &Value, model: &str) -> Opti
 /// The `base_url` for Azure should be set to the endpoint root, e.g.:
 ///   https://my-resource.openai.azure.com
 /// The `model` field should be the deployment name.
-pub fn rewrite_upstream_url(provider: Provider, base_url: &str, model: &str) -> String {
+///
+/// `is_streaming` is used to select the correct Gemini endpoint:
+///   - false → `:generateContent`
+///   - true  → `:streamGenerateContent`
+pub fn rewrite_upstream_url(provider: Provider, base_url: &str, model: &str, is_streaming: bool) -> String {
     match provider {
         Provider::Gemini => {
-            // Gemini API: POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
+            // Gemini uses different endpoints for streaming vs non-streaming
+            let method = if is_streaming { "streamGenerateContent" } else { "generateContent" };
             let base = base_url.trim_end_matches('/');
-            format!("{}/v1beta/models/{}:generateContent", base, model)
+            format!("{}/v1beta/models/{}:{}", base, model, method)
         }
         Provider::Anthropic => {
             // Anthropic API: POST https://api.anthropic.com/v1/messages
@@ -149,7 +189,63 @@ pub fn rewrite_upstream_url(provider: Provider, base_url: &str, model: &str) -> 
                 )
             }
         }
+        Provider::Ollama => {
+            // Ollama: http://localhost:11434/api/chat (or /v1/chat/completions for OpenAI compat mode)
+            let base = base_url.trim_end_matches('/');
+            // If already pointing at an explicit path, use it as-is
+            if base.contains("/v1") || base.contains("/api/") {
+                base.to_string()
+            } else {
+                // Default to the OpenAI-compatible endpoint
+                format!("{}/v1/chat/completions", base)
+            }
+        }
+        // Groq, Mistral, Cohere all use standard /v1/chat/completions via their base URLs
+        Provider::Groq | Provider::Mistral | Provider::Cohere => {
+            let base = base_url.trim_end_matches('/');
+            if base.contains("/v1") {
+                base.to_string()
+            } else {
+                format!("{}/v1/chat/completions", base)
+            }
+        }
         _ => base_url.to_string(),
+    }
+}
+
+/// Inject provider-specific required headers that the upstream API mandates.
+///
+/// Called after credential injection in the proxy handler, before sending the upstream request.
+/// Uses `entry().or_insert()` so existing headers (e.g. from policy Transform actions) are
+/// never overwritten — the policy always wins.
+pub fn inject_provider_headers(
+    provider: Provider,
+    headers: &mut reqwest::header::HeaderMap,
+    is_streaming: bool,
+) {
+    use reqwest::header::{HeaderName, HeaderValue};
+    match provider {
+        Provider::Anthropic => {
+            // Required on every Anthropic request (entry().or_insert so policy-set header wins)
+            headers
+                .entry(HeaderName::from_static("anthropic-version"))
+                .or_insert(HeaderValue::from_static("2023-06-01"));
+            // Streaming requires explicit Accept header
+            if is_streaming {
+                headers
+                    .entry(reqwest::header::ACCEPT)
+                    .or_insert(HeaderValue::from_static("text/event-stream"));
+            }
+        }
+        Provider::Gemini => {
+            // Gemini SSE streaming needs Accept: text/event-stream
+            if is_streaming {
+                headers
+                    .entry(reqwest::header::ACCEPT)
+                    .or_insert(HeaderValue::from_static("text/event-stream"));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -282,9 +378,37 @@ fn openai_to_anthropic_request(body: &Value) -> Value {
         }
     }
 
+    // tool_choice: map OpenAI → Anthropic format
+    // OpenAI: "auto" | "none" | "required" | {"type":"function","function":{"name":"X"}}
+    // Anthropic: {"type":"auto"} | {"type":"any"} | {"type":"tool","name":"X"}
+    if let Some(tc) = body.get("tool_choice") {
+        match tc.as_str() {
+            Some("auto")     => { result.insert("tool_choice".into(), json!({"type": "auto"})); }
+            Some("required") => { result.insert("tool_choice".into(), json!({"type": "any"})); }
+            Some("none")     => { /* Anthropic has no "none" — omit tool_choice and tools */ }
+            None if tc.is_object() => {
+                // Specific function: forward as Anthropic "tool" type
+                if let Some(name) = tc.get("function").and_then(|f| f.get("name")) {
+                    result.insert("tool_choice".into(), json!({"type": "tool", "name": name}));
+                }
+            }
+            _ => {}
+        }
+    }
+
     // Stream
     if let Some(stream) = body.get("stream") {
         result.insert("stream".into(), stream.clone());
+    }
+
+    // Top K (Anthropic native, no OpenAI equivalent — forward if present)
+    if let Some(top_k) = body.get("top_k") {
+        result.insert("top_k".into(), top_k.clone());
+    }
+
+    // Metadata (for user tracking)
+    if let Some(metadata) = body.get("metadata") {
+        result.insert("metadata".into(), metadata.clone());
     }
 
     Value::Object(result)
@@ -369,48 +493,92 @@ fn anthropic_to_openai_response(body: &Value, model: &str) -> Value {
 // OpenAI → Gemini (generateContent API)
 // ═══════════════════════════════════════════════════════════════
 
+/// Translate an OpenAI content value (string or parts array) into Gemini `parts`.
+/// Handles text, image_url (HTTP URLs → fileData, base64 data URIs → inlineData).
+fn translate_content_to_gemini_parts(content: Option<&Value>) -> Vec<Value> {
+    match content {
+        Some(Value::String(s)) => vec![json!({"text": s})],
+        Some(Value::Array(parts)) => parts.iter().map(|p| {
+            match p.get("type").and_then(|t| t.as_str()) {
+                Some("text") => json!({"text": p.get("text").cloned().unwrap_or(json!(""))}),
+                Some("image_url") => {
+                    let url = p.get("image_url")
+                        .and_then(|u| u.get("url"))
+                        .and_then(|u| u.as_str())
+                        .unwrap_or("");
+                    if url.starts_with("data:") {
+                        // data:image/jpeg;base64,<data> → Gemini inlineData
+                        let mime = url.split(';').next()
+                            .and_then(|s| s.strip_prefix("data:"))
+                            .unwrap_or("image/jpeg");
+                        let data = url.splitn(2, ',').nth(1).unwrap_or("");
+                        json!({"inlineData": {"mimeType": mime, "data": data}})
+                    } else {
+                        // HTTP URL → Gemini fileData
+                        // Gemini requires MIME type; try to infer from URL extension
+                        let mime = if url.ends_with(".png") { "image/png" }
+                            else if url.ends_with(".gif") { "image/gif" }
+                            else if url.ends_with(".webp") { "image/webp" }
+                            else { "image/jpeg" };
+                        json!({"fileData": {"mimeType": mime, "fileUri": url}})
+                    }
+                }
+                _ => p.clone(),
+            }
+        }).collect(),
+        Some(Value::Null) | None => vec![json!({"text": ""})],
+        // Fallback: not a known content type, skip
+        _ => vec![],
+    }
+}
+
 fn openai_to_gemini_request(body: &Value) -> Value {
     let mut result = serde_json::Map::new();
 
-    // Messages → contents
+    // Messages → contents (with full multimodal support)
     if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
         let mut contents = Vec::new();
         let mut system_instruction = None;
 
         for msg in messages {
             let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-            let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
 
             match role {
                 "system" => {
+                    // Gemini system instruction — always text
+                    let text = msg.get("content")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("");
                     system_instruction = Some(json!({
-                        "parts": [{"text": content}]
+                        "parts": [{"text": text}]
                     }));
                 }
                 "user" => {
-                    contents.push(json!({
-                        "role": "user",
-                        "parts": [{"text": content}]
-                    }));
+                    let parts = translate_content_to_gemini_parts(msg.get("content"));
+                    if !parts.is_empty() {
+                        contents.push(json!({ "role": "user", "parts": parts }));
+                    }
                 }
                 "assistant" => {
-                    contents.push(json!({
-                        "role": "model",
-                        "parts": [{"text": content}]
-                    }));
+                    let parts = translate_content_to_gemini_parts(msg.get("content"));
+                    if !parts.is_empty() {
+                        contents.push(json!({ "role": "model", "parts": parts }));
+                    }
                 }
                 "tool" => {
+                    // Function result → Gemini functionResponse
                     let tool_call_id = msg.get("tool_call_id")
                         .and_then(|t| t.as_str())
                         .unwrap_or("unknown");
+                    let content_val = msg.get("content")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("");
                     contents.push(json!({
                         "role": "user",
                         "parts": [{
                             "functionResponse": {
                                 "name": tool_call_id,
-                                "response": {
-                                    "result": content
-                                }
+                                "response": { "result": content_val }
                             }
                         }]
                     }));
@@ -425,7 +593,7 @@ fn openai_to_gemini_request(body: &Value) -> Value {
         }
     }
 
-    // Generation config
+    // Generation config (temperature, max tokens, top_p, stop sequences)
     let mut gen_config = serde_json::Map::new();
     if let Some(temp) = body.get("temperature") {
         gen_config.insert("temperature".into(), temp.clone());
@@ -439,13 +607,34 @@ fn openai_to_gemini_request(body: &Value) -> Value {
     if let Some(stop) = body.get("stop") {
         if let Some(arr) = stop.as_array() {
             gen_config.insert("stopSequences".into(), json!(arr));
+        } else if let Some(s) = stop.as_str() {
+            gen_config.insert("stopSequences".into(), json!([s]));
         }
     }
+
+    // response_format → Gemini responseMimeType + responseSchema
+    // OpenAI: {"type":"json_object"} | {"type":"json_schema","json_schema":{"schema":{...}}}
+    if let Some(rf) = body.get("response_format") {
+        match rf.get("type").and_then(|t| t.as_str()) {
+            Some("json_object") => {
+                gen_config.insert("responseMimeType".into(), json!("application/json"));
+            }
+            Some("json_schema") => {
+                gen_config.insert("responseMimeType".into(), json!("application/json"));
+                // json_schema.schema contains the JSON Schema object
+                if let Some(schema) = rf.get("json_schema").and_then(|s| s.get("schema")) {
+                    gen_config.insert("responseSchema".into(), schema.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
     if !gen_config.is_empty() {
         result.insert("generationConfig".into(), Value::Object(gen_config));
     }
 
-    // Tools
+    // Tools (OpenAI functions → Gemini functionDeclarations)
     if let Some(tools) = body.get("tools").and_then(|t| t.as_array()) {
         let function_declarations: Vec<Value> = tools.iter().filter_map(|tool| {
             let func = tool.get("function")?;
@@ -460,6 +649,30 @@ fn openai_to_gemini_request(body: &Value) -> Value {
                 "functionDeclarations": function_declarations
             }]));
         }
+    }
+
+    // tool_choice → Gemini toolConfig.functionCallingConfig
+    // OpenAI: "auto" | "none" | "required" | {"type":"function","function":{"name":"X"}}
+    // Gemini mode: AUTO | NONE | ANY | specific function via allowedFunctionNames
+    if let Some(tc) = body.get("tool_choice") {
+        let (mode, allowed_names): (&str, Vec<&str>) = match tc.as_str() {
+            Some("auto")     => ("AUTO", vec![]),
+            Some("none")     => ("NONE", vec![]),
+            Some("required") => ("ANY",  vec![]),
+            _ => {
+                // Specific function: {"type":"function","function":{"name":"X"}}
+                if let Some(name) = tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()) {
+                    ("ANY", vec![name])
+                } else {
+                    ("AUTO", vec![])
+                }
+            }
+        };
+        let mut fc_config = json!({"mode": mode});
+        if !allowed_names.is_empty() {
+            fc_config["allowedFunctionNames"] = json!(allowed_names);
+        }
+        result.insert("toolConfig".into(), json!({"functionCallingConfig": fc_config}));
     }
 
     Value::Object(result)
@@ -565,8 +778,14 @@ pub fn translate_sse_body(provider: Provider, body: &[u8], model: &str) -> Optio
     match provider {
         Provider::Anthropic => Some(translate_anthropic_sse_to_openai(body, model)),
         Provider::Gemini => Some(translate_gemini_sse_to_openai(body, model)),
-        // Azure OpenAI uses the same SSE format as OpenAI — no translation needed
-        Provider::OpenAI | Provider::AzureOpenAI | Provider::Unknown => None,
+        // OpenAI-compatible providers — no SSE translation needed
+        Provider::OpenAI
+        | Provider::AzureOpenAI
+        | Provider::Groq
+        | Provider::Mistral
+        | Provider::Cohere
+        | Provider::Ollama
+        | Provider::Unknown => None,
     }
 }
 
@@ -849,8 +1068,14 @@ fn translate_gemini_sse_to_openai(body: &[u8], model: &str) -> Vec<u8> {
 /// Callers should fall through to returning the original body on `None`.
 pub fn normalize_error_response(provider: Provider, body: &[u8]) -> Option<serde_json::Value> {
     match provider {
-        // Azure OpenAI returns OpenAI-compatible errors — no normalization needed
-        Provider::OpenAI | Provider::AzureOpenAI | Provider::Unknown => None,
+        // Azure OpenAI, Groq, Mistral, Cohere, Ollama all return OpenAI-compatible errors — no normalization needed
+        Provider::OpenAI
+        | Provider::AzureOpenAI
+        | Provider::Groq
+        | Provider::Mistral
+        | Provider::Cohere
+        | Provider::Ollama
+        | Provider::Unknown => None,
         Provider::Anthropic => {
             // Anthropic error format:
             // {"type":"error","error":{"type":"invalid_request_error","message":"..."}}
@@ -1115,13 +1340,25 @@ mod tests {
     // ── URL Rewriting ───────────────────────────────────────────
 
     #[test]
-    fn test_rewrite_gemini_url() {
+    fn test_rewrite_gemini_url_non_streaming() {
         let url = rewrite_upstream_url(
             Provider::Gemini,
             "https://generativelanguage.googleapis.com",
             "gemini-2.0-flash",
+            false,
         );
         assert_eq!(url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent");
+    }
+
+    #[test]
+    fn test_rewrite_gemini_url_streaming() {
+        let url = rewrite_upstream_url(
+            Provider::Gemini,
+            "https://generativelanguage.googleapis.com",
+            "gemini-2.0-flash",
+            true,
+        );
+        assert_eq!(url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent");
     }
 
     #[test]
@@ -1130,6 +1367,7 @@ mod tests {
             Provider::Anthropic,
             "https://api.anthropic.com",
             "claude-3-opus",
+            false,
         );
         assert_eq!(url, "https://api.anthropic.com/v1/messages");
     }
@@ -1140,8 +1378,203 @@ mod tests {
             Provider::OpenAI,
             "https://api.openai.com/v1/chat/completions",
             "gpt-4",
+            false,
         );
         assert_eq!(url, "https://api.openai.com/v1/chat/completions");
+    }
+
+    // ── Multimodal Content (Gemini) ─────────────────────────────
+
+    #[test]
+    fn test_gemini_multimodal_base64_image() {
+        let body = json!({
+            "model": "gemini-2.0-flash",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0K"}}
+                ]
+            }]
+        });
+        let translated = openai_to_gemini_request(&body);
+        let parts = &translated["contents"][0]["parts"];
+        assert!(parts.as_array().unwrap().len() == 2);
+        // First part: text
+        assert_eq!(parts[0]["text"], "What is this?");
+        // Second part: inlineData (base64)
+        assert!(parts[1].get("inlineData").is_some());
+        assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(parts[1]["inlineData"]["data"], "iVBORw0K");
+    }
+
+    #[test]
+    fn test_gemini_multimodal_url_image() {
+        let body = json!({
+            "model": "gemini-2.0-flash",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe:"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/photo.png"}}
+                ]
+            }]
+        });
+        let translated = openai_to_gemini_request(&body);
+        let parts = &translated["contents"][0]["parts"];
+        // Second part: fileData (HTTP URL)
+        assert!(parts[1].get("fileData").is_some());
+        assert_eq!(parts[1]["fileData"]["mimeType"], "image/png");
+        assert_eq!(parts[1]["fileData"]["fileUri"], "https://example.com/photo.png");
+    }
+
+    // ── response_format (Gemini) ────────────────────────────────
+
+    #[test]
+    fn test_gemini_response_format_json_object() {
+        let body = json!({
+            "model": "gemini-2.0-flash",
+            "messages": [{"role": "user", "content": "Return JSON"}],
+            "response_format": {"type": "json_object"}
+        });
+        let translated = openai_to_gemini_request(&body);
+        assert_eq!(translated["generationConfig"]["responseMimeType"], "application/json");
+    }
+
+    #[test]
+    fn test_gemini_response_format_json_schema() {
+        let body = json!({
+            "model": "gemini-2.0-flash",
+            "messages": [{"role": "user", "content": "Return structured JSON"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "my_schema",
+                    "schema": {"type": "object", "properties": {"name": {"type": "string"}}}
+                }
+            }
+        });
+        let translated = openai_to_gemini_request(&body);
+        assert_eq!(translated["generationConfig"]["responseMimeType"], "application/json");
+        assert!(translated["generationConfig"].get("responseSchema").is_some());
+    }
+
+    // ── tool_choice (Anthropic) ─────────────────────────────────
+
+    #[test]
+    fn test_anthropic_tool_choice_auto() {
+        let body = json!({
+            "model": "claude-3-opus",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "foo", "description": "", "parameters": {}}}],
+            "tool_choice": "auto"
+        });
+        let translated = openai_to_anthropic_request(&body);
+        assert_eq!(translated["tool_choice"]["type"], "auto");
+    }
+
+    #[test]
+    fn test_anthropic_tool_choice_required() {
+        let body = json!({
+            "model": "claude-3-opus",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "foo", "description": "", "parameters": {}}}],
+            "tool_choice": "required"
+        });
+        let translated = openai_to_anthropic_request(&body);
+        assert_eq!(translated["tool_choice"]["type"], "any");
+    }
+
+    #[test]
+    fn test_anthropic_tool_choice_specific_function() {
+        let body = json!({
+            "model": "claude-3-opus",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "get_weather", "description": "", "parameters": {}}}],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}}
+        });
+        let translated = openai_to_anthropic_request(&body);
+        assert_eq!(translated["tool_choice"]["type"], "tool");
+        assert_eq!(translated["tool_choice"]["name"], "get_weather");
+    }
+
+    // ── tool_choice (Gemini) ────────────────────────────────────
+
+    #[test]
+    fn test_gemini_tool_choice_auto() {
+        let body = json!({
+            "model": "gemini-2.0-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "auto"
+        });
+        let translated = openai_to_gemini_request(&body);
+        assert_eq!(translated["toolConfig"]["functionCallingConfig"]["mode"], "AUTO");
+    }
+
+    #[test]
+    fn test_gemini_tool_choice_none() {
+        let body = json!({
+            "model": "gemini-2.0-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "none"
+        });
+        let translated = openai_to_gemini_request(&body);
+        assert_eq!(translated["toolConfig"]["functionCallingConfig"]["mode"], "NONE");
+    }
+
+    #[test]
+    fn test_gemini_tool_choice_specific_function() {
+        let body = json!({
+            "model": "gemini-2.0-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}}
+        });
+        let translated = openai_to_gemini_request(&body);
+        let fc = &translated["toolConfig"]["functionCallingConfig"];
+        assert_eq!(fc["mode"], "ANY");
+        assert!(fc["allowedFunctionNames"][0] == "get_weather");
+    }
+
+    // ── Provider Header Injection ───────────────────────────────
+
+    #[test]
+    fn test_inject_anthropic_version_header() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        inject_provider_headers(Provider::Anthropic, &mut headers, false);
+        assert_eq!(
+            headers.get("anthropic-version").and_then(|v| v.to_str().ok()),
+            Some("2023-06-01")
+        );
+    }
+
+    #[test]
+    fn test_inject_anthropic_streaming_accept_header() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        inject_provider_headers(Provider::Anthropic, &mut headers, true);
+        assert_eq!(
+            headers.get("anthropic-version").and_then(|v| v.to_str().ok()),
+            Some("2023-06-01")
+        );
+        assert!(headers.contains_key(reqwest::header::ACCEPT));
+    }
+
+    #[test]
+    fn test_inject_openai_no_extra_headers() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        inject_provider_headers(Provider::OpenAI, &mut headers, false);
+        assert!(headers.is_empty(), "OpenAI should not inject extra headers");
+    }
+
+    #[test]
+    fn test_policy_header_wins_over_injection() {
+        // If anthropic-version is already set (e.g. by policy), it should not be overwritten
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("anthropic-version", "2025-01-01".parse().unwrap());
+        inject_provider_headers(Provider::Anthropic, &mut headers, false);
+        assert_eq!(
+            headers.get("anthropic-version").and_then(|v| v.to_str().ok()),
+            Some("2025-01-01") // original value preserved
+        );
     }
 
     // ── translate_request dispatch ──────────────────────────────

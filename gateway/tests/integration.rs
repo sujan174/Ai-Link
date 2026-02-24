@@ -29,6 +29,7 @@ mod spend_cap_tests {
         let cap = gateway::middleware::spend::SpendCap {
             daily_limit_usd: Some(50.0),
             monthly_limit_usd: Some(500.0),
+            lifetime_limit_usd: None,
         };
 
         let json = serde_json::to_string(&cap).unwrap();
@@ -37,6 +38,7 @@ mod spend_cap_tests {
 
         assert_eq!(deserialized.daily_limit_usd, Some(50.0));
         assert_eq!(deserialized.monthly_limit_usd, Some(500.0));
+        assert_eq!(deserialized.lifetime_limit_usd, None);
     }
 
     /// Test SpendStatus serializes with all expected fields.
@@ -45,8 +47,10 @@ mod spend_cap_tests {
         let status = gateway::middleware::spend::SpendStatus {
             daily_limit_usd: Some(100.0),
             monthly_limit_usd: Some(1000.0),
+            lifetime_limit_usd: Some(5000.0),
             current_daily_usd: 42.50,
             current_monthly_usd: 350.75,
+            current_lifetime_usd: 1200.0,
         };
 
         let json = serde_json::to_value(&status).unwrap();
@@ -54,6 +58,7 @@ mod spend_cap_tests {
         assert_eq!(json["monthly_limit_usd"], 1000.0);
         assert_eq!(json["current_daily_usd"], 42.50);
         assert_eq!(json["current_monthly_usd"], 350.75);
+        assert_eq!(json["current_lifetime_usd"], 1200.0);
     }
 }
 

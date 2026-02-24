@@ -77,7 +77,7 @@
     --popover: #ffffff;
     --popover-foreground: #09090b;
 
-    --primary: #2563eb;
+    --primary: #059669;
     --primary-foreground: #ffffff;
 
     --secondary: #f4f4f5;
@@ -100,9 +100,9 @@
 
     --border: #e4e4e7;
     --input: #e4e4e7;
-    --ring: #2563eb;
+    --ring: #059669;
 
-    --radius: 0.75rem;
+    --radius: 0.5rem;
 
     /* Glass tokens */
     --glass-bg: rgba(255, 255, 255, 0.7);
@@ -124,7 +124,7 @@
     --popover: #111113;
     --popover-foreground: #fafafa;
 
-    --primary: #3b82f6;
+    --primary: #10b981;
     --primary-foreground: #ffffff;
 
     --secondary: #1c1c1f;
@@ -147,7 +147,7 @@
 
     --border: #1e1e22;
     --input: #1e1e22;
-    --ring: #3b82f6;
+    --ring: #10b981;
 
     /* Glass tokens (dark) */
     --glass-bg: rgba(17, 17, 19, 0.6);

@@ -38,6 +38,7 @@ impl UpstreamClient {
         )
         .await
         .map_err(|e| {
+             eprintln!("DEBUG upstream error: url={} err={:?}", url, e);
              tracing::warn!("Upstream request failed: {}", e);
              crate::errors::AppError::Upstream(e.to_string())
         })

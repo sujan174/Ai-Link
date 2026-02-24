@@ -14,6 +14,8 @@ use tracing::{error, info};
 pub struct SpendCap {
     pub daily_limit_usd: Option<f64>,
     pub monthly_limit_usd: Option<f64>,
+    /// Absolute lifetime cap — never auto-resets. Useful for trial/hackathon keys.
+    pub lifetime_limit_usd: Option<f64>,
 }
 
 /// Current spend status for a token (for the API/dashboard).
@@ -21,8 +23,10 @@ pub struct SpendCap {
 pub struct SpendStatus {
     pub daily_limit_usd: Option<f64>,
     pub monthly_limit_usd: Option<f64>,
+    pub lifetime_limit_usd: Option<f64>,
     pub current_daily_usd: f64,
     pub current_monthly_usd: f64,
+    pub current_lifetime_usd: f64,
 }
 
 // ── Enforcement ───────────────────────────────────────────────
@@ -92,6 +96,24 @@ pub async fn check_spend_cap(
         }
     }
 
+    // Check lifetime cap
+    if let Some(lifetime_limit) = caps.lifetime_limit_usd {
+        let key = format!("spend:{}:lifetime", token_id);
+        let current: f64 = conn
+            .get::<_, Option<String>>(&key)
+            .await
+            .unwrap_or(None)
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        if current >= lifetime_limit {
+            anyhow::bail!(
+                "lifetime spend cap of ${:.2} exceeded (current: ${:.4})",
+                lifetime_limit,
+                current
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -112,17 +134,12 @@ pub async fn check_and_increment_spend(
     let mut conn = cache.redis();
     let now = Utc::now();
 
-    // Lua script: atomically check limit and increment
-    // KEYS[1] = spend key, ARGV[1] = limit, ARGV[2] = cost, ARGV[3] = TTL
-    // Returns: new_total if under limit, or -1 if cap would be exceeded
+    // Lua script: unconditionally increment spend and return the new total
+    // KEYS[1] = spend key, ARGV[1] = limit (unused in script, checked in Rust), ARGV[2] = cost, ARGV[3] = TTL
+    // Returns: new_total
     let lua_script = r#"
-        local current = tonumber(redis.call('GET', KEYS[1]) or '0')
-        local limit = tonumber(ARGV[1])
         local cost = tonumber(ARGV[2])
         local ttl = tonumber(ARGV[3])
-        if limit > 0 and (current + cost) > limit then
-            return -1
-        end
         local new_val = redis.call('INCRBYFLOAT', KEYS[1], cost)
         redis.call('EXPIRE', KEYS[1], ttl)
         return new_val
@@ -131,21 +148,20 @@ pub async fn check_and_increment_spend(
     // Check daily cap
     if let Some(daily_limit) = caps.daily_limit_usd {
         let key = format!("spend:{}:daily:{}", token_id, now.format("%Y-%m-%d"));
+        let reset_ttl = 86400 + 3600; // TTL in seconds
         let result: f64 = redis::cmd("EVAL")
             .arg(lua_script)
             .arg(1i32) // number of KEYS
             .arg(&key)
             .arg(daily_limit)
             .arg(cost_usd)
-            .arg(86400 + 3600) // TTL
+            .arg(reset_ttl) // TTL in seconds
             .query_async(&mut conn)
             .await
-            .unwrap_or(-1.0);
-        if result < 0.0 {
-            anyhow::bail!(
-                "daily spend cap of ${:.2} would be exceeded",
-                daily_limit
-            );
+            .context("failed to execute daily spend lua script")?;
+
+        if result > daily_limit {
+            anyhow::bail!("daily spend cap exceeded during increment");
         }
     } else {
         // No daily cap — just increment
@@ -171,12 +187,10 @@ pub async fn check_and_increment_spend(
             .arg(86400 * 32)
             .query_async(&mut conn)
             .await
-            .unwrap_or(-1.0);
-        if result < 0.0 {
-            anyhow::bail!(
-                "monthly spend cap of ${:.2} would be exceeded",
-                monthly_limit
-            );
+            .context("failed to execute monthly spend lua script")?;
+        
+        if result > monthly_limit {
+            anyhow::bail!("monthly spend cap exceeded during increment");
         }
     } else {
         let key = format!("spend:{}:monthly:{}", token_id, now.format("%Y-%m"));
@@ -189,13 +203,43 @@ pub async fn check_and_increment_spend(
         let _: () = conn.expire(&key, 86400i64 * 32).await.unwrap_or(());
     }
 
+    // Check / increment lifetime cap (no TTL — persists indefinitely)
+    if let Some(lifetime_limit) = caps.lifetime_limit_usd {
+        let key = format!("spend:{}:lifetime", token_id);
+        // Use a TTL of 10 years so Redis won't evict it under memory pressure
+        let result: f64 = redis::cmd("EVAL")
+            .arg(lua_script)
+            .arg(1i32)
+            .arg(&key)
+            .arg(lifetime_limit)
+            .arg(cost_usd)
+            .arg(86400i64 * 365 * 10) // 10 year TTL
+            .query_async(&mut conn)
+            .await
+            .context("failed to execute lifetime spend lua script")?;
+        
+        if result > lifetime_limit {
+            anyhow::bail!("lifetime spend cap exceeded during increment");
+        }
+    } else {
+        // No lifetime cap — just keep a running total (useful for dashboard)
+        let key = format!("spend:{}:lifetime", token_id);
+        let _: f64 = redis::cmd("INCRBYFLOAT")
+            .arg(&key)
+            .arg(cost_usd)
+            .query_async(&mut conn)
+            .await
+            .unwrap_or(cost_usd);
+        let _: () = conn.expire(&key, 86400i64 * 365 * 10).await.unwrap_or(());
+    }
+
     // DB persistence (fire-and-forget, same as track_spend)
     let tid = token_id.to_string();
     let pool = db.clone();
     let cost_decimal = rust_decimal::Decimal::from_f64_retain(cost_usd)
         .unwrap_or(rust_decimal::Decimal::ZERO);
     tokio::spawn(async move {
-        for period in &["daily", "monthly"] {
+        for period in &["daily", "monthly", "lifetime"] {
             if let Err(e) = update_db_spend(&pool, &tid, period, cost_decimal).await {
                 error!("Failed to persist {} spend to DB: {}", period, e);
             }
@@ -227,8 +271,9 @@ async fn load_spend_caps(db: &sqlx::PgPool, token_id: &str) -> Result<SpendCap> 
     for row in rows {
         let limit = row.limit_usd.to_f64().unwrap_or(0.0);
         match row.period.as_str() {
-            "daily" => caps.daily_limit_usd = Some(limit),
-            "monthly" => caps.monthly_limit_usd = Some(limit),
+            "daily"    => caps.daily_limit_usd    = Some(limit),
+            "monthly"  => caps.monthly_limit_usd  = Some(limit),
+            "lifetime" => caps.lifetime_limit_usd = Some(limit),
             _ => {}
         }
     }
@@ -350,8 +395,9 @@ pub async fn get_spend_status(
     let mut conn = cache.redis();
     let now = Utc::now();
 
-    let daily_key = format!("spend:{}:daily:{}", token_id, now.format("%Y-%m-%d"));
-    let monthly_key = format!("spend:{}:monthly:{}", token_id, now.format("%Y-%m"));
+    let daily_key    = format!("spend:{}:daily:{}",    token_id, now.format("%Y-%m-%d"));
+    let monthly_key  = format!("spend:{}:monthly:{}",  token_id, now.format("%Y-%m"));
+    let lifetime_key = format!("spend:{}:lifetime",    token_id);
 
     // INCRBYFLOAT stores values as bulk strings — get as Option<String> and parse
     let daily_spend: f64 = conn
@@ -366,12 +412,20 @@ pub async fn get_spend_status(
         .unwrap_or(None)
         .and_then(|s| s.parse::<f64>().ok())
         .unwrap_or(0.0);
+    let lifetime_spend: f64 = conn
+        .get::<_, Option<String>>(&lifetime_key)
+        .await
+        .unwrap_or(None)
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0);
 
     Ok(SpendStatus {
-        daily_limit_usd: caps.daily_limit_usd,
-        monthly_limit_usd: caps.monthly_limit_usd,
-        current_daily_usd: daily_spend,
-        current_monthly_usd: monthly_spend,
+        daily_limit_usd:    caps.daily_limit_usd,
+        monthly_limit_usd:  caps.monthly_limit_usd,
+        lifetime_limit_usd: caps.lifetime_limit_usd,
+        current_daily_usd:    daily_spend,
+        current_monthly_usd:  monthly_spend,
+        current_lifetime_usd: lifetime_spend,
     })
 }
 
@@ -392,6 +446,8 @@ fn next_reset_at(period: &str) -> chrono::DateTime<Utc> {
             };
             next_month.and_hms_opt(0, 0, 0).unwrap().and_utc()
         }
+        // Lifetime caps never reset — set reset_at to 100 years from now
+        "lifetime" => now + chrono::Duration::days(36500),
         _ => now + chrono::Duration::days(1),
     }
 }

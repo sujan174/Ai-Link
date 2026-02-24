@@ -15,20 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import {
-    AreaChart,
-    Area,
-    XAxis,
-    YAxis,
-    CartesianGrid,
-    Tooltip,
-    ResponsiveContainer,
-    BarChart,
-    Bar,
-    Cell,
-    PieChart,
-    Pie,
-} from "recharts";
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, CartesianGrid } from "recharts";
+import { CustomTooltip, CHART_AXIS_PROPS } from "@/components/ui/chart-utils";
 import { useRouter } from "next/navigation";
 import { PageSkeleton } from "@/components/page-skeleton";
 
@@ -178,28 +166,27 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                                         <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                                     </linearGradient>
                                 </defs>
-                                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.5} />
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
                                 <XAxis
                                     dataKey="hour"
-                                    tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
+                                    {...CHART_AXIS_PROPS}
                                     tickFormatter={(val) => new Date(val).getHours() + 'h'}
                                 />
-                                <YAxis tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
+                                <YAxis {...CHART_AXIS_PROPS} />
                                 <Tooltip
-                                    labelFormatter={(label) => new Date(label).toLocaleString()}
-                                    contentStyle={{
-                                        background: "var(--card)",
-                                        border: "1px solid var(--border)",
-                                        borderRadius: "8px",
-                                        fontSize: "12px",
-                                    }}
+                                    content={<CustomTooltip
+                                        labelFormatter={(label: any) => new Date(label).toLocaleString()}
+                                    />}
+                                    cursor={{ stroke: 'var(--border)', strokeWidth: 1, strokeDasharray: '4 4' }}
                                 />
                                 <Area
                                     type="monotone"
                                     dataKey="count"
+                                    name="Requests"
                                     stroke="#3b82f6"
                                     strokeWidth={2}
                                     fill="url(#volGradient)"
+                                    activeDot={{ r: 4, strokeWidth: 0, fill: '#3b82f6' }}
                                 />
                             </AreaChart>
                         </ResponsiveContainer>
@@ -207,13 +194,13 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                 </Card>
 
                 {/* Status Distribution */}
-                <Card>
+                <Card className="glass-card">
                     <CardHeader>
                         <CardTitle>Status Codes</CardTitle>
                     </CardHeader>
                     <CardContent className="h-[300px] flex items-center justify-center">
                         <ResponsiveContainer width="50%" height="100%">
-                            <PieChart>
+                            <PieChart margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
                                 <Pie
                                     data={finalPieData}
                                     cx="50%"
@@ -222,19 +209,13 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                                     outerRadius={80}
                                     paddingAngle={4}
                                     dataKey="value"
+                                    stroke="none"
                                 >
                                     {finalPieData.map((entry, index) => (
                                         <Cell key={`cell-${index}`} fill={entry.color} />
                                     ))}
                                 </Pie>
-                                <Tooltip
-                                    contentStyle={{
-                                        background: "var(--card)",
-                                        border: "1px solid var(--border)",
-                                        borderRadius: "8px",
-                                        fontSize: "12px",
-                                    }}
-                                />
+                                <Tooltip content={<CustomTooltip />} />
                             </PieChart>
                         </ResponsiveContainer>
                         <div className="space-y-4">

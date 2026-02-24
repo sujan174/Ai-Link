@@ -17,11 +17,12 @@ path = "src/main.rs"
 tokio = { version = "1", features = ["full"] }
 
 # web framework
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.7", features = ["macros", "ws"] }
 tower = { version = "0.4", features = ["util", "timeout", "limit", "load-shed"] }
 tower-http = { version = "0.5", features = ["trace", "cors", "compression-full", "set-header", "request-id"] }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
 
 # database
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros", "rust_decimal"] }
@@ -69,6 +70,11 @@ tokio-stream = "0.1"
 # policy matching
 regex = "1"
 once_cell = "1.18"
+jsonschema = { version = "0.17", default-features = false }
+
+# payload offloading (S3/MinIO/GCS/local filesystem)
+object_store = { version = "0.11", features = ["aws", "gcp", "azure", "http"] }
+zstd = "0.13"
 
 # resilience
 reqwest-middleware = "0.2"

@@ -8,3 +8,4 @@ pub mod errors;
 pub mod middleware;
 pub mod models;
 pub mod notification;
+pub mod store;

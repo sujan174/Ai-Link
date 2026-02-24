@@ -35,8 +35,8 @@ export default function RootLayout({
             <div className="flex h-full w-full">
               <Sidebar className="hidden border-r md:flex" />
               <main className="flex-1 overflow-y-auto">
-                <div className="container mx-auto p-6 max-w-[1600px]">
-                  <div className="flex items-center gap-2 mb-6">
+                <div className="container mx-auto px-4 pt-2 pb-6 max-w-[1600px]">
+                  <div className="flex items-center gap-2 mb-2">
                     <MobileNav />
                     <div className="flex-1">
                       <Breadcrumbs />

@@ -107,6 +107,12 @@ pub struct Rule {
     /// Accepts a single action object or an array of actions.
     #[serde(deserialize_with = "deserialize_actions")]
     pub then: Vec<Action>,
+    /// If `true`, the rule is evaluated asynchronously in a background task.
+    /// The upstream response is returned immediately; violations are logged
+    /// but cannot block the response. Useful for non-blocking audit guardrails.
+    /// Defaults to `false` (blocking, same as existing behavior).
+    #[serde(default)]
+    pub async_check: bool,
 }
 
 // ── Condition ────────────────────────────────────────────────
@@ -207,6 +213,10 @@ pub enum Action {
         patterns: Vec<String>,
         #[serde(default)]
         fields: Vec<String>,
+        /// What to do when PII is found: "redact" (replace inline) or "block" (deny the request).
+        /// Default is "redact" for backwards compatibility.
+        #[serde(default)]
+        on_match: RedactOnMatch,
     },
     /// Transform the request (set headers, append system prompt, etc.)
     Transform { operations: Vec<TransformOp> },
@@ -239,6 +249,9 @@ pub enum Action {
         /// Block CSAM and other categorically harmful content.
         #[serde(default = "default_true")]
         block_harmful: bool,
+        /// Block code injection attempts (SQL, shell, JS eval, etc.).
+        #[serde(default = "default_true")]
+        block_code_injection: bool,
         /// If set, only allow prompts that mention at least one of these topics.
         #[serde(default)]
         topic_allowlist: Vec<String>,
@@ -252,6 +265,9 @@ pub enum Action {
         /// Default 0.5 — a single jailbreak match scores 0.5.
         #[serde(default = "default_risk_threshold")]
         risk_threshold: f32,
+        /// Maximum allowed content length (in characters). 0 = no limit.
+        #[serde(default)]
+        max_content_length: u32,
     },
     /// Traffic splitting for A/B testing and canary rollouts.
     ///
@@ -276,6 +292,167 @@ pub enum Action {
         #[serde(default)]
         experiment: Option<String>,
     },
+
+    /// Dynamic model routing — select the best model from a pool at request time.
+    ///
+    /// The gateway picks the best healthy model using the chosen strategy, then
+    /// rewrites `body.model` and the upstream URL automatically. Zero app‑code
+    /// changes required.
+    ///
+    /// ```json
+    /// {
+    ///   "action": "dynamic_route",
+    ///   "strategy": "lowest_cost",
+    ///   "pool": [
+    ///     {"model": "gpt-4o-mini",               "upstream_url": "https://api.openai.com"},
+    ///     {"model": "claude-3-haiku-20240307",    "upstream_url": "https://api.anthropic.com"},
+    ///     {"model": "gemini-2.0-flash",           "upstream_url": "https://generativelanguage.googleapis.com"}
+    ///   ]
+    /// }
+    /// ```
+    DynamicRoute {
+        /// How to rank and select from the pool.
+        strategy: RoutingStrategy,
+        /// Ordered list of candidate models with their upstream base URLs.
+        pool: Vec<RouteTarget>,
+        /// Used when all pool targets are unhealthy.
+        #[serde(default)]
+        fallback: Option<RouteTarget>,
+    },
+
+    /// Validate the LLM response against a JSON Schema.
+    ///
+    /// Applied in the response (post-flight) phase. If the response body does not
+    /// contain valid JSON matching `schema`, the request is denied.
+    ///
+    /// ```json
+    /// {
+    ///   "action": "validate_schema",
+    ///   "schema": {
+    ///     "type": "object",
+    ///     "required": ["answer", "confidence"],
+    ///     "properties": {
+    ///       "answer": { "type": "string" },
+    ///       "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+    ///     }
+    ///   },
+    ///   "not": false,
+    ///   "message": "Response must include answer and confidence fields"
+    /// }
+    /// ```
+    ValidateSchema {
+        /// The JSON Schema to validate against (draft 2020-12 compatible).
+        schema: serde_json::Value,
+        /// If true, the rule passes only when the response does NOT match the schema.
+        #[serde(default)]
+        not: bool,
+        /// Custom error message returned when validation fails.
+        #[serde(default)]
+        message: Option<String>,
+    },
+
+    /// Condition-based routing — select an upstream target based on request properties.
+    ///
+    /// Evaluates branches in order; the first matching branch wins. Falls back to
+    /// `fallback` if no branch matches, or denies the request if no fallback is set.
+    ///
+    /// ```json
+    /// {
+    ///   "action": "conditional_route",
+    ///   "branches": [
+    ///     {
+    ///       "condition": {"field": "body.model", "op": "eq", "value": "gpt-4o"},
+    ///       "target": {"model": "claude-3-5-sonnet-20241022", "upstream_url": "https://api.anthropic.com"}
+    ///     },
+    ///     {
+    ///       "condition": {"field": "body.stream", "op": "eq", "value": true},
+    ///       "target": {"model": "gpt-4o-mini", "upstream_url": "https://api.openai.com"}
+    ///     }
+    ///   ],
+    ///   "fallback": {"model": "gpt-4o-mini", "upstream_url": "https://api.openai.com"}
+    /// }
+    /// ```
+    ConditionalRoute {
+        /// Ordered list of condition→target branches.
+        branches: Vec<RouteBranch>,
+        /// Fallback target used when no branch matches. If absent, the request is denied.
+        #[serde(default)]
+        fallback: Option<RouteTarget>,
+    },
+
+    /// Delegate the guardrail check to an external vendor API.
+    ///
+    /// Applies to both pre-flight and post-flight phases. If the vendor
+    /// reports a violation above `threshold`, the `on_fail` action is applied.
+    ///
+    /// ```json
+    /// {
+    ///   "action": "external_guardrail",
+    ///   "vendor": "azure_content_safety",
+    ///   "endpoint": "https://<your-resource>.cognitiveservices.azure.com",
+    ///   "api_key_env": "AZURE_CONTENT_SAFETY_KEY",
+    ///   "threshold": 4,
+    ///   "on_fail": "deny"
+    /// }
+    /// ```
+    ExternalGuardrail {
+        /// Which external vendor to call.
+        vendor: ExternalVendor,
+        /// The vendor's API endpoint URL. For LlamaGuard: your Ollama/vLLM host.
+        endpoint: String,
+        /// Environment variable name that holds the API key.
+        /// The gateway reads this at runtime so keys stay out of policy configs.
+        #[serde(default)]
+        api_key_env: Option<String>,
+        /// Harm score threshold above which the request/response is blocked.
+        /// Range and semantics are vendor-specific (Azure: 0–7, AWS: 0.0–1.0).
+        #[serde(default = "default_risk_threshold")]
+        threshold: f32,
+        /// What to do when the vendor flags a violation: \"deny\" (default) or \"log\".
+        #[serde(default = "default_fallback")]
+        on_fail: String,
+    },
+}
+
+/// Which external guardrail vendor to call.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalVendor {
+    /// Azure AI Content Safety — https://azure.microsoft.com/en-us/products/ai-services/ai-content-safety
+    AzureContentSafety,
+    /// AWS Comprehend toxic language / PII detection
+    AwsComprehend,
+    /// Self-hosted LlamaGuard via Ollama or vLLM (OpenAI-compatible chat endpoint)
+    LlamaGuard,
+}
+
+// ── ConditionalRoute Sub-types ────────────────────────────────
+
+/// A single condition→target branch in a `ConditionalRoute` action.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteBranch {
+    /// The condition to evaluate against the request body / headers / metadata.
+    pub condition: RouteCondition,
+    /// The upstream target to route to when the condition matches.
+    pub target: RouteTarget,
+}
+
+/// A simple boolean condition evaluated against the request context.
+///
+/// Supports: `eq`, `neq`, `contains`, `starts_with`, `ends_with`, `exists`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteCondition {
+    /// JSON pointer or named field:
+    ///   - `"body.model"` — request body field `model`
+    ///   - `"body.messages.0.content"` — first message content
+    ///   - `"header.x-user-tier"` — request header value
+    ///   - `"metadata.env"` — `x-ailink-metadata` JSON field
+    pub field: String,
+    /// Comparison operator: `eq`, `neq`, `contains`, `starts_with`, `ends_with`, `exists`, `regex`
+    pub op: String,
+    /// The value to compare against. Use `null` for `exists` checks.
+    #[serde(default)]
+    pub value: serde_json::Value,
 }
 
 // ── Action Sub-types ─────────────────────────────────────────
@@ -291,6 +468,30 @@ pub struct SplitVariant {
     /// Optional variant label shown in experiment analytics (e.g., "control", "experiment").
     #[serde(default)]
     pub name: Option<String>,
+}
+
+/// Routing strategy for `DynamicRoute` actions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingStrategy {
+    /// Pick the model with the lowest blended cost from the pricing cache.
+    LowestCost,
+    /// Pick the model with the lowest p50 latency from the last 24h.
+    LowestLatency,
+    /// Rotate through the pool sequentially (per-token counter).
+    RoundRobin,
+}
+
+/// A single entry in a `DynamicRoute` pool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteTarget {
+    /// Model name to use (e.g. `"gpt-4o-mini"`).
+    pub model: String,
+    /// Upstream base URL. Provider is auto-detected by the Universal Translator.
+    pub upstream_url: String,
+    /// Optional credential override for this target.
+    #[serde(default)]
+    pub credential_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -313,12 +514,59 @@ pub enum RedactDirection {
     Both,
 }
 
+/// What to do when PII is detected in a Redact action.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RedactOnMatch {
+    /// Replace the PII in-place with a redaction token (e.g. `[REDACTED_SSN]`). Default.
+    #[default]
+    Redact,
+    /// Deny the request entirely and return a structured error listing detected PII types.
+    /// Use this in healthcare/finance contexts where sending PII is a hard policy violation.
+    Block,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TransformOp {
+    /// Set a request or response header.
     SetHeader { name: String, value: String },
+    /// Remove a request or response header.
     RemoveHeader { name: String },
+    /// Append text to the system prompt (creates one if absent).
     AppendSystemPrompt { text: String },
+    /// Prepend text to the system prompt (creates one if absent).
+    PrependSystemPrompt { text: String },
+    /// Find and replace using a regex pattern on the request/response body text.
+    /// Equivalent to Portkey's `regex` mutator.
+    RegexReplace {
+        pattern: String,
+        replacement: String,
+        /// If true, replace all occurrences. Default: true.
+        #[serde(default = "default_true")]
+        global: bool,
+    },
+    /// Set a JSON field by dot-path on the body (`model`, `temperature`, `user.id`, etc.).
+    /// Creates intermediate objects as needed.
+    SetBodyField {
+        path: String,
+        value: serde_json::Value,
+    },
+    /// Remove a JSON field by dot-path from the body.
+    RemoveBodyField { path: String },
+    /// Inject a synthetic message into `messages` array (request-side only).
+    /// Equivalent to Portkey's `addStringBeforeInput`/`addStringAfterInput` in structured form.
+    AddToMessageList {
+        role: String,
+        content: String,
+        /// Where to insert: "first" | "last" | "before_last" (default)
+        #[serde(default = "default_message_position")]
+        position: String,
+    },
+}
+
+fn default_message_position() -> String {
+    "before_last".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -388,10 +636,13 @@ where
 /// The result of evaluating all policies against a request.
 #[derive(Debug, Default)]
 pub struct EvalOutcome {
-    /// Actions to execute (in order).
+    /// Blocking actions to execute (in order) before responding.
     pub actions: Vec<TriggeredAction>,
     /// Shadow-mode violations (logged but not enforced).
     pub shadow_violations: Vec<String>,
+    /// Async rules that matched — evaluated in a background task after
+    /// the response has been sent. Violations are logged but cannot block.
+    pub async_triggered: Vec<TriggeredAction>,
 }
 
 /// An action that was triggered by a specific policy+rule.
@@ -927,5 +1178,144 @@ mod tests {
             }
             _ => panic!("Expected Override"),
         }
+    }
+
+    // ── Feature 9: ExternalGuardrail Deserialization ─────────────
+
+    #[test]
+    fn test_deserialize_external_guardrail_azure() {
+        let json = r#"{
+            "action": "external_guardrail",
+            "vendor": "azure_content_safety",
+            "endpoint": "https://my-resource.cognitiveservices.azure.com",
+            "api_key_env": "AZURE_KEY",
+            "threshold": 4.0,
+            "on_fail": "deny"
+        }"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        match action {
+            Action::ExternalGuardrail { vendor, endpoint, api_key_env, threshold, on_fail } => {
+                assert_eq!(vendor, ExternalVendor::AzureContentSafety);
+                assert_eq!(endpoint, "https://my-resource.cognitiveservices.azure.com");
+                assert_eq!(api_key_env, Some("AZURE_KEY".to_string()));
+                assert!((threshold - 4.0).abs() < 0.01);
+                assert_eq!(on_fail, "deny");
+            }
+            _ => panic!("Expected ExternalGuardrail, got {:?}", action),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_external_guardrail_aws() {
+        let json = r#"{
+            "action": "external_guardrail",
+            "vendor": "aws_comprehend",
+            "endpoint": "https://comprehend-proxy.example.com/detect-toxic",
+            "api_key_env": "AWS_TOKEN",
+            "threshold": 0.8
+        }"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        match action {
+            Action::ExternalGuardrail { vendor, threshold, on_fail, .. } => {
+                assert_eq!(vendor, ExternalVendor::AwsComprehend);
+                assert!((threshold - 0.8).abs() < 0.01);
+                assert_eq!(on_fail, "deny"); // default fallback
+            }
+            _ => panic!("Expected ExternalGuardrail"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_external_guardrail_llama_guard() {
+        let json = r#"{
+            "action": "external_guardrail",
+            "vendor": "llama_guard",
+            "endpoint": "http://localhost:11434",
+            "on_fail": "log"
+        }"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        match action {
+            Action::ExternalGuardrail { vendor, endpoint, api_key_env, threshold, on_fail } => {
+                assert_eq!(vendor, ExternalVendor::LlamaGuard);
+                assert_eq!(endpoint, "http://localhost:11434");
+                assert!(api_key_env.is_none(), "LlamaGuard should not require api_key_env");
+                assert!((threshold - 0.5).abs() < 0.01, "default threshold should be 0.5");
+                assert_eq!(on_fail, "log");
+            }
+            _ => panic!("Expected ExternalGuardrail"),
+        }
+    }
+
+    #[test]
+    fn test_deserialize_external_guardrail_defaults() {
+        // Minimal config — threshold and on_fail should use defaults
+        let json = r#"{
+            "action": "external_guardrail",
+            "vendor": "azure_content_safety",
+            "endpoint": "https://example.com"
+        }"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        match action {
+            Action::ExternalGuardrail { threshold, on_fail, api_key_env, .. } => {
+                assert!((threshold - 0.5).abs() < 0.01, "default threshold should be 0.5");
+                assert_eq!(on_fail, "deny", "default on_fail should be 'deny'");
+                assert!(api_key_env.is_none(), "api_key_env should default to None");
+            }
+            _ => panic!("Expected ExternalGuardrail"),
+        }
+    }
+
+    #[test]
+    fn test_external_vendor_round_trip() {
+        // Verify ExternalVendor serializes and deserializes correctly
+        let vendors = vec![
+            (ExternalVendor::AzureContentSafety, "\"azure_content_safety\""),
+            (ExternalVendor::AwsComprehend, "\"aws_comprehend\""),
+            (ExternalVendor::LlamaGuard, "\"llama_guard\""),
+        ];
+        for (variant, expected_json) in vendors {
+            let serialized = serde_json::to_string(&variant).unwrap();
+            assert_eq!(serialized, expected_json, "serialization mismatch for {:?}", variant);
+            let deserialized: ExternalVendor = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(deserialized, variant, "round-trip mismatch for {:?}", variant);
+        }
+    }
+
+    #[test]
+    fn test_external_guardrail_in_rule_with_async_check() {
+        // ExternalGuardrail should work as an async_check rule
+        let json = r#"{
+            "when": { "field": "request.method", "op": "eq", "value": "POST" },
+            "then": {
+                "action": "external_guardrail",
+                "vendor": "azure_content_safety",
+                "endpoint": "https://example.com",
+                "threshold": 3.0
+            },
+            "async_check": true
+        }"#;
+        let rule: Rule = serde_json::from_str(json).unwrap();
+        assert!(rule.async_check);
+        match &rule.then[0] {
+            Action::ExternalGuardrail { vendor, threshold, .. } => {
+                assert_eq!(*vendor, ExternalVendor::AzureContentSafety);
+                assert!((threshold - 3.0).abs() < 0.01);
+            }
+            _ => panic!("Expected ExternalGuardrail action in rule"),
+        }
+    }
+
+    #[test]
+    fn test_action_name_includes_external_guardrail() {
+        // Verify the action name mapper recognizes ExternalGuardrail
+        let action = Action::ExternalGuardrail {
+            vendor: ExternalVendor::LlamaGuard,
+            endpoint: "http://localhost:11434".to_string(),
+            api_key_env: None,
+            threshold: 0.5,
+            on_fail: "deny".to_string(),
+        };
+        // Just verify it doesn't panic — the actual name is tested in engine::tests
+        let _ = format!("{:?}", action);
     }
 }

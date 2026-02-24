@@ -67,14 +67,8 @@ export default function TeamPage() {
 
     return (
         <div className="p-8 space-y-8 max-w-[1200px] mx-auto animate-fade-in">
-            {/* Header */}
-            <div className="flex items-center justify-between">
-                <div className="space-y-1">
-                    <h2 className="text-3xl font-bold tracking-tight">Team Members</h2>
-                    <p className="text-muted-foreground">
-                        Manage who has access to this workspace.
-                    </p>
-                </div>
+            {/* Controls */}
+            <div className="flex items-center justify-end mb-2">
                 <Button onClick={() => setShowInvite(true)}>
                     <Plus className="h-4 w-4 mr-2" />
                     Invite Member

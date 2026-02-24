@@ -152,6 +152,7 @@ class AIlinkClient:
         self,
         session_id: Optional[str] = None,
         parent_span_id: Optional[str] = None,
+        properties: Optional[dict] = None,
     ):
         """
         Context manager that injects distributed-tracing headers.
@@ -163,18 +164,61 @@ class AIlinkClient:
         Args:
             session_id:     Logical session identifier (auto-generated if omitted).
             parent_span_id: Parent span for nested traces.
+            properties:     Arbitrary JSON key-values attached to every audit log
+                            for requests in this session. Stored as JSONB and
+                            GIN-indexed for fast filtering.
 
         Example::
 
-            with client.trace(session_id="conv-abc123") as t:
-                t.post("/v1/chat/completions", json={...})
-                t.post("/v1/chat/completions", json={...})  # same session
+            with client.trace(
+                session_id="agent-run-42",
+                properties={"env": "prod", "customer": "acme", "feature": "research"}
+            ) as t:
+                t.post("/v1/chat/completions", json={...})  # step 1
+                t.post("/v1/chat/completions", json={...})  # step 2
+
+            # Then query the total cost of this agent run:
+            # GET /api/v1/sessions/agent-run-42
         """
+        import json
         sid = session_id or str(uuid.uuid4())
         extra: dict = {"x-session-id": sid}
         if parent_span_id:
             extra["x-parent-span-id"] = parent_span_id
+        if properties:
+            extra["x-properties"] = json.dumps(properties)
         scoped = _ScopedClient(self._http, extra_headers=extra)
+        try:
+            yield scoped
+        finally:
+            pass
+
+    # ── Guardrails ─────────────────────────────────────────────
+
+    @contextmanager
+    def with_guardrails(self, presets: list[str]):
+        """
+        Context manager to apply guardrails on a per-request basis.
+
+        Injects the ``X-AILink-Guardrails`` header with comma-separated
+        preset names so the gateway applies them for this request only.
+
+        Available presets: ``pii_redaction``, ``pii_block``, ``prompt_injection``.
+
+        Args:
+            presets: List of preset names.
+
+        Example::
+
+            with client.with_guardrails(["pii_redaction"]) as g:
+                g.post("/v1/chat/completions", json={...})
+        """
+        if not presets:
+            yield self
+            return
+
+        header_val = ",".join(presets)
+        scoped = _ScopedClient(self._http, extra_headers={"X-AILink-Guardrails": header_val})
         try:
             yield scoped
         finally:
@@ -423,6 +467,12 @@ class AIlinkClient:
         from .resources.experiments import ExperimentsResource
         return ExperimentsResource(self)
 
+    @cached_property
+    def guardrails(self) -> "GuardrailsResource":
+        """Guardrail management — enable, disable, and list safety/privacy presets per token."""
+        from .resources.guardrails import GuardrailsResource
+        return GuardrailsResource(self)
+
     def billing(self) -> "BillingResource":
         from .resources.billing import BillingResource
         return BillingResource(self)
@@ -431,6 +481,30 @@ class AIlinkClient:
     def analytics(self) -> "AnalyticsResource":
         from .resources.analytics import AnalyticsResource
         return AnalyticsResource(self)
+
+    @cached_property
+    def config(self) -> "ConfigResource":
+        """Config-as-Code: export/import policies and tokens as YAML or JSON."""
+        from .resources.config import ConfigResource
+        return ConfigResource(self)
+
+    @cached_property
+    def realtime(self) -> "RealtimeResource":
+        """Realtime WebSocket sessions — connect to OpenAI Realtime API via the gateway."""
+        from .resources.realtime import RealtimeResource
+        return RealtimeResource(self)
+
+    @cached_property
+    def batches(self) -> "BatchesResource":
+        """Feature 10: Proxy OpenAI /v1/batches through the AILink gateway."""
+        from .resources.batches import BatchesResource
+        return BatchesResource(self)
+
+    @cached_property
+    def fine_tuning(self) -> "FineTuningResource":
+        """Feature 10: Proxy OpenAI /v1/fine_tuning/jobs through the AILink gateway."""
+        from .resources.fine_tuning import FineTuningResource
+        return FineTuningResource(self)
 
 
 class AsyncClient:
@@ -560,6 +634,37 @@ class AsyncClient:
         if parent_span_id:
             extra["x-parent-span-id"] = parent_span_id
         scoped = _AsyncScopedClient(self._http, extra_headers=extra)
+        try:
+            yield scoped
+        finally:
+            pass
+
+    # ── Guardrails ─────────────────────────────────────────────
+
+    @asynccontextmanager
+    async def with_guardrails(self, presets: list[str]):
+        """
+        Async context manager to apply guardrails on a per-request basis.
+
+        Injects the ``X-AILink-Guardrails`` header with comma-separated
+        preset names so the gateway applies them for this request only.
+
+        Available presets: ``pii_redaction``, ``pii_block``, ``prompt_injection``.
+
+        Args:
+            presets: List of preset names.
+
+        Example::
+
+            async with client.with_guardrails(["pii_redaction"]) as g:
+                await g.post("/v1/chat/completions", json={...})
+        """
+        if not presets:
+            yield self
+            return
+
+        header_val = ",".join(presets)
+        scoped = _AsyncScopedClient(self._http, extra_headers={"X-AILink-Guardrails": header_val})
         try:
             yield scoped
         finally:
@@ -721,6 +826,36 @@ class AsyncClient:
     def analytics(self) -> "AsyncAnalyticsResource":
         from .resources.analytics import AsyncAnalyticsResource
         return AsyncAnalyticsResource(self)
+
+    @cached_property
+    def guardrails(self) -> "AsyncGuardrailsResource":
+        """Guardrail management — enable, disable, and list safety/privacy presets per token."""
+        from .resources.guardrails import AsyncGuardrailsResource
+        return AsyncGuardrailsResource(self)
+
+    @cached_property
+    def config(self) -> "AsyncConfigResource":
+        """Config-as-Code: export/import policies and tokens as YAML or JSON."""
+        from .resources.config import AsyncConfigResource
+        return AsyncConfigResource(self)
+
+    @cached_property
+    def realtime(self) -> "AsyncRealtimeResource":
+        """Async Realtime WebSocket sessions via the gateway."""
+        from .resources.realtime import AsyncRealtimeResource
+        return AsyncRealtimeResource(self)
+
+    @cached_property
+    def batches(self) -> "AsyncBatchesResource":
+        """Feature 10: Async proxy of OpenAI /v1/batches through the AILink gateway."""
+        from .resources.batches import AsyncBatchesResource
+        return AsyncBatchesResource(self)
+
+    @cached_property
+    def fine_tuning(self) -> "AsyncFineTuningResource":
+        """Feature 10: Async proxy of OpenAI /v1/fine_tuning/jobs through the AILink gateway."""
+        from .resources.fine_tuning import AsyncFineTuningResource
+        return AsyncFineTuningResource(self)
 
 
 # ── Scoped helpers (internal) ─────────────────────────────────────────────────

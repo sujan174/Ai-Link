@@ -21,7 +21,7 @@ export function Breadcrumbs() {
     if (segments.length === 0) return null;
 
     return (
-        <nav className="flex items-center text-sm text-muted-foreground mb-4">
+        <nav className="flex items-center text-sm text-muted-foreground">
             <Link href="/" className="hover:text-foreground transition-colors">
                 <Home className="h-4 w-4" />
             </Link>
@@ -34,7 +34,7 @@ export function Breadcrumbs() {
                     <Fragment key={path}>
                         <ChevronRight className="h-4 w-4 mx-1 text-muted-foreground/50" />
                         {isLast ? (
-                            <span className="font-medium text-foreground truncate max-w-[200px]">
+                            <span className="font-bold text-xl tracking-tight text-foreground truncate max-w-[300px]">
                                 {label}
                             </span>
                         ) : (

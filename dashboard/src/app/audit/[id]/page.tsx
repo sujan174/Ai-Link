@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getAuditLogDetail, AuditLogDetail } from "@/lib/api";
+import Link from "next/link";
 import {
     Activity,
     Clock,
@@ -224,6 +225,51 @@ export default function AuditDetailPage() {
                         </div>
                     </CardContent>
                 </Card>
+            )}
+
+            {/* Custom Properties */}
+            {log.custom_properties && Object.keys(log.custom_properties).length > 0 && (
+                <Card className="glass-card">
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-sm font-medium flex items-center gap-2">
+                            <span className="text-base">🏷️</span> Custom Properties
+                            {log.session_id && (
+                                <Link
+                                    href={`/sessions/${encodeURIComponent(log.session_id)}`}
+                                    className="ml-auto flex items-center gap-1.5 text-xs text-primary hover:underline font-mono bg-primary/10 px-2 py-0.5 rounded"
+                                >
+                                    <span>⬡</span> {log.session_id.length > 30 ? log.session_id.slice(0, 28) + "…" : log.session_id}
+                                </Link>
+                            )}
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="flex flex-wrap gap-2">
+                            {Object.entries(log.custom_properties).map(([k, v]) => (
+                                <div
+                                    key={k}
+                                    className="inline-flex items-center gap-1.5 text-xs bg-muted/60 border border-border/60 px-2.5 py-1 rounded-md font-mono"
+                                >
+                                    <span className="text-muted-foreground">{k}:</span>
+                                    <span className="font-semibold">{typeof v === "object" ? JSON.stringify(v) : String(v)}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </CardContent>
+                </Card>
+            )}
+
+            {/* Session link (no custom props case) */}
+            {!log.custom_properties && log.session_id && (
+                <div className="flex items-center gap-2 text-sm">
+                    <span className="text-muted-foreground">Session:</span>
+                    <Link
+                        href={`/sessions/${encodeURIComponent(log.session_id)}`}
+                        className="font-mono text-primary hover:underline"
+                    >
+                        {log.session_id}
+                    </Link>
+                </div>
             )}
 
             <div className="grid md:grid-cols-3 gap-6">

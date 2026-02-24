@@ -22,6 +22,7 @@ mod store;
 mod vault;
 
 use cache::TieredCache;
+use store::payload_store::PayloadStore;
 use store::postgres::PgStore;
 use vault::builtin::BuiltinStore;
 
@@ -36,6 +37,10 @@ pub struct AppState {
     pub config: config::Config,
     pub lb: proxy::loadbalancer::LoadBalancer,
     pub pricing: models::pricing_cache::PricingCache,
+    /// p50 latency per model (refreshed every 5min from audit_logs).
+    pub latency: models::latency_cache::LatencyCache,
+    /// Payload storage backend — Postgres (default) or S3/MinIO/local.
+    pub payload_store: Arc<PayloadStore>,
 }
 
 #[tokio::main]
@@ -97,6 +102,8 @@ async fn main() -> anyhow::Result<()> {
                 config: cfg,
                 lb: proxy::loadbalancer::LoadBalancer::new(),
                 pricing: models::pricing_cache::PricingCache::new(),
+                latency: models::latency_cache::LatencyCache::new(),
+                payload_store: Arc::new(PayloadStore::from_env().unwrap_or(PayloadStore::Postgres)),
             });
 
             handle_token_command(command, &state).await
@@ -128,6 +135,8 @@ async fn main() -> anyhow::Result<()> {
                  config: cfg,
                  lb: proxy::loadbalancer::LoadBalancer::new(),
                  pricing: models::pricing_cache::PricingCache::new(),
+                 latency: models::latency_cache::LatencyCache::new(),
+                 payload_store: Arc::new(PayloadStore::from_env().unwrap_or(PayloadStore::Postgres)),
              });
 
              handle_policy_command(command, &state).await
@@ -164,6 +173,13 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
     let notifier = notification::slack::SlackNotifier::new(cfg.slack_webhook_url.clone());
 
     let pricing = models::pricing_cache::PricingCache::new();
+    let latency = models::latency_cache::LatencyCache::new();
+
+    tracing::info!("Initializing payload store...");
+    let payload_store = Arc::new(
+        PayloadStore::from_env()
+            .context("invalid PAYLOAD_STORE_URL")?
+    );
 
     let state = Arc::new(AppState {
         db,
@@ -175,6 +191,8 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
         config: cfg,
         lb: proxy::loadbalancer::LoadBalancer::new(),
         pricing: pricing.clone(),
+        latency: latency.clone(),
+        payload_store,
     });
 
     // Load initial pricing from DB into the in-memory cache
@@ -198,6 +216,8 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
         // Health endpoints (no auth)
         .route("/healthz", axum::routing::get(|| async { "ok" }))
         .route("/readyz", axum::routing::get(readiness_check))
+        // Realtime WebSocket proxy — must come before the catch-all fallback
+        .route("/v1/realtime", axum::routing::get(proxy::realtime::realtime_handler))
         // Management API — nested under /api/v1 (preserves middleware + fallback)
         .nest("/api/v1", api::api_router(state.clone()))
         // Proxy: catch everything else
@@ -253,6 +273,22 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
             }
         });
         tracing::info!("Budget check job started (project spend alerts every 15min)");
+    }
+
+    // Phase 2.5: Start latency cache refresh job for DynamicRoute (every 5 minutes)
+    {
+        let latency_pool = state.db.pool().clone();
+        let latency_cache = latency.clone();
+        tokio::spawn(async move {
+            // Initial load at startup
+            latency_cache.reload(&latency_pool).await;
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300)); // 5min
+            loop {
+                interval.tick().await;
+                latency_cache.reload(&latency_pool).await;
+            }
+        });
+        tracing::info!("Latency cache refresh job started (p50 per model every 5min)");
     }
 
     // Phase 2.4: Periodic in-memory cache eviction (every 60s)

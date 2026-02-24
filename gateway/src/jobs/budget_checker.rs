@@ -13,6 +13,7 @@ use rust_decimal::Decimal;
 use sqlx::PgPool;
 use tracing::{debug, info, warn};
 
+use crate::cache::TieredCache;
 use crate::notification::webhook::{WebhookEvent, WebhookNotifier};
 
 /// Run the budget check once. Called by the periodic job scheduler.
@@ -207,4 +208,36 @@ pub async fn is_project_over_hard_cap(pool: &PgPool, project_id: uuid::Uuid) -> 
             false // fail open
         }
     }
+}
+
+/// Cached variant of `is_project_over_hard_cap` for use in the request hot path.
+///
+/// Caches the result in Redis for 60 seconds to avoid a DB round-trip on every
+/// request. This means a project can over-spend by at most 60 seconds of requests
+/// after hitting the hard cap — an acceptable trade-off vs a per-request DB query.
+///
+/// The cache key is purposely short-lived and will refresh automatically.
+pub async fn is_project_over_hard_cap_cached(
+    pool: &PgPool,
+    cache: &TieredCache,
+    project_id: uuid::Uuid,
+) -> bool {
+    use redis::AsyncCommands;
+
+    let cache_key = format!("project_hardcap:{}", project_id);
+    let mut conn = cache.redis();
+
+    // Try to read from Redis first
+    if let Ok(Some(cached)) = conn.get::<_, Option<String>>(&cache_key).await {
+        return cached == "1";
+    }
+
+    // Cache miss: query DB and populate cache
+    let is_capped = is_project_over_hard_cap(pool, project_id).await;
+
+    // Cache for 60 seconds (intentionally short so hard caps take effect quickly)
+    let value = if is_capped { "1" } else { "0" };
+    let _: () = conn.set_ex(&cache_key, value, 60).await.unwrap_or(());
+
+    is_capped
 }

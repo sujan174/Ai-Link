@@ -7,7 +7,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value;
 
-use crate::models::policy::{Action, RedactDirection, TransformOp};
+use crate::models::policy::{Action, RedactDirection, RedactOnMatch, TransformOp};
 
 // ── Built-in PII patterns ────────────────────────────────────
 
@@ -30,7 +30,41 @@ static API_KEY_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\b(sk-[a-zA-Z0-9_\-\.]{20,})\b").unwrap());
 
 static PHONE_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b").unwrap());
+    Lazy::new(|| Regex::new(r"\b\+?1?[-. ]?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b").unwrap());
+
+// Phase 6: Extended PII patterns for healthcare/finance
+static IBAN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\b[A-Z]{2}\d{2}[A-Z0-9]{4}\d{7}(?:[A-Z0-9]{0,16})\b").unwrap()
+});
+
+static DOB_RE: Lazy<Regex> = Lazy::new(|| {
+    // MM/DD/YYYY or DD-MM-YYYY — common date-of-birth formats
+    Regex::new(r"\b(0[1-9]|1[0-2])/(0[1-9]|[12]\d|3[01])/(19|20)\d{2}\b|\b(0[1-9]|[12]\d|3[01])-(0[1-9]|1[0-2])-(19|20)\d{2}\b").unwrap()
+});
+
+static IPV4_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\b(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b").unwrap()
+});
+
+// Phase 7: Extended PII patterns for enterprise compliance
+static PASSPORT_RE: Lazy<Regex> = Lazy::new(|| {
+    // US, UK, common formats: letter(s) followed by 6-9 digits
+    Regex::new(r"\b[A-Z]{1,2}\d{6,9}\b").unwrap()
+});
+
+static AWS_KEY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\b(AKIA[A-Z0-9]{16})\b").unwrap()
+});
+
+static DL_RE: Lazy<Regex> = Lazy::new(|| {
+    // US driver's license: 1 letter + 4-12 digits (covers most states)
+    Regex::new(r"\b[A-Z]\d{4,12}\b").unwrap()
+});
+
+static MRN_RE: Lazy<Regex> = Lazy::new(|| {
+    // Medical Record Number: MRN- or MR- followed by digits
+    Regex::new(r"(?i)\b(MRN|MR)[-:]?\s*\d{5,12}\b").unwrap()
+});
 
 const BUILTIN_PATTERNS: &[BuiltinPattern] = &[
     BuiltinPattern {
@@ -58,9 +92,53 @@ const BUILTIN_PATTERNS: &[BuiltinPattern] = &[
         regex: &PHONE_RE,
         replacement: "[REDACTED_PHONE]",
     },
+    BuiltinPattern {
+        name: "iban",
+        regex: &IBAN_RE,
+        replacement: "[REDACTED_IBAN]",
+    },
+    BuiltinPattern {
+        name: "dob",
+        regex: &DOB_RE,
+        replacement: "[REDACTED_DOB]",
+    },
+    BuiltinPattern {
+        name: "ipv4",
+        regex: &IPV4_RE,
+        replacement: "[REDACTED_IP]",
+    },
+    BuiltinPattern {
+        name: "passport",
+        regex: &PASSPORT_RE,
+        replacement: "[REDACTED_PASSPORT]",
+    },
+    BuiltinPattern {
+        name: "aws_key",
+        regex: &AWS_KEY_RE,
+        replacement: "[REDACTED_AWS_KEY]",
+    },
+    BuiltinPattern {
+        name: "drivers_license",
+        regex: &DL_RE,
+        replacement: "[REDACTED_DL]",
+    },
+    BuiltinPattern {
+        name: "mrn",
+        regex: &MRN_RE,
+        replacement: "[REDACTED_MRN]",
+    },
 ];
 
 // ── Redact ───────────────────────────────────────────────────
+
+/// The outcome of an `apply_redact` call.
+#[derive(Debug, Default)]
+pub struct RedactResult {
+    /// PII type names that were matched (for audit logging).
+    pub matched_types: Vec<String>,
+    /// True when `on_match = "block"` AND PII was found — the caller should deny the request.
+    pub should_block: bool,
+}
 
 /// Apply policy-driven redaction to a JSON body.
 ///
@@ -68,26 +146,27 @@ const BUILTIN_PATTERNS: &[BuiltinPattern] = &[
 /// - **Pattern-based**: Named patterns (`ssn`, `email`) or custom regex strings.
 /// - **Field-based**: Blanks specific JSON keys listed in `fields`.
 ///
-/// Returns the list of pattern names that matched (for audit logging).
-pub fn apply_redact(body: &mut Value, action: &Action, is_request: bool) -> Vec<String> {
-    let (direction, patterns, fields) = match action {
+/// Returns a `RedactResult` describing what matched and whether the request should be blocked.
+pub fn apply_redact(body: &mut Value, action: &Action, is_request: bool) -> RedactResult {
+    let (direction, patterns, fields, on_match) = match action {
         Action::Redact {
             direction,
             patterns,
             fields,
-        } => (direction, patterns, fields),
-        _ => return vec![],
+            on_match,
+        } => (direction, patterns, fields, on_match),
+        _ => return RedactResult::default(),
     };
 
     // Direction check: should we redact in this phase?
     let should_run = match direction {
-        RedactDirection::Request => is_request,
+        RedactDirection::Request  => is_request,
         RedactDirection::Response => !is_request,
-        RedactDirection::Both => true,
+        RedactDirection::Both     => true,
     };
 
     if !should_run {
-        return vec![];
+        return RedactResult::default();
     }
 
     let mut matched = Vec::new();
@@ -103,7 +182,9 @@ pub fn apply_redact(body: &mut Value, action: &Action, is_request: bool) -> Vec<
         redact_fields(body, fields, &mut matched);
     }
 
-    matched
+    let should_block = !matched.is_empty() && *on_match == RedactOnMatch::Block;
+
+    RedactResult { matched_types: matched, should_block }
 }
 
 /// Compile pattern names into (regex, replacement, name) tuples.
@@ -230,6 +311,30 @@ pub fn apply_transform(body: &mut Value, header_mutations: &mut HeaderMutations,
             tracing::info!("transform: append system prompt");
             append_system_prompt(body, text);
         }
+        TransformOp::PrependSystemPrompt { text } => {
+            tracing::info!("transform: prepend system prompt");
+            prepend_system_prompt(body, text);
+        }
+        TransformOp::RegexReplace { pattern, replacement, global } => {
+            tracing::info!(pattern = %pattern, "transform: regex replace");
+            if let Ok(re) = Regex::new(pattern) {
+                apply_regex_replace_to_value(body, &re, replacement, *global);
+            } else {
+                tracing::warn!(pattern = %pattern, "transform: invalid regex pattern, skipping");
+            }
+        }
+        TransformOp::SetBodyField { path, value } => {
+            tracing::info!(path = %path, "transform: set body field");
+            set_body_field_by_path(body, path, value.clone());
+        }
+        TransformOp::RemoveBodyField { path } => {
+            tracing::info!(path = %path, "transform: remove body field");
+            remove_body_field_by_path(body, path);
+        }
+        TransformOp::AddToMessageList { role, content, position } => {
+            tracing::info!(role = %role, position = %position, "transform: add to message list");
+            add_to_message_list(body, role, content, position);
+        }
     }
 }
 
@@ -280,6 +385,108 @@ fn append_system_prompt(body: &mut Value, text: &str) {
     }
 }
 
+/// Prepend text to the first system message, or insert a system message at index 0.
+fn prepend_system_prompt(body: &mut Value, text: &str) {
+    if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        // Find existing system message and prepend
+        if let Some(sys_msg) = messages.iter_mut().find(|m| m["role"] == "system") {
+            if let Some(content) = sys_msg["content"].as_str() {
+                let new_content = format!("{}\n{}", text, content);
+                sys_msg["content"] = Value::String(new_content);
+                return;
+            }
+        }
+        // No system message — insert at position 0
+        messages.insert(0, serde_json::json!({
+            "role": "system",
+            "content": text
+        }));
+    }
+}
+
+/// Apply a regex find/replace to every string value in a JSON tree.
+fn apply_regex_replace_to_value(v: &mut Value, re: &Regex, replacement: &str, global: bool) {
+    match v {
+        Value::String(s) => {
+            let new = if global {
+                re.replace_all(s, replacement).to_string()
+            } else {
+                re.replace(s, replacement).to_string()
+            };
+            *s = new;
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                apply_regex_replace_to_value(item, re, replacement, global);
+            }
+        }
+        Value::Object(obj) => {
+            for (_, val) in obj {
+                apply_regex_replace_to_value(val, re, replacement, global);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Set a JSON field by dot-separated path, creating intermediate objects as needed.
+/// e.g. `"temperature"` sets `body.temperature`; `"user.name"` sets `body.user.name`.
+fn set_body_field_by_path(body: &mut Value, path: &str, value: Value) {
+    let parts: Vec<&str> = path.splitn(2, '.').collect();
+    if parts.len() == 1 {
+        // Leaf — set directly
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert(parts[0].to_owned(), value);
+        }
+    } else {
+        // Recurse into nested object, creating it if absent
+        if let Some(obj) = body.as_object_mut() {
+            let child = obj.entry(parts[0]).or_insert(Value::Object(Default::default()));
+            set_body_field_by_path(child, parts[1], value);
+        }
+    }
+}
+
+/// Remove a JSON field by dot-separated path.
+fn remove_body_field_by_path(body: &mut Value, path: &str) {
+    let parts: Vec<&str> = path.splitn(2, '.').collect();
+    if parts.len() == 1 {
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove(parts[0]);
+        }
+    } else {
+        if let Some(obj) = body.as_object_mut() {
+            if let Some(child) = obj.get_mut(parts[0]) {
+                remove_body_field_by_path(child, parts[1]);
+            }
+        }
+    }
+}
+
+/// Inject a synthetic message into the `messages` array.
+/// `position`:
+///   - `"first"` — insert at index 0
+///   - `"last"` — append at the end
+///   - `"before_last"` (default) — insert before the final message
+fn add_to_message_list(body: &mut Value, role: &str, content: &str, position: &str) {
+    if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        let msg = serde_json::json!({ "role": role, "content": content });
+        match position {
+            "first" => messages.insert(0, msg),
+            "last" => messages.push(msg),
+            _ => {
+                // "before_last" — insert before the last element
+                let len = messages.len();
+                if len == 0 {
+                    messages.push(msg);
+                } else {
+                    messages.insert(len - 1, msg);
+                }
+            }
+        }
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -296,13 +503,14 @@ mod tests {
             direction: RedactDirection::Request,
             patterns: vec!["email".to_string()],
             fields: vec![],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body = json!({"user": {"email": "alice@example.com", "name": "Alice"}});
-        let matched = apply_redact(&mut body, &action, true);
+        let result = apply_redact(&mut body, &action, true);
 
         assert_eq!(body["user"]["email"], "[REDACTED_EMAIL]");
         assert_eq!(body["user"]["name"], "Alice"); // untouched
-        assert!(matched.contains(&"email".to_string()));
+        assert!(result.matched_types.contains(&"email".to_string()));
     }
 
     #[test]
@@ -311,12 +519,13 @@ mod tests {
             direction: RedactDirection::Both,
             patterns: vec!["ssn".to_string()],
             fields: vec![],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body = json!({"data": "My SSN is 123-45-6789"});
-        let matched = apply_redact(&mut body, &action, true);
+        let result = apply_redact(&mut body, &action, true);
 
         assert_eq!(body["data"], "My SSN is [REDACTED_SSN]");
-        assert!(matched.contains(&"ssn".to_string()));
+        assert!(result.matched_types.contains(&"ssn".to_string()));
     }
 
     #[test]
@@ -325,16 +534,17 @@ mod tests {
             direction: RedactDirection::Request,
             patterns: vec!["email".to_string(), "api_key".to_string()],
             fields: vec![],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body = json!({
             "from": "user@test.com",
             "key": "sk-abcdefghijklmnopqrstuvwxyz1234"
         });
-        let matched = apply_redact(&mut body, &action, true);
+        let result = apply_redact(&mut body, &action, true);
 
         assert_eq!(body["from"], "[REDACTED_EMAIL]");
         assert_eq!(body["key"], "[REDACTED_API_KEY]");
-        assert_eq!(matched.len(), 2);
+        assert_eq!(result.matched_types.len(), 2);
     }
 
     #[test]
@@ -343,12 +553,13 @@ mod tests {
             direction: RedactDirection::Request,
             patterns: vec![r"\b[A-Z]{2}\d{6}\b".to_string()], // passport-like
             fields: vec![],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body = json!({"passport": "AB123456"});
-        let matched = apply_redact(&mut body, &action, true);
+        let result = apply_redact(&mut body, &action, true);
 
         assert!(body["passport"].as_str().unwrap().contains("[REDACTED_"));
-        assert_eq!(matched.len(), 1);
+        assert_eq!(result.matched_types.len(), 1);
     }
 
     #[test]
@@ -357,6 +568,7 @@ mod tests {
             direction: RedactDirection::Request,
             patterns: vec!["email".to_string()],
             fields: vec![],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body = json!({
             "users": [
@@ -364,11 +576,11 @@ mod tests {
                 {"email": "c@d.com"}
             ]
         });
-        let matched = apply_redact(&mut body, &action, true);
+        let result = apply_redact(&mut body, &action, true);
 
         assert_eq!(body["users"][0]["email"], "[REDACTED_EMAIL]");
         assert_eq!(body["users"][1]["email"], "[REDACTED_EMAIL]");
-        assert_eq!(matched.len(), 1); // deduplicated
+        assert_eq!(result.matched_types.len(), 1); // deduplicated
     }
 
     // ── Field-based Redaction ────────────────────────────────
@@ -379,18 +591,19 @@ mod tests {
             direction: RedactDirection::Request,
             patterns: vec![],
             fields: vec!["password".to_string(), "secret".to_string()],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body = json!({
             "user": "alice",
             "password": "hunter2",
             "secret": "s3cr3t"
         });
-        let matched = apply_redact(&mut body, &action, true);
+        let result = apply_redact(&mut body, &action, true);
 
         assert_eq!(body["password"], "[REDACTED]");
         assert_eq!(body["secret"], "[REDACTED]");
         assert_eq!(body["user"], "alice");
-        assert!(matched.contains(&"field:password".to_string()));
+        assert!(result.matched_types.contains(&"field:password".to_string()));
     }
 
     #[test]
@@ -399,6 +612,7 @@ mod tests {
             direction: RedactDirection::Request,
             patterns: vec![],
             fields: vec!["token".to_string()],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body = json!({
             "auth": {"token": "xyz"},
@@ -418,17 +632,18 @@ mod tests {
             direction: RedactDirection::Request,
             patterns: vec!["email".to_string()],
             fields: vec![],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body = json!({"email": "a@b.com"});
 
         // Should run on request
-        let matched = apply_redact(&mut body, &action, true);
-        assert_eq!(matched.len(), 1);
+        let result = apply_redact(&mut body, &action, true);
+        assert_eq!(result.matched_types.len(), 1);
 
         // Should NOT run on response
         let mut body2 = json!({"email": "a@b.com"});
-        let matched2 = apply_redact(&mut body2, &action, false);
-        assert!(matched2.is_empty());
+        let result2 = apply_redact(&mut body2, &action, false);
+        assert!(result2.matched_types.is_empty());
         assert_eq!(body2["email"], "a@b.com"); // untouched
     }
 
@@ -438,16 +653,17 @@ mod tests {
             direction: RedactDirection::Response,
             patterns: vec!["ssn".to_string()],
             fields: vec![],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body = json!({"data": "SSN: 123-45-6789"});
 
         // Should NOT run on request
-        let matched = apply_redact(&mut body, &action, true);
-        assert!(matched.is_empty());
+        let result = apply_redact(&mut body, &action, true);
+        assert!(result.matched_types.is_empty());
 
         // Should run on response
-        let matched2 = apply_redact(&mut body, &action, false);
-        assert_eq!(matched2.len(), 1);
+        let result2 = apply_redact(&mut body, &action, false);
+        assert_eq!(result2.matched_types.len(), 1);
     }
 
     #[test]
@@ -456,12 +672,13 @@ mod tests {
             direction: RedactDirection::Both,
             patterns: vec!["email".to_string()],
             fields: vec![],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body_req = json!({"email": "a@b.com"});
         let mut body_resp = json!({"email": "c@d.com"});
 
-        assert_eq!(apply_redact(&mut body_req, &action, true).len(), 1);
-        assert_eq!(apply_redact(&mut body_resp, &action, false).len(), 1);
+        assert_eq!(apply_redact(&mut body_req, &action, true).matched_types.len(), 1);
+        assert_eq!(apply_redact(&mut body_resp, &action, false).matched_types.len(), 1);
     }
 
     // ── Transform: AppendSystemPrompt ────────────────────────
@@ -567,11 +784,12 @@ mod tests {
             direction: RedactDirection::Request,
             patterns: vec![],
             fields: vec![],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body = json!({"email": "a@b.com"});
-        let matched = apply_redact(&mut body, &action, true);
+        let result = apply_redact(&mut body, &action, true);
 
-        assert!(matched.is_empty());
+        assert!(result.matched_types.is_empty());
         assert_eq!(body["email"], "a@b.com"); // untouched
     }
 
@@ -582,8 +800,8 @@ mod tests {
             message: "no".to_string(),
         };
         let mut body = json!({"data": "test"});
-        let matched = apply_redact(&mut body, &action, true);
-        assert!(matched.is_empty());
+        let result = apply_redact(&mut body, &action, true);
+        assert!(result.matched_types.is_empty());
     }
 
     #[test]
@@ -592,14 +810,15 @@ mod tests {
             direction: RedactDirection::Request,
             patterns: vec!["phone".to_string()],
             fields: vec![],
+            on_match: RedactOnMatch::Redact,
         };
         let mut body = json!({"contact": "Call me at 555-123-4567"});
-        let matched = apply_redact(&mut body, &action, true);
+        let result = apply_redact(&mut body, &action, true);
 
         assert!(body["contact"]
             .as_str()
             .unwrap()
             .contains("[REDACTED_PHONE]"));
-        assert!(matched.contains(&"phone".to_string()));
+        assert!(result.matched_types.contains(&"phone".to_string()));
     }
 }

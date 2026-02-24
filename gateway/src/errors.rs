@@ -82,7 +82,7 @@ impl AppError {
     /// Emit an error response with a specific request ID attached.
     ///
     /// Use this in handlers that already hold a `request_id`:
-    /// ```rust
+    /// ```rust,ignore
     /// return AppError::TokenNotFound.into_response_with_id(Some(&request_id.to_string()));
     /// ```
     pub fn into_response_with_id(self, request_id: Option<&str>) -> Response {

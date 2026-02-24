@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import useSWR from "swr";
-import { swrFetcher, AuditLog, Token, ApprovalRequest } from "@/lib/api";
+import { swrFetcher, AuditLog, Token, ApprovalRequest, AnalyticsTimeseriesPoint } from "@/lib/api";
 import {
     Activity,
     Zap,
@@ -21,8 +21,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
-import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from "recharts";
 import { toast } from "sonner";
+import { CustomTooltip, CHART_AXIS_PROPS } from "@/components/ui/chart-utils";
 
 export default function OverviewPage() {
     // SWR Hooks for real-time data
@@ -31,6 +32,7 @@ export default function OverviewPage() {
     const { data: credentials = [], isLoading: credentialsLoading } = useSWR<Credential[]>("/credentials", swrFetcher);
     const { data: approvals = [], isLoading: approvalsLoading } = useSWR<ApprovalRequest[]>("/approvals", swrFetcher, { refreshInterval: 10000 });
     const { data: usage, isLoading: usageLoading } = useSWR<any>("/billing/usage", swrFetcher, { refreshInterval: 10000 });
+    const { data: latencySeries = [], isLoading: latencyLoading } = useSWR<AnalyticsTimeseriesPoint[]>("/analytics/timeseries?range=168", swrFetcher, { refreshInterval: 10000 });
 
     // UI State
     const [dismissed, setDismissed] = useState(false);
@@ -41,7 +43,7 @@ export default function OverviewPage() {
         }
     }, []);
 
-    const loading = logsLoading || tokensLoading || credentialsLoading || approvalsLoading || usageLoading;
+    const loading = logsLoading || tokensLoading || credentialsLoading || approvalsLoading || usageLoading || latencyLoading;
 
     // Computed metrics
     const totalRequests = usage ? Number(usage.total_requests || 0) : 0;
@@ -59,34 +61,31 @@ export default function OverviewPage() {
         ? Math.round((cacheableLogs.filter(l => l.cache_hit).length / cacheableLogs.length) * 100)
         : null;
 
+    const recent5xxErrors = logs.filter(l => l.upstream_status && l.upstream_status >= 500).length;
+    let alertMessage = null;
+    if (logs.length > 0) {
+        if (recent5xxErrors > 0) {
+            alertMessage = `Upstream Degradation: Detected ${recent5xxErrors} provider errors (5xx) in the recent proxy window.`;
+        } else if (successRate < 98 && logs.length > 10) {
+            alertMessage = `Degraded Performance: Overall traffic success rate has dropped to ${successRate}%.`;
+        }
+    }
+
+    const formatDate = (dateStr: any) => {
+        const date = new Date(dateStr);
+        return date.toLocaleDateString([], { month: 'short', day: 'numeric', hour: 'numeric' });
+    };
+
     const recentLogs = logs.slice(0, 8);
 
-    // Prepare chart data (simple latency trend over last 20 requests)
-    const chartData = logs.slice(0, 50).reverse().map((l, i) => ({
-        index: i,
-        latency: l.response_latency_ms,
-        status: l.upstream_status
-    }));
-
     return (
-        <div className="p-8 space-y-8 max-w-[1600px] mx-auto">
-            {/* Header */}
-            <div className="space-y-1 animate-fade-in flex items-center justify-between">
-                <div>
-                    <h2 className="text-3xl font-bold tracking-tight">
-                        Command Center
-                    </h2>
-                    <p className="text-muted-foreground">
-                        Real-time overview of your AI gateway
-                    </p>
+        <div className="space-y-4 max-w-[1600px] mx-auto">
+            {!loading && (
+                <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground animate-pulse mb-2">
+                    <div className="h-2 w-2 rounded-full bg-emerald-500" />
+                    Live
                 </div>
-                {!loading && (
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground animate-pulse">
-                        <div className="h-2 w-2 rounded-full bg-emerald-500" />
-                        Live
-                    </div>
-                )}
-            </div>
+            )}
 
             {/* Onboarding State */}
             {!loading && totalRequests === 0 && !dismissed ? (
@@ -127,7 +126,7 @@ export default function OverviewPage() {
                                     <p className="text-sm text-muted-foreground">Securely store an OpenAI, Anthropic, or Gemini API key in the vault.</p>
                                     {credentials.length === 0 && (
                                         <div className="pt-2">
-                                            <Link href="/credentials"><Button size="sm">Add Credential</Button></Link>
+                                            <Link href="/vault"><Button size="sm">Add Credential</Button></Link>
                                         </div>
                                     )}
                                 </div>
@@ -146,7 +145,7 @@ export default function OverviewPage() {
                                     <p className="text-sm text-muted-foreground">Mint a virtual token (`ailink_v1_...`) bound to your credential. Give this to your agent.</p>
                                     {credentials.length > 0 && tokens.length === 0 && (
                                         <div className="pt-2">
-                                            <Link href="/tokens"><Button size="sm">Create Token</Button></Link>
+                                            <Link href="/virtual-keys"><Button size="sm">Create Token</Button></Link>
                                         </div>
                                     )}
                                 </div>
@@ -234,51 +233,78 @@ export default function OverviewPage() {
                 </div>
             )}
 
+            {/* Dynamic Alert Banner */}
+            {!loading && alertMessage && (
+                <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 animate-fade-in flex items-start gap-4 shadow-sm shadow-rose-500/5">
+                    <div className="mt-0.5 rounded-full bg-rose-500/20 p-2 text-rose-500 shrink-0">
+                        <AlertTriangle className="h-5 w-5" />
+                    </div>
+                    <div>
+                        <h4 className="font-semibold text-rose-500">Action Required</h4>
+                        <p className="text-sm text-rose-500/90 mt-1">{alertMessage}</p>
+                    </div>
+                </div>
+            )}
+
             {/* Main Content Grid */}
             <div className="grid gap-6 md:grid-cols-7">
 
                 {/* Latency Chart (Span 4) */}
                 <Card className="md:col-span-4 glass-card animate-slide-up stagger-3 flex flex-col">
                     <CardHeader>
-                        <CardTitle className="text-sm font-medium text-muted-foreground">Latency Trend (Last 50)</CardTitle>
+                        <CardTitle className="text-sm font-medium text-muted-foreground">Latency Trend (Last 7 Days)</CardTitle>
                     </CardHeader>
                     <CardContent className="flex-1 min-h-[250px]">
                         {loading ? (
                             <div className="h-full w-full flex items-center justify-center">
                                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground/30" />
                             </div>
-                        ) : chartData.length > 0 ? (
+                        ) : latencySeries.length > 0 ? (
                             <div className="h-[250px] w-full">
                                 <ResponsiveContainer width="100%" height="100%">
-                                    <AreaChart data={chartData}>
+                                    <AreaChart data={latencySeries} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                                         <defs>
                                             <linearGradient id="colorLatency" x1="0" y1="0" x2="0" y2="1">
                                                 <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
                                                 <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
                                             </linearGradient>
                                         </defs>
-                                        <XAxis dataKey="index" hide />
-                                        <YAxis hide domain={['auto', 'auto']} />
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
+                                        <XAxis
+                                            dataKey="bucket"
+                                            tickFormatter={formatDate}
+                                            {...CHART_AXIS_PROPS}
+                                            minTickGap={30}
+                                        />
+                                        <YAxis
+                                            domain={[0, 'auto']}
+                                            tickFormatter={(val: any) => `${val}ms`}
+                                            {...CHART_AXIS_PROPS}
+                                        />
                                         <Tooltip
-                                            contentStyle={{ backgroundColor: 'var(--card)', borderRadius: '8px', border: '1px solid var(--border)', fontSize: '12px' }}
-                                            labelStyle={{ display: 'none' }}
+                                            content={<CustomTooltip
+                                                labelFormatter={formatDate}
+                                                valueFormatter={(val: any) => `${val}ms`}
+                                            />}
+                                            cursor={{ stroke: 'var(--border)', strokeWidth: 1, strokeDasharray: '4 4' }}
                                         />
                                         <Area
                                             type="monotone"
-                                            dataKey="latency"
+                                            dataKey="avg_latency_ms"
+                                            name="Latency"
                                             stroke="#10b981"
                                             strokeWidth={2}
                                             fillOpacity={1}
                                             fill="url(#colorLatency)"
                                             isAnimationActive={false}
+                                            activeDot={{ r: 4, strokeWidth: 0, fill: '#10b981' }}
                                         />
                                     </AreaChart>
                                 </ResponsiveContainer>
                             </div>
                         ) : (
-                            <div className="h-full flex flex-col items-center justify-center text-muted-foreground/50">
-                                <Activity className="h-8 w-8 mb-2 opacity-20" />
-                                <span className="text-xs">No data available</span>
+                            <div className="h-full w-full flex items-center justify-center text-muted-foreground">
+                                No latency data available
                             </div>
                         )}
                     </CardContent>

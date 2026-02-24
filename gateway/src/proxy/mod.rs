@@ -1,8 +1,10 @@
 pub mod handler;
 pub mod loadbalancer;
 pub mod model_router;
+pub mod realtime;
 pub mod response_cache;
 pub mod retry;
+pub mod smart_router;
 pub mod stream;
 pub mod stream_bridge;
 pub mod transform;

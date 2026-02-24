@@ -74,6 +74,13 @@ pub struct AuditEntry {
     pub experiment_name: Option<String>,
     /// Variant name selected for this request (e.g., "control" or "experiment").
     pub variant_name: Option<String>,
+    // ── Just Enough Observability ─────────────────────────────
+    /// Arbitrary key-value properties from X-Properties header (GIN-indexed JSONB).
+    /// Example: {"env": "prod", "customer": "acme", "run_id": "agent-run-42"}
+    pub custom_properties: Option<serde_json::Value>,
+    /// Object store URL when request/response bodies were offloaded from Postgres.
+    /// When set, fetch bodies from PayloadStore::get(url) instead of audit_log_bodies.
+    pub payload_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -85,4 +92,47 @@ pub enum PolicyResult {
     HitlApproved,
     HitlRejected,
     HitlTimeout,
+}
+
+// ── Feature 8: Async Guardrail Violation ─────────────────────────────────────
+
+/// A guardrail violation detected asynchronously after the response was sent.
+#[derive(Debug, Clone)]
+pub struct AsyncGuardrailViolation {
+    pub token_id: String,
+    pub policy_name: String,
+    pub matched_patterns: Vec<String>,
+    pub risk_score: f32,
+}
+
+/// Emit an async guardrail violation to structured logs + optional webhook.
+pub async fn emit_async_violation(
+    violation: AsyncGuardrailViolation,
+) {
+    tracing::warn!(
+        event_type = "async_guardrail_violation",
+        token_id = %violation.token_id,
+        policy = %violation.policy_name,
+        patterns = ?violation.matched_patterns,
+        risk_score = %violation.risk_score,
+        "async guardrail violation — response already sent"
+    );
+
+    // Notify AILINK_ASYNC_GUARDRAIL_WEBHOOK if configured (best-effort)
+    if let Ok(webhook_url) = std::env::var("AILINK_ASYNC_GUARDRAIL_WEBHOOK") {
+        let payload = serde_json::json!({
+            "event_type": "async_guardrail_violation",
+            "token_id": violation.token_id,
+            "policy_name": violation.policy_name,
+            "matched_patterns": violation.matched_patterns,
+            "risk_score": violation.risk_score,
+        });
+        let client = reqwest::Client::new();
+        let _ = client
+            .post(&webhook_url)
+            .timeout(std::time::Duration::from_secs(5))
+            .json(&payload)
+            .send()
+            .await;
+    }
 }

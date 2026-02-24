@@ -2175,6 +2175,115 @@ pub async fn update_settings(
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
+pub async fn get_cache_stats(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_role("admin")?;
+
+    let mut conn = state.cache.redis();
+
+    // Count llm_cache:* keys via SCAN (non-blocking)
+    let mut cursor: u64 = 0;
+    let mut key_count: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut sample_keys: Vec<serde_json::Value> = Vec::new();
+
+    loop {
+        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg("llm_cache:*")
+            .arg("COUNT")
+            .arg(200u32)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| {
+                tracing::error!("get_cache_stats SCAN failed: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        for key in &keys {
+            key_count += 1;
+            // Estimate size via STRLEN (works on string values stored as JSON)
+            let size: u64 = redis::cmd("STRLEN")
+                .arg(key)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(0u64);
+            total_bytes += size;
+
+            // Collect up to 20 sample keys with TTL info for the UI
+            if sample_keys.len() < 20 {
+                let ttl_secs: i64 = redis::cmd("TTL")
+                    .arg(key)
+                    .query_async(&mut conn)
+                    .await
+                    .unwrap_or(-1i64);
+                // Key suffix (last 12 chars) for display
+                let display_key = if key.len() > 22 {
+                    format!("{}…{}", &key[..10], &key[key.len()-8..])
+                } else {
+                    key.clone()
+                };
+                sample_keys.push(serde_json::json!({
+                    "key": display_key,
+                    "full_key": key,
+                    "size_bytes": size,
+                    "ttl_secs": ttl_secs,
+                }));
+            }
+        }
+
+        cursor = next_cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    // Also count other namespaces for context (non-blocking estimates)
+    let spend_count: u64 = {
+        let (_, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(0u64)
+            .arg("MATCH")
+            .arg("spend:*")
+            .arg("COUNT")
+            .arg(100u32)
+            .query_async(&mut conn)
+            .await
+            .unwrap_or((0u64, vec![]));
+        keys.len() as u64
+    };
+
+    let rl_count: u64 = {
+        let (_, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(0u64)
+            .arg("MATCH")
+            .arg("rl:*")
+            .arg("COUNT")
+            .arg(100u32)
+            .query_async(&mut conn)
+            .await
+            .unwrap_or((0u64, vec![]));
+        keys.len() as u64
+    };
+
+    Ok(Json(serde_json::json!({
+        "cache_key_count": key_count,
+        "estimated_size_bytes": total_bytes,
+        "default_ttl_secs": crate::proxy::response_cache::DEFAULT_CACHE_TTL_SECS,
+        "max_entry_bytes": 256 * 1024,
+        "cached_fields": ["model", "messages", "temperature", "max_tokens", "tools", "tool_choice"],
+        "skip_conditions": ["temperature > 0.1", "stream: true", "x-ailink-no-cache: true", "Cache-Control: no-cache/no-store"],
+        "namespace_counts": {
+            "llm_cache": key_count,
+            "spend_tracking": spend_count,
+            "rate_limits": rl_count,
+        },
+        "sample_entries": sample_keys,
+    })))
+}
+
 pub async fn flush_cache(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,

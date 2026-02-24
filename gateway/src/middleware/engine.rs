@@ -11,9 +11,10 @@ use super::fields::{self, RequestContext};
 
 /// Evaluate all policies against a request context.
 ///
-/// Returns an `EvalOutcome` containing the triggered actions and any
-/// shadow-mode violations. Enforce-mode actions are collected for the
-/// caller to execute; shadow-mode matches are logged but not enforced.
+/// Returns an `EvalOutcome` containing:
+/// - `actions`         — blocking rules to execute before responding
+/// - `async_triggered` — async rules (rule.async_check=true) to run after responding
+/// - `shadow_violations` — shadow-mode matches (logged, not enforced)
 pub fn evaluate_policies(
     policies: &[Policy],
     ctx: &RequestContext<'_>,
@@ -34,12 +35,19 @@ pub fn evaluate_policies(
                 match policy.mode {
                     PolicyMode::Enforce => {
                         for action in &rule.then {
-                            outcome.actions.push(TriggeredAction {
+                            let ta = TriggeredAction {
                                 policy_id: policy.id,
                                 policy_name: policy.name.clone(),
                                 rule_index: rule_idx,
                                 action: action.clone(),
-                            });
+                            };
+                            if rule.async_check {
+                                // Non-blocking: queue for background evaluation
+                                outcome.async_triggered.push(ta);
+                            } else {
+                                // Blocking: execute before returning the response
+                                outcome.actions.push(ta);
+                            }
                         }
                     }
                     PolicyMode::Shadow => {
@@ -328,6 +336,10 @@ fn action_name(action: &Action) -> &'static str {
         Action::Webhook { .. } => "webhook",
         Action::ContentFilter { .. } => "content_filter",
         Action::Split { .. } => "split",
+        Action::DynamicRoute { .. } => "dynamic_route",
+        Action::ValidateSchema { .. } => "validate_schema",
+        Action::ConditionalRoute { .. } => "conditional_route",
+        Action::ExternalGuardrail { .. } => "external_guardrail",
     }
 }
 
@@ -1174,6 +1186,7 @@ mod tests {
                     fallback: "deny".to_string(),
                     notify: None,
                 }],
+                async_check: false,
             }],
             retry: None,
         };
@@ -1210,6 +1223,7 @@ mod tests {
                     status: 403,
                     message: "too expensive".to_string(),
                 }],
+                async_check: false,
             }],
             retry: None,
         };
@@ -1237,6 +1251,7 @@ mod tests {
                     status: 403,
                     message: "blocked".to_string(),
                 }],
+                async_check: false,
             }],
             retry: None,
         };
@@ -1268,6 +1283,7 @@ mod tests {
                     level: "info".to_string(),
                     tags: HashMap::new(),
                 }],
+                async_check: false,
             }],
             retry: None,
         };
@@ -1283,6 +1299,7 @@ mod tests {
                     level: "warn".to_string(),
                     tags: HashMap::new(),
                 }],
+                async_check: false,
             }],
             retry: None,
         };
@@ -1339,6 +1356,7 @@ mod tests {
                         level: "info".to_string(),
                         tags: HashMap::new(),
                     }],
+                    async_check: false,
                 }],
                 retry: None,
             },
@@ -1358,6 +1376,7 @@ mod tests {
                         max_requests: 10,
                         key: crate::models::policy::RateLimitKey::PerToken,
                     }],
+                    async_check: false,
                 }],
                 retry: None,
             },
@@ -1390,6 +1409,7 @@ mod tests {
                         status: 403,
                         message: "no deletes".to_string(),
                     }],
+                    async_check: false,
                 },
                 Rule {
                     when: Condition::Check {
@@ -1401,6 +1421,7 @@ mod tests {
                         key: "type".to_string(),
                         value: "write".to_string(),
                     }],
+                    async_check: false,
                 },
             ],
             retry: None,
@@ -1499,5 +1520,264 @@ mod tests {
             },
             &ctx
         ));
+    }
+
+    // ── Feature 8: Async Guardrails ─────────────────────────────
+
+    #[test]
+    fn test_async_check_routes_to_async_triggered() {
+        let method = Method::POST;
+        let uri: Uri = "/v1/chat/completions".parse().unwrap();
+        let headers = HeaderMap::new();
+        let body = json!({"model": "gpt-4o", "messages": [{"role": "user", "content": "hello"}]});
+        let ctx = make_ctx(&method, "/v1/chat/completions", &uri, &headers, Some(&body));
+
+        let policy = Policy {
+            id: Uuid::new_v4(),
+            name: "async-content-filter".to_string(),
+            mode: PolicyMode::Enforce,
+            phase: Phase::Pre,
+            retry: None,
+            rules: vec![Rule {
+                when: Condition::Always { always: true },
+                then: vec![Action::ContentFilter {
+                    block_jailbreak: true,
+                    block_harmful: true,
+                    block_code_injection: false,
+                    topic_allowlist: vec![],
+                    topic_denylist: vec![],
+                    custom_patterns: vec![],
+                    risk_threshold: 0.5,
+                    max_content_length: 0,
+                }],
+                async_check: true,
+            }],
+        };
+
+        let outcome = evaluate_policies(&[policy], &ctx, &Phase::Pre);
+
+        assert!(outcome.actions.is_empty(), "blocking actions should be empty for async rules");
+        assert_eq!(outcome.async_triggered.len(), 1, "expected 1 async triggered action");
+        assert_eq!(outcome.async_triggered[0].policy_name, "async-content-filter");
+    }
+
+    #[test]
+    fn test_blocking_check_routes_to_actions_not_async() {
+        let method = Method::POST;
+        let uri: Uri = "/v1/chat/completions".parse().unwrap();
+        let headers = HeaderMap::new();
+        let ctx = make_ctx(&method, "/v1/chat/completions", &uri, &headers, None);
+
+        let policy = Policy {
+            id: Uuid::new_v4(),
+            name: "blocking-deny".to_string(),
+            mode: PolicyMode::Enforce,
+            phase: Phase::Pre,
+            retry: None,
+            rules: vec![Rule {
+                when: Condition::Always { always: true },
+                then: vec![Action::Deny {
+                    status: 403,
+                    message: "blocked".to_string(),
+                }],
+                async_check: false,
+            }],
+        };
+
+        let outcome = evaluate_policies(&[policy], &ctx, &Phase::Pre);
+
+        assert_eq!(outcome.actions.len(), 1, "expected 1 blocking action");
+        assert!(outcome.async_triggered.is_empty(), "async_triggered should be empty for blocking rules");
+        assert_eq!(outcome.actions[0].policy_name, "blocking-deny");
+    }
+
+    #[test]
+    fn test_mixed_blocking_and_async_rules() {
+        let method = Method::POST;
+        let uri: Uri = "/test".parse().unwrap();
+        let headers = HeaderMap::new();
+        let ctx = make_ctx(&method, "/test", &uri, &headers, None);
+
+        let policy = Policy {
+            id: Uuid::new_v4(),
+            name: "mixed-policy".to_string(),
+            mode: PolicyMode::Enforce,
+            phase: Phase::Pre,
+            retry: None,
+            rules: vec![
+                Rule {
+                    when: Condition::Always { always: true },
+                    then: vec![Action::Deny {
+                        status: 429,
+                        message: "rate limited".to_string(),
+                    }],
+                    async_check: false,
+                },
+                Rule {
+                    when: Condition::Always { always: true },
+                    then: vec![Action::Log {
+                        level: "info".to_string(),
+                        tags: HashMap::new(),
+                    }],
+                    async_check: true,
+                },
+            ],
+        };
+
+        let outcome = evaluate_policies(&[policy], &ctx, &Phase::Pre);
+
+        assert_eq!(outcome.actions.len(), 1, "expected 1 blocking action");
+        assert_eq!(outcome.async_triggered.len(), 1, "expected 1 async action");
+        match &outcome.actions[0].action {
+            Action::Deny { status, .. } => assert_eq!(*status, 429),
+            _ => panic!("expected Deny action"),
+        }
+        match &outcome.async_triggered[0].action {
+            Action::Log { level, .. } => assert_eq!(level, "info"),
+            _ => panic!("expected Log action"),
+        }
+    }
+
+    #[test]
+    fn test_async_check_shadow_mode_still_logs_not_async_triggered() {
+        let method = Method::POST;
+        let uri: Uri = "/test".parse().unwrap();
+        let headers = HeaderMap::new();
+        let ctx = make_ctx(&method, "/test", &uri, &headers, None);
+
+        let policy = Policy {
+            id: Uuid::new_v4(),
+            name: "shadow-policy".to_string(),
+            mode: PolicyMode::Shadow,
+            phase: Phase::Pre,
+            retry: None,
+            rules: vec![Rule {
+                when: Condition::Always { always: true },
+                then: vec![Action::Deny {
+                    status: 403,
+                    message: "would block".to_string(),
+                }],
+                async_check: true,
+            }],
+        };
+
+        let outcome = evaluate_policies(&[policy], &ctx, &Phase::Pre);
+
+        assert!(outcome.actions.is_empty());
+        assert!(outcome.async_triggered.is_empty());
+        assert_eq!(outcome.shadow_violations.len(), 1);
+        assert!(outcome.shadow_violations[0].contains("shadow-policy"));
+    }
+
+    #[test]
+    fn test_async_check_wrong_phase_skipped() {
+        let method = Method::POST;
+        let uri: Uri = "/test".parse().unwrap();
+        let headers = HeaderMap::new();
+        let ctx = make_ctx(&method, "/test", &uri, &headers, None);
+
+        let policy = Policy {
+            id: Uuid::new_v4(),
+            name: "pre-only-policy".to_string(),
+            mode: PolicyMode::Enforce,
+            phase: Phase::Pre,
+            retry: None,
+            rules: vec![Rule {
+                when: Condition::Always { always: true },
+                then: vec![Action::Deny {
+                    status: 403,
+                    message: "blocked".to_string(),
+                }],
+                async_check: true,
+            }],
+        };
+
+        let outcome = evaluate_policies(&[policy], &ctx, &Phase::Post);
+
+        assert!(outcome.actions.is_empty());
+        assert!(outcome.async_triggered.is_empty());
+        assert!(outcome.shadow_violations.is_empty());
+    }
+
+    #[test]
+    fn test_async_check_condition_not_matched_skipped() {
+        let method = Method::GET;
+        let uri: Uri = "/test".parse().unwrap();
+        let headers = HeaderMap::new();
+        let ctx = make_ctx(&method, "/test", &uri, &headers, None);
+
+        let policy = Policy {
+            id: Uuid::new_v4(),
+            name: "conditional-async".to_string(),
+            mode: PolicyMode::Enforce,
+            phase: Phase::Pre,
+            retry: None,
+            rules: vec![Rule {
+                when: Condition::Check {
+                    field: "request.method".to_string(),
+                    op: Operator::Eq,
+                    value: json!("POST"),
+                },
+                then: vec![Action::Deny {
+                    status: 403,
+                    message: "blocked".to_string(),
+                }],
+                async_check: true,
+            }],
+        };
+
+        let outcome = evaluate_policies(&[policy], &ctx, &Phase::Pre);
+
+        assert!(outcome.actions.is_empty());
+        assert!(outcome.async_triggered.is_empty());
+    }
+
+    #[test]
+    fn test_async_check_multiple_actions_per_rule() {
+        let method = Method::POST;
+        let uri: Uri = "/test".parse().unwrap();
+        let headers = HeaderMap::new();
+        let ctx = make_ctx(&method, "/test", &uri, &headers, None);
+
+        let policy = Policy {
+            id: Uuid::new_v4(),
+            name: "multi-action-async".to_string(),
+            mode: PolicyMode::Enforce,
+            phase: Phase::Pre,
+            retry: None,
+            rules: vec![Rule {
+                when: Condition::Always { always: true },
+                then: vec![
+                    Action::Log {
+                        level: "warn".to_string(),
+                        tags: HashMap::new(),
+                    },
+                    Action::Tag {
+                        key: "flagged".to_string(),
+                        value: "true".to_string(),
+                    },
+                ],
+                async_check: true,
+            }],
+        };
+
+        let outcome = evaluate_policies(&[policy], &ctx, &Phase::Pre);
+
+        assert!(outcome.actions.is_empty());
+        assert_eq!(outcome.async_triggered.len(), 2, "both actions should be in async_triggered");
+    }
+
+    #[test]
+    fn test_async_check_default_is_false() {
+        let json = r#"{"then": {"action": "deny", "message": "blocked"}}"#;
+        let rule: Rule = serde_json::from_str(json).unwrap();
+        assert!(!rule.async_check, "async_check should default to false");
+    }
+
+    #[test]
+    fn test_async_check_true_from_json() {
+        let json = r#"{"then": {"action": "deny", "message": "blocked"}, "async_check": true}"#;
+        let rule: Rule = serde_json::from_str(json).unwrap();
+        assert!(rule.async_check, "async_check should be true");
     }
 }

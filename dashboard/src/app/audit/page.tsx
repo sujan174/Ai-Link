@@ -80,9 +80,9 @@ export default function AuditPage() {
     const tokens = tokensData || EMPTY_TOKENS;
 
     // Construct Query Key
-    const queryKey = selectedToken !== "all"
-        ? `/audit-logs?limit=500&token_id=${selectedToken}`
-        : `/audit-logs?limit=500`;
+    const queryKey = selectedToken && selectedToken !== "all"
+        ? `/audit?limit=500&token_id=${selectedToken}`
+        : `/audit?limit=500`;
 
     const { data: historicalLogsData, isLoading, mutate: refreshLogs } = useSWR<AuditLog[]>(
         !isLive ? queryKey : null, // Pause SWR when live
@@ -136,24 +136,15 @@ export default function AuditPage() {
 
     return (
         <div className="p-8 space-y-6 max-w-[1600px] mx-auto">
-            {/* Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 animate-fade-in">
-                <div className="space-y-1">
-                    <h1 className="text-3xl font-bold tracking-tight flex items-center gap-2">
-                        Traces & Logs
-                        {isLive && (
-                            <Badge variant="outline" className="animate-pulse text-emerald-500 border-emerald-500/50 bg-emerald-500/10">
-                                LIVE
-                            </Badge>
-                        )}
-                    </h1>
-                    <p className="text-muted-foreground">
-                        Inspect traffic, debug issues, and analyze AI model performance.
-                    </p>
-                </div>
-
+            {/* Controls */}
+            <div className="flex items-center justify-end animate-fade-in mb-2">
                 {/* Controls */}
                 <div className="flex items-center gap-3">
+                    {isLive && (
+                        <Badge variant="outline" className="animate-pulse text-emerald-500 border-emerald-500/50 bg-emerald-500/10 mr-2">
+                            LIVE
+                        </Badge>
+                    )}
                     {/* Live Toggle */}
                     <Button
                         variant={isLive ? "destructive" : "outline"}

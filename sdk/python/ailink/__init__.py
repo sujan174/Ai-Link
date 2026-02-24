@@ -14,6 +14,17 @@ Usage:
 """
 
 from .client import AIlinkClient, AsyncClient, HealthPoller, AsyncHealthPoller
+from .resources.guardrails import (
+    PRESET_PROMPT_INJECTION,
+    PRESET_CODE_INJECTION,
+    PRESET_PII_REDACTION,
+    PRESET_PII_ENTERPRISE,
+    PRESET_PII_BLOCK,
+    PRESET_HIPAA,
+    PRESET_PCI,
+    PRESET_TOPIC_FENCE,
+    PRESET_LENGTH_LIMIT,
+)
 from .types import (
     Token,
     TokenCreateResponse,
@@ -80,4 +91,14 @@ __all__ = [
     "PayloadTooLargeError",
     # Metadata
     "__version__",
+    # Guardrail preset constants
+    "PRESET_PROMPT_INJECTION",
+    "PRESET_CODE_INJECTION",
+    "PRESET_PII_REDACTION",
+    "PRESET_PII_ENTERPRISE",
+    "PRESET_PII_BLOCK",
+    "PRESET_HIPAA",
+    "PRESET_PCI",
+    "PRESET_TOPIC_FENCE",
+    "PRESET_LENGTH_LIMIT",
 ]

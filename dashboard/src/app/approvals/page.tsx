@@ -59,11 +59,8 @@ export default function ApprovalsPage() {
 
     return (
         <div className="p-8 space-y-8 max-w-[1600px] mx-auto">
-            <div className="flex items-center justify-between animate-fade-in">
-                <div className="space-y-1">
-                    <h2 className="text-3xl font-bold tracking-tight">Approvals</h2>
-                    <p className="text-muted-foreground">Human-in-the-Loop requests waiting for decision</p>
-                </div>
+            {/* Controls */}
+            <div className="flex items-center justify-end animate-fade-in mb-2">
                 <div className="flex items-center gap-2">
                     <Button variant="outline" size="sm" onClick={fetchApprovals} disabled={loading}>
                         <RefreshCw className={cn("h-3.5 w-3.5 mr-2", loading && "animate-spin")} />

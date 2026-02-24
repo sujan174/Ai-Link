@@ -35,7 +35,7 @@ class PoliciesResource:
         Args:
             name: Policy display name
             rules: List of rule dicts using when/then syntax, e.g.
-                ``{"when": {"field": "usage.request_count", "operator": "gt", "value": 100}, "then": {"action": "deny", "status": 429, "message": "Rate limit exceeded"}}``
+                ``{"when": {"field": "usage.request_count", "op": "gt", "value": 100}, "then": {"action": "deny", "status": 429, "message": "Rate limit exceeded"}}``
             mode: "enforce" (block violations) or "shadow" (log only)
             phase: "pre" (request phase) or "post" (response phase)
             retry: "retry" configuration dict (max_retries, base_backoff_ms, etc.)

@@ -73,15 +73,8 @@ export default function ProjectSettingsPage() {
     };
 
     return (
-        <div className="flex flex-col gap-8 max-w-4xl animate-fade-in p-6">
-            <div>
-                <h1 className="text-3xl font-bold tracking-tight">Project Settings</h1>
-                <p className="text-muted-foreground mt-2">
-                    Manage configuration and danger zone settings for <strong>{project.name}</strong>.
-                </p>
-            </div>
-
-            <Separator />
+        <div className="flex flex-col gap-8 max-w-4xl animate-fade-in p-6 pt-2">
+            {/* General Settings */}
 
             {/* General Settings */}
             <Card>

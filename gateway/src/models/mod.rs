@@ -2,6 +2,7 @@ pub mod analytics;
 pub mod approval;
 pub mod audit;
 pub mod cost;
+pub mod latency_cache;
 pub mod llm;
 pub mod notification;
 pub mod policy;

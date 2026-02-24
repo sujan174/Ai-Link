@@ -723,7 +723,7 @@ export const updateSettings = (settings: SystemSettings) =>
   });
 
 export const flushCache = () =>
-  api<{ success: boolean; message: string }>("/system/flush-cache", {
+  api<{ success: boolean; message: string; keys_deleted: number }>("/system/flush-cache", {
     method: "POST",
   });
 
@@ -753,24 +753,105 @@ export const deleteModelAlias = (alias: string) =>
 export interface ModelPricing {
   id: string;
   provider: string;
-  model: string;
-  input_usd_per_1m: number;
-  output_usd_per_1m: number;
+  model_pattern: string;
+  input_per_m: number;
+  output_per_m: number;
   updated_at: string;
 }
 
-export const listModelPricing = () => api<ModelPricing[]>("/model-pricing");
+export const listModelPricing = () => api<ModelPricing[]>("/pricing");
 
 export const upsertModelPricing = (data: {
   provider: string;
-  model: string;
-  input_usd_per_1m: number;
-  output_usd_per_1m: number;
+  model_pattern: string;
+  input_per_m: number;
+  output_per_m: number;
 }) =>
-  api<ModelPricing>("/model-pricing", {
-    method: "POST",
+  api<ModelPricing>("/pricing", {
+    method: "PUT",
     body: JSON.stringify(data),
   });
 
 export const deleteModelPricing = (id: string) =>
-  api<void>(`/model-pricing/${id}`, { method: "DELETE" });
+  api<void>(`/pricing/${id}`, { method: "DELETE" });
+
+// ── Cache Management ────────────────────────────
+
+export interface CacheStats {
+  cache_key_count: number;
+  estimated_size_bytes: number;
+  default_ttl_secs: number;
+  max_entry_bytes: number;
+  cached_fields: string[];
+  skip_conditions: string[];
+  namespace_counts: {
+    llm_cache: number;
+    spend_tracking: number;
+    rate_limits: number;
+  };
+  sample_entries: {
+    key: string;
+    full_key: string;
+    size_bytes: number;
+    ttl_secs: number;
+  }[];
+}
+
+export const getCacheStats = () => api<CacheStats>("/system/cache-stats");
+
+// ── Guardrails ────────────────────────────────────────────────
+
+export interface GuardrailPreset {
+  name: string;
+  description: string;
+  category: string;
+  patterns?: string[];
+  required_fields?: string[];
+}
+
+export interface GuardrailPresetsResponse {
+  presets: GuardrailPreset[];
+}
+
+export interface EnableGuardrailsResponse {
+  success: boolean;
+  applied_presets: string[];
+  policy_id: string | null;
+  policy_name: string;
+  skipped: string[];
+  /** If guardrails were already configured, shows who set them last (sdk/dashboard/header). */
+  previous_source: string | null;
+}
+
+export interface GuardrailsStatus {
+  token_id: string;
+  has_guardrails: boolean;
+  source: string | null;
+  policy_id: string | null;
+  policy_name: string | null;
+  presets: string[];
+}
+
+export const getGuardrailPresets = () =>
+  api<GuardrailPresetsResponse>("/guardrails/presets");
+
+export const getGuardrailStatus = (token_id: string) =>
+  api<GuardrailsStatus>(`/guardrails/status?token_id=${encodeURIComponent(token_id)}`);
+
+export const enableGuardrails = (
+  token_id: string,
+  presets: string[],
+  source: string = "dashboard",
+  topic_allowlist: string[] = [],
+  topic_denylist: string[] = []
+) =>
+  api<EnableGuardrailsResponse>("/guardrails/enable", {
+    method: "POST",
+    body: JSON.stringify({ token_id, presets, source, topic_allowlist, topic_denylist }),
+  });
+
+export const disableGuardrails = (token_id: string) =>
+  api<{ success: boolean; removed: number }>("/guardrails/disable", {
+    method: "DELETE",
+    body: JSON.stringify({ token_id }),
+  });
