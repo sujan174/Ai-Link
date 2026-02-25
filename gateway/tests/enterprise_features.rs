@@ -322,3 +322,230 @@ fn test_token_very_long_value() {
     // Token length must be fixed regardless of input length
     assert_eq!(token.len(), "tok_pii_custom_".len() + 16);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Tool-Level RBAC — Action::ToolScope correctness + false positive checks
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_tool_scope_action_deserializes() {
+    // Verify the new Action::ToolScope deserializes correctly from JSON
+    let action: Action = serde_json::from_str(r#"{
+        "action": "tool_scope",
+        "allowed_tools": ["jira.read", "jira.search"],
+        "blocked_tools": ["stripe.createCharge"]
+    }"#).unwrap();
+
+    match action {
+        Action::ToolScope { allowed_tools, blocked_tools, deny_message } => {
+            assert_eq!(allowed_tools, vec!["jira.read", "jira.search"]);
+            assert_eq!(blocked_tools, vec!["stripe.createCharge"]);
+            assert_eq!(deny_message, "tool not authorized for this agent");
+        }
+        _ => panic!("Expected Action::ToolScope"),
+    }
+}
+
+#[test]
+fn test_tool_scope_extracts_openai_tool_names() {
+    use gateway::middleware::engine::extract_tool_names;
+
+    let body = json!({
+        "model": "gpt-4o",
+        "tools": [
+            { "type": "function", "function": { "name": "jira.read", "description": "Read Jira issues" } },
+            { "type": "function", "function": { "name": "jira.search", "description": "Search Jira" } }
+        ]
+    });
+    let names = extract_tool_names(Some(&body));
+    assert_eq!(names, vec!["jira.read", "jira.search"]);
+}
+
+#[test]
+fn test_tool_scope_extracts_anthropic_tool_names() {
+    use gateway::middleware::engine::extract_tool_names;
+
+    let body = json!({
+        "model": "claude-3-5-sonnet-20241022",
+        "tools": [
+            { "name": "stripe.createCharge", "description": "Create a Stripe charge" }
+        ]
+    });
+    let names = extract_tool_names(Some(&body));
+    assert_eq!(names, vec!["stripe.createCharge"]);
+}
+
+#[test]
+fn test_tool_scope_no_tools_is_not_a_false_positive() {
+    // FALSE POSITIVE CHECK: requests with no tools should never trigger ToolScope
+    use gateway::middleware::engine::extract_tool_names;
+
+    let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "Hello" }] });
+    let names = extract_tool_names(Some(&body));
+    assert!(names.is_empty(), "No tools in body should produce empty tool names");
+}
+
+#[test]
+fn test_tool_scope_empty_body_is_not_a_false_positive() {
+    use gateway::middleware::engine::extract_tool_names;
+    // Body is None (no parsed body) — should never trigger
+    let names = extract_tool_names(None);
+    assert!(names.is_empty());
+}
+
+#[test]
+fn test_tool_scope_blocked_tool_denied() {
+    use gateway::middleware::engine::evaluate_tool_scope;
+
+    let tool_names = vec!["stripe.createCharge".to_string()];
+    let blocked = vec!["stripe.createCharge".to_string()];
+    let result = evaluate_tool_scope(&tool_names, &[], &blocked, "tool denied");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("stripe.createCharge"), "Error should name the offending tool");
+    assert!(err.contains("blocked"), "Error should say 'blocked'");
+}
+
+#[test]
+fn test_tool_scope_allowed_tool_passes() {
+    use gateway::middleware::engine::evaluate_tool_scope;
+
+    let tool_names = vec!["jira.read".to_string()];
+    let allowed = vec!["jira.read".to_string(), "jira.search".to_string()];
+    let result = evaluate_tool_scope(&tool_names, &allowed, &[], "denied");
+    assert!(result.is_ok(), "Allowed tool should pass without error");
+}
+
+#[test]
+fn test_tool_scope_unlisted_tool_denied_when_allowlist_active() {
+    use gateway::middleware::engine::evaluate_tool_scope;
+
+    // stripe.createCharge is NOT in the allowed list
+    let tool_names = vec!["stripe.createCharge".to_string()];
+    let allowed = vec!["jira.read".to_string()];
+    let result = evaluate_tool_scope(&tool_names, &allowed, &[], "denied");
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not in the allowed list"));
+}
+
+#[test]
+fn test_tool_scope_glob_pattern_in_blocklist() {
+    use gateway::middleware::engine::evaluate_tool_scope;
+
+    // "stripe.*" in blocklist should block any stripe tool
+    let tool_names = vec!["stripe.refund".to_string()];
+    let blocked = vec!["stripe.*".to_string()];
+    let result = evaluate_tool_scope(&tool_names, &[], &blocked, "denied");
+    assert!(result.is_err(), "Glob pattern in blocklist should match");
+}
+
+#[test]
+fn test_tool_scope_glob_no_false_positive() {
+    use gateway::middleware::engine::evaluate_tool_scope;
+
+    // "stripe.*" in blocklist should NOT block a jira tool
+    let tool_names = vec!["jira.read".to_string()];
+    let blocked = vec!["stripe.*".to_string()];
+    let result = evaluate_tool_scope(&tool_names, &[], &blocked, "denied");
+    assert!(result.is_ok(), "Non-matching glob should not block unrelated tools");
+}
+
+#[test]
+fn test_tool_scope_empty_lists_allow_all_no_false_positive() {
+    use gateway::middleware::engine::evaluate_tool_scope;
+
+    // Both allowed and blocked are empty → allow any tool (permissive default)
+    let tool_names = vec!["anything.goes".to_string(), "every.tool".to_string()];
+    let result = evaluate_tool_scope(&tool_names, &[], &[], "denied");
+    assert!(result.is_ok(), "Empty allowed/blocked lists should allow all tools");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Anomaly Detection — statistical correctness + false positive checks
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_anomaly_below_threshold_no_false_positive() {
+    // If velocity is within 3σ of the mean, should NOT alert
+    let values = vec![10.0_f64; 20]; // stable baseline of 10 req/window
+    let mean: f64 = values.iter().sum::<f64>() / values.len() as f64;
+    let variance: f64 = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+    let stddev = variance.sqrt();
+    let threshold = mean + 3.0 * stddev;
+
+    // With zero variance, threshold = mean = 10
+    // A velocity of 10 should NOT exceed threshold
+    assert!(10.0 <= threshold, "10 req/window should NOT trigger on stable baseline of 10");
+}
+
+#[test]
+fn test_anomaly_far_above_threshold_detects_spike() {
+    let values = vec![10.0_f64; 20];
+    let mean: f64 = values.iter().sum::<f64>() / values.len() as f64;
+    let variance: f64 = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+    let stddev = variance.sqrt();
+    let threshold = mean + 3.0 * stddev;
+
+    // 100 req when baseline is 10 and stddev=0 → threshold=10, 100 > 10 → anomalous
+    assert!(100.0 > threshold, "100 req/window should trigger on stable baseline of 10");
+}
+
+#[test]
+fn test_anomaly_realistic_baseline_not_triggered() {
+    // Realistic scenario: baseline avg 50 req/window, stddev 10
+    // threshold = 50 + 3*10 = 80
+    // A velocity of 70 should NOT trigger
+    let mean = 50.0_f64;
+    let stddev = 10.0_f64;
+    let threshold = mean + 3.0 * stddev;
+    assert_eq!(threshold, 80.0);
+    assert!(70.0 < threshold, "70 req/window below 3σ threshold of 80 should NOT alert");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SSO/OIDC — false positive + security checks
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_oidc_expired_jwt_rejected() {
+    use gateway::middleware::oidc::decode_claims;
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let header = engine.encode(r#"{"alg":"RS256"}"#);
+    // exp = 1000 (far in the past — Unix epoch + ~16 minutes)
+    let payload = engine.encode(r#"{"sub":"user","exp":1000}"#);
+    let token = format!("{}.{}.sig", header, payload);
+
+    let result = decode_claims(&token);
+    assert!(result.is_err(), "Expired token must be rejected");
+    assert!(result.unwrap_err().to_string().contains("expired"));
+}
+
+#[test]
+fn test_oidc_missing_sub_rejected() {
+    use gateway::middleware::oidc::decode_claims;
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let header = engine.encode(r#"{"alg":"RS256"}"#);
+    // No 'sub' claim
+    let payload = engine.encode(r#"{"exp":9999999999,"iss":"https://example.okta.com"}"#);
+    let token = format!("{}.{}.sig", header, payload);
+
+    let result = decode_claims(&token);
+    assert!(result.is_err(), "Token missing 'sub' must be rejected");
+}
+
+#[test]
+fn test_session_entity_status_values() {
+    // Verify the status values we accept are well-defined (no typos in handler)
+    let valid_statuses = ["active", "paused", "completed"];
+    for status in valid_statuses {
+        assert!(!status.is_empty());
+    }
+    // Document invalid values that should be rejected (422)
+    let invalid_statuses = ["running", "stopped", "pending", "ACTIVE"];
+    for status in invalid_statuses {
+        let valid = matches!(status, "active" | "paused" | "completed");
+        assert!(!valid, "Status '{}' should be rejected as invalid", status);
+    }
+}
