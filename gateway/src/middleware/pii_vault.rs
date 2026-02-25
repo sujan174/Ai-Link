@@ -10,6 +10,7 @@
 //! - Re-hydration requires `pii:rehydrate` API scope (PCI-DSS).
 //! - Tokens auto-expire after 90 days (configurable via migration).
 
+#![allow(dead_code)]
 use crate::vault::builtin::VaultCrypto;
 use regex::Regex;
 use serde_json::Value;

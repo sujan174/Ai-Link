@@ -3,6 +3,7 @@
 //! Implements `Action::Redact` (pattern-based PII scrubbing) and
 //! `Action::Transform` (header/body mutations) for the condition→action engine.
 
+#![allow(dead_code)]
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value;

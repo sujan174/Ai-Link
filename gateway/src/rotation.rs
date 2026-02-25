@@ -1,7 +1,7 @@
+#![allow(dead_code)]
 use crate::cache::TieredCache;
 use crate::store::postgres::PgStore;
 use crate::vault::builtin::VaultCrypto;
-use chrono::Utc;
 use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;

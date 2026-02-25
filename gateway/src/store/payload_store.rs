@@ -9,7 +9,7 @@
 //!
 //! Set the `PAYLOAD_STORE_URL` environment variable:
 //!
-//! ```
+//! ```text
 //! # S3
 //! PAYLOAD_STORE_URL=s3://my-bucket?region=us-east-1
 //!
@@ -23,7 +23,7 @@
 //! ```
 //!
 //! Optionally tune the size threshold (default: 4096 bytes):
-//! ```
+//! ```text
 //! PAYLOAD_SIZE_THRESHOLD=8192
 //! ```
 

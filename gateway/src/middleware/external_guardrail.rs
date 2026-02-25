@@ -72,6 +72,7 @@ pub struct ExternalGuardrailResult {
     /// Normalised violation score (0.0–1.0). Vendor values are scaled accordingly.
     pub score: f32,
     /// Raw JSON body returned by the vendor for logging/debugging.
+    #[allow(dead_code)]
     pub raw_response: Option<Value>,
 }
 

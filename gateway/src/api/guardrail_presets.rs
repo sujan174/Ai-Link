@@ -15,7 +15,7 @@
 //! | `pci`              | Redact credit card + API key patterns for payment compliance     |
 //! | `topic_fence`      | Allowlist-based topic restrictor (requires custom config)        |
 
-use crate::api::{AuthContext, ApiKeyRole};
+use crate::api::AuthContext;
 use crate::AppState;
 use axum::{
     extract::State,

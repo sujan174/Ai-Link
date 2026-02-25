@@ -461,6 +461,7 @@ pub struct SchemaValidationResult {
     pub errors: Vec<String>,
     /// The parsed JSON value that was validated (may differ from raw response if
     /// we extracted JSON from a markdown code block).
+    #[allow(dead_code)]
     pub validated_value: Option<serde_json::Value>,
 }
 

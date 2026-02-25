@@ -20,6 +20,7 @@ pub struct RouteDecision {
     /// The upstream base URL for this target.
     pub upstream_url: String,
     /// Optional credential override for this target.
+    #[allow(dead_code)]
     pub credential_id: Option<Uuid>,
     /// Human-readable strategy label for audit logs.
     pub strategy_used: String,

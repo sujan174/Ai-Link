@@ -15,7 +15,6 @@ use chrono::{Duration, Utc};
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use uuid::Uuid;
 
 // ── Types ────────────────────────────────────────────────────
@@ -38,6 +37,7 @@ pub struct OidcProvider {
 
 /// OpenID Connect Discovery document (subset of fields we need).
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct OidcDiscovery {
     pub issuer: String,
     pub jwks_uri: String,
@@ -62,6 +62,7 @@ pub struct Jwk {
     pub n: Option<String>,
     pub e: Option<String>,
     // For EC keys
+    #[allow(dead_code)]
     pub crv: Option<String>,
     pub x: Option<String>,
     pub y: Option<String>,
@@ -90,6 +91,7 @@ pub struct OidcClaims {
 
 /// Result of OIDC authentication — maps to AuthContext fields.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct OidcAuthResult {
     pub user_id: String,
     pub email: Option<String>,
@@ -309,6 +311,7 @@ pub async fn validate_jwt(
 /// 
 /// **DEPRECATED** — use `verify_jwt_signature()` for production validation.
 /// Kept for backward-compatible unit tests and non-IdP fallback paths.
+#[allow(dead_code)]
 pub fn decode_claims(token: &str) -> anyhow::Result<OidcClaims> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {

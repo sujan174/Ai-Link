@@ -19,7 +19,7 @@ use uuid::Uuid;
 use crate::api::{AuthContext, ApiKeyRole};
 use crate::models::approval::ApprovalStatus;
 use crate::store::postgres::{
-    ApiKeyRow, AuditLogDetailRow, AuditLogRow, CredentialMeta, PolicyRow, TokenRow, UsageMeterRow,
+    ApiKeyRow, AuditLogDetailRow, AuditLogRow, CredentialMeta, PolicyRow, TokenRow,
     TokenSummary, TokenVolumeStat, TokenStatusStat, TokenLatencyStat,
 };
 use crate::AppState;
@@ -45,6 +45,7 @@ pub struct CreateTokenRequest {
     pub circuit_breaker: Option<serde_json::Value>,
     /// Convenience shorthand: set a single fallback URL (priority 2).
     /// Equivalent to specifying two entries in `upstreams` with priority 1 and 2.
+    #[allow(dead_code)]
     pub fallback_url: Option<String>,
     /// Optional full upstream list with weights and priorities.
     /// If provided, `upstream_url` is used as a fallback only if this list is empty.

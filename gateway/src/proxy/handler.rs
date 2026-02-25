@@ -1,5 +1,4 @@
 use rust_decimal::prelude::ToPrimitive;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -2524,7 +2523,7 @@ pub async fn proxy_handler(
     // The response is committed before these are evaluated — violations are
     // logged and trigger audit/webhook events but cannot block the response.
     if !pre_async_triggered.is_empty() {
-        let state_async = state.clone();
+        let _state_async = state.clone();
         let token_id_async = token.id.clone();
         let async_triggered = pre_async_triggered;
         // Snapshot the sanitized body for async guardrail content checks

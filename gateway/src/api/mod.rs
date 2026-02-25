@@ -308,98 +308,103 @@ async fn admin_auth(
         // ── Path C: OIDC JWT (if token looks like a JWT) ──────────
         //
         // JWTs have 3 dot-separated base64 parts. API keys start with "ak_".
-        // If it looks like a JWT, try OIDC. If that fails, fall through to
-        // the API key path below (graceful degradation).
+        // If it looks like a JWT, try OIDC with full JWKS crypto verification.
+        // If that fails, fall through to the API key path (graceful degradation).
         if k.split('.').count() == 3 && !k.starts_with("ak_") {
             use crate::middleware::oidc;
 
-            match oidc::decode_claims(k) {
-                Ok(claims) => {
-                    // Look up the OIDC provider by issuer
-                    match state.db.get_oidc_provider_by_issuer(&claims.iss).await {
-                        Ok(Some(provider_row)) => {
-                            // Check audience if configured
-                            if let Some(ref expected_aud) = provider_row.audience {
-                                let claims_aud = claims.aud.as_deref().unwrap_or("");
-                                if claims_aud != expected_aud && claims_aud != &provider_row.client_id {
-                                    tracing::warn!(
-                                        issuer = %claims.iss,
-                                        expected = %expected_aud,
-                                        got = %claims_aud,
-                                        "OIDC: audience mismatch"
-                                    );
-                                    return Err(StatusCode::UNAUTHORIZED);
-                                }
+            // Step 1: Peek at the JWT payload to extract `iss` (unverified)
+            //         so we can look up the OIDC provider in the DB.
+            let iss_peek = {
+                let parts: Vec<&str> = k.split('.').collect();
+                use base64::Engine;
+                let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+                engine.decode(parts[1]).ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .and_then(|v| v.get("iss").and_then(|i| i.as_str()).map(String::from))
+            };
+
+            if let Some(issuer) = iss_peek {
+                // Step 2: Look up provider by issuer
+                match state.db.get_oidc_provider_by_issuer(&issuer).await {
+                    Ok(Some(provider_row)) => {
+                        // Convert DB row → OidcProvider
+                        let provider = oidc::OidcProvider {
+                            id: provider_row.id,
+                            org_id: provider_row.org_id,
+                            name: provider_row.name,
+                            issuer_url: provider_row.issuer_url,
+                            client_id: provider_row.client_id,
+                            jwks_uri: provider_row.jwks_uri,
+                            audience: provider_row.audience,
+                            claim_mapping: provider_row.claim_mapping,
+                            default_role: provider_row.default_role,
+                            default_scopes: provider_row.default_scopes,
+                            enabled: provider_row.enabled,
+                        };
+
+                        // Step 3: Full crypto-verified JWT validation
+                        //         (JWKS fetch → signature verify → claims extract → RBAC map)
+                        match oidc::validate_jwt(k, &provider).await {
+                            Ok(auth_result) => {
+                                // Map OIDC role string → ApiKeyRole
+                                let role = match auth_result.role.as_str() {
+                                    "superadmin" => ApiKeyRole::SuperAdmin,
+                                    "admin" => ApiKeyRole::Admin,
+                                    "member" => ApiKeyRole::Member,
+                                    "readonly" => ApiKeyRole::ReadOnly,
+                                    _ => ApiKeyRole::ReadOnly, // safe default
+                                };
+
+                                let role_str = format!("{:?}", role);
+                                tracing::info!(
+                                    user = %auth_result.user_id,
+                                    provider = %provider.name,
+                                    role = %role_str,
+                                    "OIDC: JWT authenticated successfully (crypto-verified)"
+                                );
+
+                                let ctx = AuthContext {
+                                    org_id: auth_result.org_id,
+                                    user_id: None, // OIDC users don't have a local UUID yet
+                                    role,
+                                    scopes: auth_result.scopes,
+                                    key_id: None,
+                                };
+
+                                req.extensions_mut().insert(ctx);
+                                return Ok(next.run(req).await);
                             }
-
-                            // Convert DB row → OidcProvider for claim mapping
-                            let provider = oidc::OidcProvider {
-                                id: provider_row.id,
-                                org_id: provider_row.org_id,
-                                name: provider_row.name,
-                                issuer_url: provider_row.issuer_url,
-                                client_id: provider_row.client_id,
-                                jwks_uri: provider_row.jwks_uri,
-                                audience: provider_row.audience,
-                                claim_mapping: provider_row.claim_mapping,
-                                default_role: provider_row.default_role,
-                                default_scopes: provider_row.default_scopes,
-                                enabled: provider_row.enabled,
-                            };
-
-                            let auth_result = oidc::map_claims_to_rbac(&claims, &provider);
-
-                            // Map OIDC role string → ApiKeyRole
-                            let role = match auth_result.role.as_str() {
-                                "superadmin" => ApiKeyRole::SuperAdmin,
-                                "admin" => ApiKeyRole::Admin,
-                                "member" => ApiKeyRole::Member,
-                                "readonly" => ApiKeyRole::ReadOnly,
-                                _ => ApiKeyRole::ReadOnly, // safe default
-                            };
-
-                            let role_str = format!("{:?}", role);
-                            tracing::info!(
-                                user = %auth_result.user_id,
-                                provider = %provider.name,
-                                role = %role_str,
-                                "OIDC: JWT authenticated successfully"
-                            );
-
-                            let ctx = AuthContext {
-                                org_id: auth_result.org_id,
-                                user_id: None, // OIDC users don't have a local UUID yet
-                                role,
-                                scopes: auth_result.scopes,
-                                key_id: None,
-                            };
-
-                            req.extensions_mut().insert(ctx);
-                            return Ok(next.run(req).await);
-                        }
-                        Ok(None) => {
-                            tracing::debug!(
-                                issuer = %claims.iss,
-                                "OIDC: no provider configured for issuer, falling through to API key"
-                            );
-                            // Fall through to API key path
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "OIDC: DB error looking up provider, falling through to API key"
-                            );
-                            // Fall through to API key path
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    issuer = %issuer,
+                                    "OIDC: JWT crypto verification failed"
+                                );
+                                return Err(StatusCode::UNAUTHORIZED);
+                            }
                         }
                     }
+                    Ok(None) => {
+                        tracing::debug!(
+                            issuer = %issuer,
+                            "OIDC: no provider configured for issuer, falling through to API key"
+                        );
+                        // Fall through to API key path
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "OIDC: DB error looking up provider, falling through to API key"
+                        );
+                        // Fall through to API key path
+                    }
                 }
-                Err(e) => {
-                    tracing::debug!(
-                        error = %e,
-                        "Bearer token looks like JWT but failed to decode, trying API key path"
-                    );
-                    // Fall through to API key path
-                }
+            } else {
+                tracing::debug!(
+                    "Bearer token looks like JWT but couldn't extract issuer, trying API key path"
+                );
+                // Fall through to API key path
             }
         }
 

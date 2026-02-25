@@ -9,7 +9,6 @@
 
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// Configuration for anomaly detection.
 #[derive(Debug, Clone)]
