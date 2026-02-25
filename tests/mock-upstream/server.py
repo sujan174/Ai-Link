@@ -765,6 +765,9 @@ async def root():
             "GET  /v1/models                     (OpenAI Models list)",
             "GET  /v1/models/{id}                (OpenAI Model detail)",
             "GET  /healthz                       (Health check)",
+            "GET  /.well-known/openid-configuration (OIDC Discovery)",
+            "GET  /.well-known/jwks.json         (OIDC JWKS Public Keys)",
+            "POST /oidc/mint                     (Test JWT minting endpoint)",
         ],
         "control_headers": {
             "x-mock-latency-ms": "Add N ms latency (on top of 15-50ms jitter)",
@@ -779,6 +782,157 @@ async def root():
     }
 
 
+# ── OIDC Identity Provider Mock ───────────────────────────────────────────────
+#
+# A minimal OpenID Connect IdP for integration testing. Generates a fresh
+# RSA-2048 key pair at startup, serves it via JWKS, and signs test JWTs.
+#
+# The issuer URL is http://localhost:9000 (or the MOCK_BASE_URL env var).
+# Tests should register this issuer as an OIDC provider in the gateway.
+
+try:
+    from cryptography.hazmat.primitives.asymmetric import rsa, padding
+    from cryptography.hazmat.primitives import serialization, hashes
+    import jwt as pyjwt
+    import base64 as _b64
+    import struct
+
+    def _int_to_base64url(n: int) -> str:
+        """Convert a large integer to base64url-encoded bytes (big-endian, no padding)."""
+        byte_length = (n.bit_length() + 7) // 8
+        n_bytes = n.to_bytes(byte_length, "big")
+        return _b64.urlsafe_b64encode(n_bytes).rstrip(b"=").decode()
+
+    # Generate RSA key pair once at startup
+    _oidc_private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+    )
+    _oidc_public_key = _oidc_private_key.public_key()
+    _OIDC_KID = "mock-oidc-key-1"
+
+    # Pre-build the JWKS response
+    pub_numbers = _oidc_public_key.public_key().public_numbers() if hasattr(_oidc_public_key, 'public_key') else _oidc_public_key.public_numbers()
+    _JWKS = {
+        "keys": [
+            {
+                "kty": "RSA",
+                "use": "sig",
+                "alg": "RS256",
+                "kid": _OIDC_KID,
+                "n": _int_to_base64url(pub_numbers.n),
+                "e": _int_to_base64url(pub_numbers.e),
+            }
+        ]
+    }
+
+    _OIDC_CRYPTO_AVAILABLE = True
+
+except ImportError:
+    _OIDC_CRYPTO_AVAILABLE = False
+    _JWKS = {"keys": []}
+
+
+MOCK_BASE_URL = __import__("os").getenv("MOCK_BASE_URL", "http://localhost:9000")
+
+
+# ── OIDC Discovery Endpoint ────────────────────────────────────────────────────
+
+@app.get("/.well-known/openid-configuration")
+async def oidc_discovery():
+    """OpenID Connect Discovery document."""
+    return {
+        "issuer": MOCK_BASE_URL,
+        "authorization_endpoint": f"{MOCK_BASE_URL}/oidc/authorize",
+        "token_endpoint": f"{MOCK_BASE_URL}/oidc/token",
+        "jwks_uri": f"{MOCK_BASE_URL}/.well-known/jwks.json",
+        "response_types_supported": ["code"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["RS256"],
+        "scopes_supported": ["openid", "profile", "email"],
+        "claims_supported": ["sub", "iss", "aud", "exp", "iat", "email", "name",
+                              "custom:ailink_role", "custom:ailink_scopes"],
+    }
+
+
+@app.get("/.well-known/jwks.json")
+async def oidc_jwks():
+    """JWKS endpoint — returns the RSA public key used to verify JWTs."""
+    return _JWKS
+
+
+# ── JWT Minting (test helper only — not a real OIDC endpoint) ─────────────────
+
+@app.post("/oidc/mint")
+async def oidc_mint(request: Request):
+    """
+    Mint a test JWT signed with the mock IdP's private key.
+
+    Body (JSON):
+        sub          - subject (user ID, required)
+        email        - email claim (optional)
+        role         - custom:ailink_role claim (optional, default: 'admin')
+        scopes       - custom:ailink_scopes claim (optional, default: '*')
+        audience     - aud claim (optional)
+        expires_in   - token lifetime in seconds (optional, default: 3600)
+        expired      - if true, token is already expired (default: false)
+        bad_signature - if true, sign with a different key (invalid sig)
+    """
+    if not _OIDC_CRYPTO_AVAILABLE:
+        return JSONResponse(
+            {"error": "cryptography/PyJWT not installed in mock upstream"},
+            status_code=503,
+        )
+
+    body = await request.json()
+    sub = body.get("sub", "test-user-01")
+    email = body.get("email", f"{sub}@example.com")
+    role = body.get("role", "admin")
+    scopes = body.get("scopes", "*")
+    audience = body.get("audience")
+    expires_in = int(body.get("expires_in", 3600))
+    expired = body.get("expired", False)
+    bad_sig = body.get("bad_signature", False)
+
+    now = int(time.time())
+    exp = (now - 3600) if expired else (now + expires_in)
+
+    payload = {
+        "iss": MOCK_BASE_URL,
+        "sub": sub,
+        "iat": now,
+        "exp": exp,
+        "email": email,
+        "name": f"Test User ({sub})",
+        "custom:ailink_role": role,
+        "custom:ailink_scopes": scopes,
+    }
+    if audience:
+        payload["aud"] = audience
+
+    headers = {"kid": _OIDC_KID}
+
+    if bad_sig:
+        # Sign with a freshly-generated throwaway key → signature won't match JWKS
+        from cryptography.hazmat.primitives.asymmetric import rsa as _rsa
+        bad_key = _rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        private_pem = bad_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+    else:
+        private_pem = _oidc_private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        )
+
+    token = pyjwt.encode(payload, private_pem, algorithm="RS256", headers=headers)
+    return {"token": token, "expires_at": exp, "issuer": MOCK_BASE_URL}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=9000, log_level="info")
+

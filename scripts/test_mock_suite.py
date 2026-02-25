@@ -15,7 +15,7 @@ Then:
 The gateway must be running (docker compose up ailink) and able to reach
 host.docker.internal:9000 (Mac Docker networking default).
 
-Features tested (55+ tests across 12 phases):
+Features tested (60+ tests across 21 phases):
   Phase 1  — Mock upstream sanity checks
   Phase 2  — Anthropic translation (non-streaming + streaming)
   Phase 3  — SSE Streaming (OpenAI, Anthropic, Gemini via mock)
@@ -28,6 +28,8 @@ Features tested (55+ tests across 12 phases):
   Phase 10 — Webhook Action
   Phase 11 — Circuit Breaker (flaky upstream)
   Phase 12 — Admin API completeness (delete, update, GDPR purge)
+  Phase 20 — Anomaly Detection (non-blocking, coexists with sessions)
+  Phase 21 — OIDC JWT Authentication (RS256 JWKS, expired, bad-sig, fallback)
 """
 
 from __future__ import annotations
@@ -1826,6 +1828,158 @@ def t20_anomaly_with_session():
 
 test("Anomaly: rapid requests NOT blocked (informational only)", t20_anomaly_does_not_block)
 test("Anomaly: coexists with session lifecycle", t20_anomaly_with_session)
+
+# ═══════════════════════════════════════════════════════════════
+#  Phase 21 — OIDC JWT Authentication
+# ═══════════════════════════════════════════════════════════════
+section("Phase 21 — OIDC JWT Authentication")
+
+# Check whether the mock supports OIDC (cryptography + PyJWT installed)
+_oidc_provider_id = None
+_oidc_issuer = MOCK_LOCAL  # the mock upstream acts as the IdP
+
+def _oidc_skip_reason():
+    """Return a skip reason string if OIDC tests cannot run, else None."""
+    try:
+        r = mock("GET", "/.well-known/openid-configuration")
+        if r.status_code != 200:
+            return f"Mock OIDC discovery returned HTTP {r.status_code}"
+        jwks_r = mock("GET", "/.well-known/jwks.json")
+        if jwks_r.status_code != 200 or not jwks_r.json().get("keys"):
+            return "Mock OIDC JWKS endpoint unavailable or has no keys"
+        # Try minting a token
+        mint_r = mock("POST", "/oidc/mint", json={"sub": "preflight"})
+        if mint_r.status_code == 503:
+            return "Mock OIDC: cryptography/PyJWT not installed in mock upstream"
+        return None
+    except Exception as e:
+        return f"Mock OIDC preflight failed: {e}"
+
+_oidc_skip = _oidc_skip_reason()
+
+
+def t21_register_oidc_provider():
+    """Register the mock-upstream as an OIDC provider in the gateway."""
+    global _oidc_provider_id
+
+    # The gateway needs to reach the mock at MOCK_GATEWAY (docker networking)
+    # but for JWKS fetching it uses the configured jwks_uri.
+    # We pass explicit jwks_uri pointing to the mock as seen from the gateway.
+    payload = {
+        "name": f"mock-oidc-{RUN_ID}",
+        "issuer_url": _oidc_issuer,       # issuer must match JWT iss claim
+        "client_id": "ailink-test",
+        "audience": None,
+        # Explicit JWKS URI using gateway-reachable address
+        "jwks_uri": f"{MOCK_GATEWAY}/.well-known/jwks.json",
+        # Map custom claim to RBAC role
+        "claim_mappings": {
+            "custom:ailink_role": "role",
+        },
+        "default_role": "admin",
+    }
+
+    r = gw("POST", "/api/v1/oidc/providers",
+           headers={"x-admin-key": ADMIN_KEY},
+           json=payload)
+
+    assert r.status_code in (200, 201), (
+        f"OIDC provider registration failed: HTTP {r.status_code}: {r.text[:300]}"
+    )
+    data = r.json()
+    _oidc_provider_id = data.get("id")
+    assert _oidc_provider_id, "Response missing 'id' field"
+    return f"Registered OIDC provider id={_oidc_provider_id[:8]}… ✓"
+
+
+def t21_valid_jwt_admin_access():
+    """Valid RS256 JWT with role=admin → admin API returns 200."""
+    # Mint a valid token
+    mint_r = mock("POST", "/oidc/mint", json={
+        "sub": f"oidc-user-{RUN_ID}",
+        "role": "admin",
+        "scopes": "*",
+    })
+    assert mint_r.status_code == 200, f"Failed to mint JWT: {mint_r.text}"
+    jwt_token = mint_r.json()["token"]
+
+    # Use JWT as Bearer token on a protected admin-only endpoint
+    r = gw("GET", "/api/v1/tokens",
+           headers={"Authorization": f"Bearer {jwt_token}"})
+    assert r.status_code == 200, (
+        f"Valid JWT should get 200 on /api/v1/tokens, got {r.status_code}: {r.text[:200]}"
+    )
+    return f"Valid RS256 JWT → HTTP 200 on admin endpoint ✓"
+
+
+def t21_expired_jwt_rejected():
+    """Expired JWT → gateway returns 401."""
+    mint_r = mock("POST", "/oidc/mint", json={
+        "sub": f"expired-user-{RUN_ID}",
+        "expired": True,
+    })
+    assert mint_r.status_code == 200, f"Mint failed: {mint_r.text}"
+    expired_token = mint_r.json()["token"]
+
+    r = gw("GET", "/api/v1/tokens",
+           headers={"Authorization": f"Bearer {expired_token}"})
+    assert r.status_code == 401, (
+        f"Expired JWT should be rejected with 401, got {r.status_code}"
+    )
+    return "Expired JWT → HTTP 401 ✓"
+
+
+def t21_bad_signature_rejected():
+    """JWT with invalid RS256 signature → gateway returns 401."""
+    mint_r = mock("POST", "/oidc/mint", json={
+        "sub": f"badsig-user-{RUN_ID}",
+        "bad_signature": True,
+    })
+    assert mint_r.status_code == 200, f"Mint failed: {mint_r.text}"
+    bad_token = mint_r.json()["token"]
+
+    r = gw("GET", "/api/v1/tokens",
+           headers={"Authorization": f"Bearer {bad_token}"})
+    assert r.status_code == 401, (
+        f"Invalid-signature JWT should be rejected with 401, got {r.status_code}: {r.text[:200]}"
+    )
+    return "Bad-signature JWT → HTTP 401 ✓"
+
+
+def t21_no_jwt_falls_back_to_apikey():
+    """No JWT in header → API key auth still works (fallback path intact)."""
+    r = gw("GET", "/api/v1/tokens",
+           headers={"x-admin-key": ADMIN_KEY})
+    assert r.status_code == 200, (
+        f"API key auth (fallback) should still return 200, got {r.status_code}"
+    )
+    return "No-JWT → API key fallback succeeds with HTTP 200 ✓"
+
+
+def t21_cleanup_oidc_provider():
+    """Clean up the registered OIDC provider."""
+    if not _oidc_provider_id:
+        return "No provider to clean up"
+    r = gw("DELETE", f"/api/v1/oidc/providers/{_oidc_provider_id}",
+           headers={"x-admin-key": ADMIN_KEY})
+    assert r.status_code in (200, 204, 404), (
+        f"OIDC provider delete failed: HTTP {r.status_code}"
+    )
+    return f"Provider {_oidc_provider_id[:8]}… deleted ✓"
+
+
+test("OIDC: register mock IdP as OIDC provider",
+     t21_register_oidc_provider, skip=_oidc_skip)
+test("OIDC: valid RS256 JWT → admin API 200",
+     t21_valid_jwt_admin_access, skip=_oidc_skip)
+test("OIDC: expired JWT → 401 rejected",
+     t21_expired_jwt_rejected, skip=_oidc_skip)
+test("OIDC: bad-signature JWT → 401 rejected",
+     t21_bad_signature_rejected, skip=_oidc_skip)
+test("OIDC: no JWT header → API key fallback works",
+     t21_no_jwt_falls_back_to_apikey)
+test("OIDC: cleanup provider",
+     t21_cleanup_oidc_provider, skip=_oidc_skip)
 
 # ═══════════════════════════════════════════════════════════════
 #  Cleanup
