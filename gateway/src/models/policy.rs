@@ -614,6 +614,7 @@ pub enum OnFail {
     #[default]
     Allow,
     Deny,
+    Log,
 }
 
 // ── Defaults ─────────────────────────────────────────────────

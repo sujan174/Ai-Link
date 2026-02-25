@@ -931,13 +931,9 @@ def t9_remove_header():
     assert r.status_code == 200
     debug = r.json().get("_debug", {})
     received = debug.get("received_headers", {})
-    # KNOWN LIMITATION: gateway may re-inject User-Agent via hyper/reqwest
-    # even after the transform removes it. We verify the transform runs
-    # (HTTP 200 with debug data present) and warn if header persists.
-    if "user-agent" in received:
-        ua = received["user-agent"]
-        # Verify it's at least the gateway's own UA, not the client's original
-        return f"RemoveHeader: ⚠️  User-Agent still present ('{ua}') — gateway HTTP client re-injects it. Transform ran but HTTP layer re-adds the header. ✓"
+    assert "user-agent" not in received, (
+        f"RemoveHeader: User-Agent should be removed but was present: '{received.get('user-agent')}'"
+    )
     return "RemoveHeader: verified User-Agent absent upstream ✓"
 
 
@@ -1003,22 +999,15 @@ def t10_webhook_fired():
     _cleanup_tokens.append(t.token_id)
 
     r = chat(t.token_id, "trigger webhook please")
-    # KNOWN BUG: on_fail=log should absorb webhook errors and return 200,
-    # but the gateway currently returns 500 when SSRF blocks the webhook URL.
-    # We accept both 200 and 500, but document the bug.
-    if r.status_code == 500:
-        return (
-            "Webhook on_fail=log: ⚠️  HTTP 500 — gateway SSRF blocks webhook delivery "
-            "and on_fail=log doesn't absorb the error. KNOWN BUG. ✓"
-        )
+    # on_fail=log → gateway should pass through even if webhook delivery fails.
     assert r.status_code == 200, (
-        f"Webhook unexpected status: HTTP {r.status_code}: {r.text[:200]}"
+        f"Webhook on_fail=log should return 200. Got HTTP {r.status_code}: {r.text[:200]}"
     )
     time.sleep(1.5)
     history = mock("GET", "/webhook/history").json()
     if len(history) > 0:
         return f"Webhook delivered: {len(history)} captures received ✓"
-    return "Webhook on_fail=log: delivery failed, but request passed (fail-open) ✓"
+    return "Webhook on_fail=log: delivery failed (SSRF), but request passed (fail-open) ✓"
 
 
 test("Webhook action fires POST to mock receiver", t10_webhook_fired)

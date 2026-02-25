@@ -1591,11 +1591,17 @@ pub async fn proxy_handler(
     }
 
     // Forward standard safe headers (required by strict APIs like GitHub)
-    if let Some(ua) = headers.get(reqwest::header::USER_AGENT) {
-        upstream_headers.insert(reqwest::header::USER_AGENT, ua.clone());
-    } else {
-        // Fallback User-Agent if none provided by client
-        upstream_headers.insert(reqwest::header::USER_AGENT, reqwest::header::HeaderValue::from_static("AILink-Gateway/1.0"));
+    // BUT skip if a transform explicitly removed User-Agent
+    let ua_removed = header_mutations.removals.iter().any(|name| {
+        name.eq_ignore_ascii_case("user-agent")
+    });
+    if !ua_removed {
+        if let Some(ua) = headers.get(reqwest::header::USER_AGENT) {
+            upstream_headers.insert(reqwest::header::USER_AGENT, ua.clone());
+        } else {
+            // Fallback User-Agent if none provided by client
+            upstream_headers.insert(reqwest::header::USER_AGENT, reqwest::header::HeaderValue::from_static("AILink-Gateway/1.0"));
+        }
     }
     
     if let Some(accept) = headers.get(reqwest::header::ACCEPT) {
