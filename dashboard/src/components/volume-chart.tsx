@@ -35,7 +35,7 @@ export function VolumeChart() {
                                 <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                             </linearGradient>
                         </defs>
-                        <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
+                        <CartesianGrid stroke="#232330" strokeDasharray="3 3" vertical={false} />
                         <XAxis
                             dataKey="name"
                             {...CHART_AXIS_PROPS}
@@ -44,7 +44,7 @@ export function VolumeChart() {
                             {...CHART_AXIS_PROPS}
                             tickFormatter={(value) => `${value}`}
                         />
-                        <Tooltip content={<CustomTooltip  contentStyle={{ backgroundColor: "#151722", borderColor: "#2A2D3D", color: "#e5e7eb" }} />} cursor={{ stroke: 'var(--border)', strokeWidth: 1, strokeDasharray: '4 4' }} />
+                        <Tooltip content={<CustomTooltip  contentStyle={{ backgroundColor: "#1A1A1F", borderColor: "#2C2C35", color: "#F0F0F4" }} />} cursor={{ stroke: 'var(--border)', strokeWidth: 1, strokeDasharray: '4 4' }} />
                         <Area
                             type="monotone"
                             dataKey="requests"

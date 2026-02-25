@@ -39,7 +39,7 @@ export function Breadcrumbs() {
 
                 return (
                     <Fragment key={path}>
-                        <ChevronRight className="h-4 w-4 mx-1 text-[#2A2D3D]" />
+                        <ChevronRight className="h-3 w-3 mx-1 text-muted-foreground/30" />
                         {isLast ? (
                             <span className="font-semibold text-lg tracking-tight text-foreground truncate max-w-[400px]">
                                 {label}

@@ -170,7 +170,7 @@ export default function ExperimentsPage() {
                                         <div className="h-[250px] w-full mt-4">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <BarChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                                                    <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
+                                                    <CartesianGrid stroke="#232330" strokeDasharray="3 3" vertical={false} />
                                                     <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#888' }} />
                                                     <YAxis yAxisId="left" orientation="left" stroke="#888" axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
                                                     <YAxis yAxisId="right" orientation="right" stroke="#888" axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />

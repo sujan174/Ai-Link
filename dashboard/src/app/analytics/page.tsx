@@ -206,7 +206,7 @@ export default function AnalyticsPage() {
                                             </linearGradient>
                                         </defs>
 
-                                        <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
+                                        <CartesianGrid stroke="#232330" strokeDasharray="3 3" vertical={false} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}
@@ -263,7 +263,7 @@ export default function AnalyticsPage() {
                             ) : (
                                 <ResponsiveContainer width="100%" height="100%">
                                     <LineChart data={timeseries} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                                        <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
+                                        <CartesianGrid stroke="#232330" strokeDasharray="3 3" vertical={false} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}
@@ -345,7 +345,7 @@ export default function AnalyticsPage() {
                                                 <Cell key={`cell-${index}`} fill={entry.fill} />
                                             ))}
                                         </Pie>
-                                        <Tooltip content={<CustomTooltip  contentStyle={{ backgroundColor: "#151722", borderColor: "#2A2D3D", color: "#e5e7eb" }} />} />
+                                        <Tooltip content={<CustomTooltip  contentStyle={{ backgroundColor: "#1A1A1F", borderColor: "#2C2C35", color: "#F0F0F4" }} />} />
                                         <Legend verticalAlign="bottom" height={36} wrapperStyle={{ fontSize: '12px' }} />
                                     </PieChart>
                                 </ResponsiveContainer>
@@ -373,7 +373,7 @@ export default function AnalyticsPage() {
                             ) : (
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={timeseries} barCategoryGap="30%" margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                                        <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
+                                        <CartesianGrid stroke="#232330" strokeDasharray="3 3" vertical={false} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}

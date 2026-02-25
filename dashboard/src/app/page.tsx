@@ -269,7 +269,7 @@ export default function OverviewPage() {
                                                 <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
                                             </linearGradient>
                                         </defs>
-                                        <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
+                                        <CartesianGrid stroke="#232330" strokeDasharray="3 3" vertical={false} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}

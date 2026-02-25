@@ -53,7 +53,7 @@ export function StatusPieChart() {
                                 <Cell key={`cell-${index}`} fill={entry.fill} />
                             ))}
                         </Pie>
-                        <Tooltip content={<CustomTooltip  contentStyle={{ backgroundColor: "#151722", borderColor: "#2A2D3D", color: "#e5e7eb" }} />} />
+                        <Tooltip content={<CustomTooltip  contentStyle={{ backgroundColor: "#1A1A1F", borderColor: "#2C2C35", color: "#F0F0F4" }} />} />
                         <Legend verticalAlign="bottom" height={36} wrapperStyle={{ fontSize: '12px' }} />
                     </PieChart>
                 </ResponsiveContainer>

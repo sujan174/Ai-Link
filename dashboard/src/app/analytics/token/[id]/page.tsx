@@ -166,7 +166,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                                         <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                                     </linearGradient>
                                 </defs>
-                                <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
+                                <CartesianGrid stroke="#232330" strokeDasharray="3 3" vertical={false} />
                                 <XAxis
                                     dataKey="hour"
                                     {...CHART_AXIS_PROPS}
@@ -215,7 +215,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                                         <Cell key={`cell-${index}`} fill={entry.color} />
                                     ))}
                                 </Pie>
-                                <Tooltip content={<CustomTooltip  contentStyle={{ backgroundColor: "#151722", borderColor: "#2A2D3D", color: "#e5e7eb" }} />} />
+                                <Tooltip content={<CustomTooltip  contentStyle={{ backgroundColor: "#1A1A1F", borderColor: "#2C2C35", color: "#F0F0F4" }} />} />
                             </PieChart>
                         </ResponsiveContainer>
                         <div className="space-y-4">

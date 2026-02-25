@@ -151,7 +151,7 @@ export default function BillingPage() {
                                             <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
                                         </linearGradient>
                                     </defs>
-                                    <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
+                                    <CartesianGrid stroke="#232330" strokeDasharray="3 3" vertical={false} />
                                     <XAxis
                                         dataKey="day"
                                         {...CHART_AXIS_PROPS}

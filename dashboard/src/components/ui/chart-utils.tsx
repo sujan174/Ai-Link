@@ -48,9 +48,9 @@ export function CustomTooltip({
 
 // Chart axis defaults
 export const CHART_AXIS_PROPS = {
-    stroke: "#888888",
-    fontSize: 12,
+    stroke: "#555566",
+    fontSize: 11,
     tickLine: false,
     axisLine: false,
-    tickMargin: 12,
+    tickMargin: 10,
 };

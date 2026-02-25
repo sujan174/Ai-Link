@@ -2,9 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import {
     Key,
     ShieldAlert,
@@ -20,10 +19,8 @@ import {
     Webhook,
     FlaskConical,
     Settings,
-    User,
     ChevronLeft,
     ChevronRight,
-    Map,
     DollarSign,
     Layers,
     Database,
@@ -46,9 +43,7 @@ interface Group {
 
 export function Sidebar({ className }: SidebarProps) {
     const pathname = usePathname();
-    const { theme, setTheme } = useTheme();
 
-    // Collapsed state
     const [collapsed, setCollapsed] = useState(false);
     const [mounted, setMounted] = useState(false);
     const [health, setHealth] = useState<"online" | "offline" | "checking">("checking");
@@ -59,7 +54,6 @@ export function Sidebar({ className }: SidebarProps) {
 
         const checkHealth = async () => {
             try {
-                // We'll just check if the promise resolves
                 await fetch("/api/proxy/healthz");
                 setHealth("online");
             } catch {
@@ -69,7 +63,6 @@ export function Sidebar({ className }: SidebarProps) {
 
         const checkApprovals = async () => {
             try {
-                // This fetches all approvals - efficiently we'd want a count endpoint but this works for v1
                 const res = await fetch("/api/proxy/approvals");
                 if (res.ok) {
                     const data = await res.json();
@@ -80,11 +73,9 @@ export function Sidebar({ className }: SidebarProps) {
             }
         };
 
-        // Initial check
         checkHealth();
         checkApprovals();
 
-        // Poll every 30s
         const interval = setInterval(() => {
             checkHealth();
             checkApprovals();
@@ -141,23 +132,43 @@ export function Sidebar({ className }: SidebarProps) {
     return (
         <motion.div
             initial={false}
-            animate={{ width: collapsed ? 80 : 256 }}
-            transition={{ type: "spring", stiffness: 300, damping: 30 }}
-            className={cn("flex h-full flex-col bg-[var(--sidebar-bg)] border-r border-[var(--sidebar-border)] relative", className)}
+            animate={{ width: collapsed ? 64 : 232 }}
+            transition={{ type: "spring", stiffness: 320, damping: 32 }}
+            className={cn(
+                "flex h-full flex-col relative overflow-hidden",
+                "bg-[var(--sidebar-bg)] border-r border-[var(--sidebar-border)]",
+                className
+            )}
         >
             {/* Collapse Toggle */}
             <button
                 onClick={() => setCollapsed(!collapsed)}
                 aria-label="Toggle Sidebar"
-                className="absolute -right-3 top-6 z-50 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--sidebar-border)] bg-[var(--sidebar-bg)] text-muted-foreground shadow-sm hover:text-foreground hover:shadow-md transition-all"
+                className={cn(
+                    "absolute -right-3 top-7 z-50",
+                    "flex h-6 w-6 items-center justify-center rounded-full",
+                    "border border-[#2C2C35] bg-[#1A1A1F]",
+                    "text-[#8A8A96] hover:text-[#F0F0F4]",
+                    "shadow-md transition-all duration-200",
+                    "hover:border-[#7C3AED]/30 hover:shadow-[0_0_12px_rgba(124,58,237,0.2)]"
+                )}
             >
-                {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+                {collapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
             </button>
 
-            {/* Header */}
-            <div className={cn("flex flex-col gap-4 border-b border-[var(--sidebar-border)] transition-all", collapsed ? "p-2" : "p-4")}>
-                <Link href="/" className={cn("flex items-center gap-2.5 font-bold text-lg group", collapsed ? "justify-center" : "px-2")}>
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-violet-600 text-white text-sm font-black shadow-lg shadow-blue-500/20 group-hover:shadow-blue-500/40 transition-shadow">
+            {/* Logo / Brand */}
+            <div className={cn(
+                "flex h-14 shrink-0 items-center border-b border-[var(--sidebar-border)]",
+                collapsed ? "justify-center px-4" : "px-5"
+            )}>
+                <Link href="/" className="flex items-center gap-2.5 group min-w-0">
+                    {/* Icon mark */}
+                    <div className={cn(
+                        "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg",
+                        "bg-gradient-to-br from-violet-600 to-indigo-500",
+                        "text-white font-black text-xs shadow-lg",
+                        "shadow-violet-900/40 group-hover:shadow-violet-700/40 transition-shadow"
+                    )}>
                         A
                     </div>
                     {!collapsed && (
@@ -165,12 +176,15 @@ export function Sidebar({ className }: SidebarProps) {
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
-                            className="flex items-center gap-2 whitespace-nowrap overflow-hidden"
+                            className="flex items-center gap-2 min-w-0 overflow-hidden"
                         >
-                            <span className="gradient-text font-bold text-lg tracking-tight">
+                            <span className="gradient-text font-bold text-[15px] tracking-tight whitespace-nowrap">
                                 AIlink
                             </span>
-                            <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[10px] font-semibold text-blue-500 tracking-wider uppercase">
+                            <span className={cn(
+                                "rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider whitespace-nowrap",
+                                "bg-violet-500/10 text-violet-400 border border-violet-500/20"
+                            )}>
                                 Gateway
                             </span>
                         </motion.div>
@@ -179,17 +193,21 @@ export function Sidebar({ className }: SidebarProps) {
             </div>
 
             {/* Navigation */}
-            <div className="flex-1 overflow-y-auto overflow-x-hidden py-3 px-2 space-y-4 scrollbar-none">
+            <div className="flex-1 overflow-y-auto overflow-x-hidden py-3 space-y-5 scrollbar-none px-3">
                 {groups.map((group) => (
-                    <div key={group.label} className="space-y-1">
+                    <div key={group.label} className="space-y-0.5">
+                        {/* Group label */}
                         {!collapsed && (
-                            <motion.h4
+                            <motion.p
                                 initial={{ opacity: 0 }}
                                 animate={{ opacity: 1 }}
-                                className="px-3 text-[10px] uppercase font-bold tracking-[0.1em] text-muted-foreground/60 mb-1 whitespace-nowrap"
+                                className={cn(
+                                    "px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]",
+                                    "text-[#8A8A96]/60"
+                                )}
                             >
                                 {group.label}
-                            </motion.h4>
+                            </motion.p>
                         )}
                         {group.routes.map((route) => {
                             const isActive = route.href === "/"
@@ -199,22 +217,33 @@ export function Sidebar({ className }: SidebarProps) {
                                 <Link
                                     key={route.href}
                                     href={route.href}
-                                    className={cn(
-                                        "flex items-center gap-2.5 rounded-md py-1.5 text-sm font-medium transition-all duration-200 group relative",
-                                        collapsed ? "justify-center px-2" : "px-3",
-                                        isActive
-                                            ? "text-primary bg-primary/10"
-                                            : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                                    )}
                                     title={collapsed ? route.label : undefined}
+                                    className={cn(
+                                        "relative flex items-center gap-2.5 rounded-lg py-2 text-[13px] font-medium",
+                                        "transition-all duration-150 group",
+                                        collapsed ? "justify-center px-2" : "px-2.5",
+                                        isActive
+                                            ? [
+                                                "text-[#F0F0F4] bg-violet-600/10",
+                                                "ring-1 ring-inset ring-violet-500/15"
+                                            ]
+                                            : [
+                                                "text-[#8A8A96]",
+                                                "hover:text-[#C8C8D4] hover:bg-[#1E1E24]"
+                                            ]
+                                    )}
                                 >
+                                    {/* Active left indicator */}
                                     {isActive && (
-                                        <div className="absolute left-0 top-1/2 -translate-y-1/2 h-4 w-0.5 rounded-r-full bg-primary" />
+                                        <span className="absolute left-0 top-1/2 -translate-y-1/2 h-4 w-0.5 rounded-r-full bg-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.7)]" />
                                     )}
                                     <route.icon
-                                        size={16}
-                                        strokeWidth={1.5}
-                                        className={cn("shrink-0 transition-colors", isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground")}
+                                        size={15}
+                                        strokeWidth={isActive ? 2 : 1.6}
+                                        className={cn(
+                                            "shrink-0 transition-colors",
+                                            isActive ? "text-violet-400" : "text-[#8A8A96] group-hover:text-[#C8C8D4]"
+                                        )}
                                     />
                                     {!collapsed && (
                                         <motion.span
@@ -225,11 +254,15 @@ export function Sidebar({ className }: SidebarProps) {
                                             {route.label}
                                         </motion.span>
                                     )}
+                                    {/* approval badge */}
                                     {!collapsed && route.badge && (
                                         <motion.span
                                             initial={{ opacity: 0, scale: 0.8 }}
                                             animate={{ opacity: 1, scale: 1 }}
-                                            className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500/15 px-1.5 text-[10px] font-bold text-amber-500 transition-all font-mono"
+                                            className={cn(
+                                                "flex h-4 min-w-[1rem] items-center justify-center rounded-full",
+                                                "bg-amber-500/15 px-1 text-[9px] font-bold text-amber-400 font-mono"
+                                            )}
                                         >
                                             {route.badge}
                                         </motion.span>
@@ -241,20 +274,34 @@ export function Sidebar({ className }: SidebarProps) {
                 ))}
             </div>
 
-            {/* Footer */}
-            <div className="border-t border-[var(--sidebar-border)] p-4 space-y-1">
-                <div className={cn("py-2 transition-all", collapsed ? "px-0 flex justify-center" : "px-3")}>
-                    <div className={cn("flex items-center text-xs text-muted-foreground", collapsed ? "justify-center" : "justify-between")}>
-                        <div className="flex items-center gap-2">
-                            <div className={cn(
-                                "h-2 w-2 rounded-full transition-colors duration-500 shrink-0",
-                                health === "online" ? "bg-emerald-500 animate-pulse" :
-                                    health === "offline" ? "bg-rose-500" : "bg-amber-500"
-                            )} />
-                            {!collapsed && <span className="font-mono">v0.6.0</span>}
-                        </div>
-                        {!collapsed && <span className="text-[10px] uppercase tracking-wider opacity-50">{health}</span>}
+            {/* Footer — health status */}
+            <div className={cn(
+                "shrink-0 border-t border-[var(--sidebar-border)] py-3",
+                collapsed ? "px-3" : "px-5"
+            )}>
+                <div className={cn(
+                    "flex items-center text-[11px] text-[#8A8A96]",
+                    collapsed ? "justify-center" : "justify-between"
+                )}>
+                    <div className="flex items-center gap-2">
+                        <div className={cn(
+                            "h-1.5 w-1.5 rounded-full transition-colors duration-500",
+                            health === "online" ? "bg-emerald-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]" :
+                                health === "offline" ? "bg-rose-500" :
+                                    "bg-amber-500 animate-pulse"
+                        )} />
+                        {!collapsed && <span className="font-mono text-[10px]">v0.6.0</span>}
                     </div>
+                    {!collapsed && (
+                        <span className={cn(
+                            "text-[9px] uppercase tracking-widest font-medium",
+                            health === "online" ? "text-emerald-500/60" :
+                                health === "offline" ? "text-rose-500/60" :
+                                    "text-amber-500/60"
+                        )}>
+                            {health}
+                        </span>
+                    )}
                 </div>
             </div>
         </motion.div>

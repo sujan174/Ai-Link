@@ -349,7 +349,7 @@ export default function SessionDetailPage() {
                     <CardContent>
                         <ResponsiveContainer width="100%" height={Math.max(180, chartData.length * 40 + 60)}>
                             <BarChart layout="vertical" data={chartData} margin={{ top: 0, right: 20, bottom: 0, left: -20 }}>
-                                <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
+                                <CartesianGrid stroke="#232330" strokeDasharray="3 3" vertical={false} />
                                 <XAxis type="number" tickFormatter={(v) => `${v}ms`} {...CHART_AXIS_PROPS} />
                                 <YAxis type="category" dataKey="name" {...CHART_AXIS_PROPS} width={50} />
                                 <Tooltip

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "@/components/sidebar";
 import { Toaster } from "@/components/ui/sonner";
@@ -9,6 +9,14 @@ import { ThemeProvider } from "next-themes";
 const inter = Inter({
   subsets: ["latin"],
   variable: "--font-inter",
+  display: "swap",
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono",
+  display: "swap",
+  weight: ["400", "500", "600"],
 });
 
 export const metadata: Metadata = {
@@ -29,13 +37,13 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} flex h-screen w-full bg-background font-sans antialiased text-foreground`}>
+      <body className={`${inter.variable} ${jetbrainsMono.variable} flex h-screen w-full bg-background font-sans antialiased text-foreground`}>
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
           <ProjectProvider>
             <div className="flex h-full w-full">
               <Sidebar className="hidden border-r md:flex" />
               <main className="flex-1 flex flex-col overflow-hidden">
-                <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-[#2A2D3D] bg-background/95 px-4 lg:px-6 backdrop-blur">
+                <header className="flex h-13 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-4 lg:px-6 backdrop-blur-sm">
                   <div className="flex items-center gap-2 flex-1">
                     <MobileNav />
                     <Breadcrumbs />
