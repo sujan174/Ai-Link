@@ -1026,37 +1026,77 @@ pub async fn proxy_handler(
 
         let timeout_secs = middleware::policy::parse_window_secs(&hitl_timeout_str).unwrap_or(1800); // default 30m
 
-        // ── M4: Async Redis Polling for HITL notification ──────────────────────
-        // Instead of BLPOP (which hard-blocks the shared ConnectionManager mux TCP stream),
-        // we use a 500ms async sleep loop with non-blocking LPOP.
-        let mut redis_conn = state.cache.redis();
+        // ── HITL: Dedicated-connection BLPOP for instant approval delivery ──
+        // We create a dedicated Redis connection (not the shared ConnectionManager)
+        // so BLPOP blocks only this connection without affecting the connection pool.
+        // This gives us sub-millisecond notification latency vs the old 500ms LPOP polling.
         let hitl_key = format!("hitl:decision:{}", approval_id);
         #[allow(unused_assignments)]
         let mut approved = false;
-
-        let start_wait = std::time::Instant::now();
-        let timeout_duration = std::time::Duration::from_secs(timeout_secs as u64);
         let mut decision_opt: Option<String> = None;
 
-        while start_wait.elapsed() < timeout_duration {
-            let lpop_result: redis::RedisResult<Option<String>> = redis::AsyncCommands::lpop(
-                &mut redis_conn,
-                &hitl_key,
-                None,
-            ).await;
+        // Try dedicated BLPOP first, fall back to LPOP polling if connection fails
+        let blpop_timeout = timeout_secs.min(1800) as f64; // Redis BLPOP timeout in seconds
+        let blpop_result: Result<Option<String>, ()> = async {
+            // Open a fresh, dedicated connection for the blocking call
+            let redis_url = std::env::var("REDIS_URL")
+                .unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+            let client = redis::Client::open(redis_url.as_str()).map_err(|e| {
+                tracing::warn!("HITL: failed to create dedicated Redis client: {}", e);
+            })?;
+            let mut conn = client.get_multiplexed_async_connection().await.map_err(|e| {
+                tracing::warn!("HITL: failed to open dedicated Redis connection: {}", e);
+            })?;
 
-            match lpop_result {
-                Ok(Some(value)) => {
-                    decision_opt = Some(value);
-                    break; // got the decision
-                }
-                Ok(None) => {
-                    // Empty list, wait and retry
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
+            // BLPOP blocks until a value is pushed or timeout expires.
+            // Returns Option<(key, value)> tuple.
+            let result: redis::RedisResult<Option<(String, String)>> = redis::cmd("BLPOP")
+                .arg(&hitl_key)
+                .arg(blpop_timeout)
+                .query_async(&mut conn)
+                .await;
+
+            match result {
+                Ok(Some((_key, value))) => Ok(Some(value)),
+                Ok(None) => Ok(None), // timeout expired
                 Err(e) => {
-                    tracing::warn!("HITL Redis LPOP failed, falling back to DB: {}", e);
-                    break;
+                    tracing::warn!("HITL BLPOP failed: {}", e);
+                    Err(())
+                }
+            }
+        }.await;
+
+        match blpop_result {
+            Ok(Some(value)) => {
+                decision_opt = Some(value);
+            }
+            Ok(None) => {
+                // BLPOP timed out — no decision received
+            }
+            Err(()) => {
+                // Redis failed — fall back to LPOP polling loop
+                tracing::info!("HITL: falling back to LPOP polling");
+                let mut redis_conn = state.cache.redis();
+                let start_wait = std::time::Instant::now();
+                let timeout_duration = std::time::Duration::from_secs(timeout_secs as u64);
+
+                while start_wait.elapsed() < timeout_duration {
+                    let lpop_result: redis::RedisResult<Option<String>> =
+                        redis::AsyncCommands::lpop(&mut redis_conn, &hitl_key, None).await;
+
+                    match lpop_result {
+                        Ok(Some(value)) => {
+                            decision_opt = Some(value);
+                            break;
+                        }
+                        Ok(None) => {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        Err(e) => {
+                            tracing::warn!("HITL LPOP fallback also failed: {}", e);
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -1064,7 +1104,7 @@ pub async fn proxy_handler(
         let decision = match decision_opt {
             Some(value) => value,
             None => {
-                // Loop timed out or Redis errored — fall back to a single DB check
+                // All Redis paths exhausted — final DB check
                 state.db.get_approval_status(approval_id).await
                     .map_err(AppError::Internal)?
             }

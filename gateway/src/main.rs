@@ -18,6 +18,7 @@ mod middleware;
 mod models;
 mod notification;
 mod proxy;
+mod rotation;
 mod store;
 mod vault;
 
@@ -68,11 +69,38 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    let env_filter = tracing_subscriber::EnvFilter::new(
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "gateway=debug,tower_http=debug".into()),
+    );
+
+    // SIEM-ready JSON logs: set AILINK_LOG_FORMAT=json for structured output
+    // compatible with Splunk, Datadog, ELK, CloudWatch.
+    let use_json = std::env::var("AILINK_LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+
+    let json_layer = if use_json {
+        Some(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_span_list(true)
+                .flatten_event(true),
+        )
+    } else {
+        None
+    };
+    let plain_layer = if !use_json {
+        Some(tracing_subscriber::fmt::layer())
+    } else {
+        None
+    };
+
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "gateway=debug,tower_http=debug".into()),
-        ))
-        .with(tracing_subscriber::fmt::layer())
+        .with(env_filter)
+        .with(json_layer)
+        .with(plain_layer)
         .with(telemetry_layer)
         .init();
 
@@ -209,6 +237,37 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
         }
         Err(e) => {
             tracing::warn!("Failed to load model pricing from DB, using hardcoded fallback: {}", e);
+        }
+    }
+
+    // ── Key Rotation Scheduler ──────────────────────────────────────────────
+    // Opt-in: set AILINK_ROTATION_ENABLED=true to enable background key rotation.
+    if std::env::var("AILINK_ROTATION_ENABLED")
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false)
+    {
+        let rotation_interval: u64 = std::env::var("AILINK_ROTATION_CHECK_INTERVAL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3600); // default: check every hour
+
+        match crate::vault::builtin::VaultCrypto::new(&state.config.master_key) {
+            Ok(vault_crypto) => {
+                let scheduler = Arc::new(rotation::RotationScheduler::new(
+                    state.db.clone(),
+                    vault_crypto,
+                    state.cache.clone(),
+                    rotation_interval,
+                ));
+                scheduler.start();
+                tracing::info!(
+                    check_interval_secs = rotation_interval,
+                    "Key rotation scheduler enabled"
+                );
+            }
+            Err(e) => {
+                tracing::error!("Failed to init VaultCrypto for rotation: {}", e);
+            }
         }
     }
 

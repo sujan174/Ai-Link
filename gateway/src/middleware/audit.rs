@@ -172,6 +172,63 @@ async fn insert_audit_log(
         .execute(pool)
         .await?;
     }
+    // ── Phase 3: Structured tool-call details ──────────────────────────────────
+    // Parse the flat JSONB tool_calls blob into per-call rows with indexed tool_name.
+    // Enables queries like: "SELECT * FROM tool_call_details WHERE tool_name = 'stripe.createCharge'"
+    if let Some(ref tool_calls_json) = entry.tool_calls {
+        if let Some(calls) = tool_calls_json.as_array() {
+            for (i, call) in calls.iter().enumerate() {
+                let tool_name = call.get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("unknown");
+
+                let tool_call_id = call.get("id")
+                    .and_then(|id| id.as_str())
+                    .map(|s| s.to_string());
+
+                let arguments = call.get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(|a| {
+                        // Arguments may be a JSON string or already parsed JSON
+                        if let Some(s) = a.as_str() {
+                            serde_json::from_str::<serde_json::Value>(s).ok()
+                        } else {
+                            Some(a.clone())
+                        }
+                    });
+
+                let insert_result = sqlx::query(
+                    r#"
+                    INSERT INTO tool_call_details (
+                        audit_log_id, created_at, tool_name, tool_call_id,
+                        arguments, call_index
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    "#,
+                )
+                .bind(entry.request_id)
+                .bind(entry.timestamp)
+                .bind(tool_name)
+                .bind(&tool_call_id)
+                .bind(&arguments)
+                .bind(i as i16)
+                .execute(pool)
+                .await;
+
+                if let Err(e) = insert_result {
+                    // Non-fatal: don't fail the entire audit if detail insert fails
+                    // (e.g., migration not yet applied)
+                    tracing::debug!(
+                        request_id = %entry.request_id,
+                        tool_name = tool_name,
+                        "tool_call_details insert failed (migration pending?): {}",
+                        e
+                    );
+                }
+            }
+        }
+    }
 
     Ok(())
 }

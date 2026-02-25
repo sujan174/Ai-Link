@@ -150,7 +150,7 @@ pub async fn list_projects(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<ProjectResponse>>, StatusCode> {
-    // Implicit scope check: any authenticated user can list projects
+    auth.require_scope("projects:read").map_err(|_| StatusCode::FORBIDDEN)?;
     let projects = state.db.list_projects(auth.org_id).await.map_err(|e| {
         tracing::error!("list_projects failed: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
@@ -173,10 +173,7 @@ pub async fn create_project(
     Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreateProjectRequest>,
 ) -> Result<(StatusCode, Json<ProjectResponse>), StatusCode> {
-    // Only Admin/Member can create projects
-    if auth.role == ApiKeyRole::ReadOnly {
-        return Err(StatusCode::FORBIDDEN);
-    }
+    auth.require_scope("projects:write").map_err(|_| StatusCode::FORBIDDEN)?;
 
     let id = state
         .db
@@ -203,9 +200,7 @@ pub async fn update_project(
     Path(id_str): Path<String>,
     Json(payload): Json<CreateProjectRequest>, // Reuse struct since it just needs name
 ) -> Result<Json<ProjectResponse>, StatusCode> {
-    if auth.role == ApiKeyRole::ReadOnly {
-        return Err(StatusCode::FORBIDDEN);
-    }
+    auth.require_scope("projects:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let updated = state
@@ -1463,6 +1458,7 @@ pub async fn get_org_usage(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("billing:read").map_err(|_| StatusCode::FORBIDDEN)?;
     use chrono::{Datelike, Utc};
     let now = Utc::now();
     let period = chrono::NaiveDate::from_ymd_opt(now.year(), now.month(), 1).unwrap();
@@ -1588,17 +1584,19 @@ pub async fn get_token_latency(
 /// GET /api/v1/health/upstreams — current status of all tracked upstreams
 pub async fn get_upstream_health(
     State(state): State<Arc<AppState>>,
-    Extension(_auth): Extension<AuthContext>,
-) -> Json<Vec<crate::proxy::loadbalancer::UpstreamStatus>> {
-    Json(state.lb.get_all_status())
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Vec<crate::proxy::loadbalancer::UpstreamStatus>>, StatusCode> {
+    auth.require_scope("system:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    Ok(Json(state.lb.get_all_status()))
 }
 
 /// GET /api/v1/tokens/:id/circuit-breaker — get circuit breaker config for a token
 pub async fn get_circuit_breaker(
     State(state): State<Arc<AppState>>,
-    Extension(_auth): Extension<AuthContext>,
+    Extension(auth): Extension<AuthContext>,
     Path(token_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("tokens:read").map_err(|_| StatusCode::FORBIDDEN)?;
     let token = state.db.get_token(&token_id).await
         .map_err(|e| {
             tracing::error!("get_circuit_breaker: db error: {}", e);
@@ -1621,10 +1619,13 @@ pub async fn get_circuit_breaker(
 /// PATCH /api/v1/tokens/:id/circuit-breaker — update circuit breaker config for a token
 pub async fn update_circuit_breaker(
     State(state): State<Arc<AppState>>,
-    Extension(_auth): Extension<AuthContext>,
+    Extension(auth): Extension<AuthContext>,
     Path(token_id): Path<String>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    auth.require_scope("tokens:write").map_err(|_| {
+        (StatusCode::FORBIDDEN, Json(json!({ "error": { "code": "forbidden", "message": "tokens:write scope required" } })))
+    })?;
     // P1.6: Validate the payload before deserializing to catch missing fields
     let cb_config: crate::proxy::loadbalancer::CircuitBreakerConfig =
         serde_json::from_value(payload.clone())
