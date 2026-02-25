@@ -412,6 +412,32 @@ pub enum Action {
         #[serde(default = "default_fallback")]
         on_fail: String,
     },
+
+    /// Tool-level RBAC — control which tools agents can invoke.
+    ///
+    /// Evaluated against `request.body.tool_choice` and `request.body.tools[].function.name`.
+    /// If any tool in the request matches `blocked_tools`, the request is denied.
+    /// If `allowed_tools` is non-empty and any tool is NOT in the list, the request is denied.
+    ///
+    /// ```json
+    /// {
+    ///   "action": "tool_scope",
+    ///   "allowed_tools": ["jira.read", "jira.search"],
+    ///   "blocked_tools": ["stripe.createCharge", "stripe.refund"],
+    ///   "deny_message": "Tool not authorized for this agent"
+    /// }
+    /// ```
+    ToolScope {
+        /// Whitelist — if non-empty, ONLY these tools are allowed. Empty = allow all.
+        #[serde(default)]
+        allowed_tools: Vec<String>,
+        /// Blacklist — these tools are always denied.
+        #[serde(default)]
+        blocked_tools: Vec<String>,
+        /// Custom deny message returned when a tool is blocked.
+        #[serde(default = "default_tool_deny_message")]
+        deny_message: String,
+    },
 }
 
 /// Which external guardrail vendor to call.
@@ -612,6 +638,9 @@ fn default_webhook_timeout() -> u64 {
 }
 fn default_risk_threshold() -> f32 {
     0.5
+}
+fn default_tool_deny_message() -> String {
+    "tool not authorized for this agent".to_string()
 }
 
 // ── Serde Helpers ────────────────────────────────────────────

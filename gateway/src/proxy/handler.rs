@@ -836,10 +836,43 @@ pub async fn proxy_handler(
                     }
                 }
             }
+
+            // ── ToolScope: per-tool whitelist/blacklist RBAC ──
+            Action::ToolScope { allowed_tools, blocked_tools, deny_message } => {
+                let tool_names = middleware::engine::extract_tool_names(parsed_body.as_ref());
+                if !tool_names.is_empty() {
+                    if let Err(reason) = middleware::engine::evaluate_tool_scope(
+                        &tool_names, allowed_tools, blocked_tools, deny_message,
+                    ) {
+                        tracing::warn!(
+                            policy = %triggered.policy_name,
+                            tools = ?tool_names,
+                            reason = %reason,
+                            "ToolScope: tool denied by policy"
+                        );
+                        let mut audit = base_audit(
+                            request_id, token.project_id, &token.id, agent_name,
+                            method.as_str(), &path, &token.upstream_url, &policies,
+                            false, None, None,
+                            user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+                            session_id.clone(), parent_span_id.clone(),
+                            custom_properties.clone(),
+                        );
+                        audit.policy_result = Some(crate::models::audit::PolicyResult::Deny {
+                            policy: triggered.policy_name.clone(),
+                            reason: reason.clone(),
+                        });
+                        audit.response_latency_ms = start.elapsed().as_millis() as u64;
+                        audit.emit(&state);
+                        return Err(AppError::PolicyDenied {
+                            policy: triggered.policy_name.clone(),
+                            reason,
+                        });
+                    }
+                }
+            }
         }
     }
-
-    // -- 3.4 Default rate limit (applied if no policy-based RateLimit was triggered) --
     if !policy_rate_limited && state.config.default_rate_limit > 0 {
         let rl_key = format!("rl:default:tok:{}", token.id);
         let count = state
