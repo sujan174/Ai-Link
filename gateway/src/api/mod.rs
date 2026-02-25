@@ -199,6 +199,8 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/settings", get(handlers::get_settings).put(handlers::update_settings))
         .route("/system/cache-stats", get(handlers::get_cache_stats))
         .route("/system/flush-cache", post(handlers::flush_cache))
+        // PII Tokenization Vault
+        .route("/pii/rehydrate", post(handlers::rehydrate_pii_tokens))
         // Upstream Health
         .route("/health/upstreams", get(handlers::get_upstream_health))
         // Spend Caps

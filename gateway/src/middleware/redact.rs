@@ -259,7 +259,87 @@ fn redact_fields(v: &mut Value, fields: &[String], matched: &mut Vec<String>) {
     }
 }
 
-// ── Transform ────────────────────────────────────────────────
+// ── Tokenization bridge ─────────────────────────────────────
+
+/// Compile pattern names into `PiiPattern` structs for the tokenization vault.
+/// Reuses the same builtin pattern registry as `compile_patterns`.
+pub fn compile_pii_patterns(pattern_names: &[String]) -> Vec<crate::middleware::pii_vault::PiiPattern> {
+    pattern_names
+        .iter()
+        .filter_map(|p| {
+            // Check built-in patterns first
+            if let Some(builtin) = BUILTIN_PATTERNS.iter().find(|b| b.name == p) {
+                let re: &Regex = builtin.regex;
+                return Some(crate::middleware::pii_vault::PiiPattern {
+                    name: p.clone(),
+                    regex: re.clone(),
+                });
+            }
+            // Try compiling as custom regex
+            regex::RegexBuilder::new(p)
+                .size_limit(1_000_000)
+                .build()
+                .ok()
+                .map(|re| crate::middleware::pii_vault::PiiPattern {
+                    name: p.clone(),
+                    regex: re,
+                })
+        })
+        .collect()
+}
+
+/// Async tokenization entry point — called by the proxy handler when
+/// `on_match == RedactOnMatch::Tokenize`.
+///
+/// Replaces PII with vault-backed tokens instead of destructive `[REDACTED_*]`.
+pub async fn apply_redact_tokenize(
+    body: &mut Value,
+    action: &Action,
+    is_request: bool,
+    project_id: uuid::Uuid,
+    audit_log_id: Option<uuid::Uuid>,
+    pool: &sqlx::PgPool,
+    vault: &crate::vault::builtin::VaultCrypto,
+) -> RedactResult {
+    let (direction, patterns, fields, _) = match action {
+        Action::Redact {
+            direction,
+            patterns,
+            fields,
+            on_match: _,
+        } => (direction, patterns, fields, ()),
+        _ => return RedactResult::default(),
+    };
+
+    // Direction check
+    let should_run = match direction {
+        RedactDirection::Request  => is_request,
+        RedactDirection::Response => !is_request,
+        RedactDirection::Both     => true,
+    };
+
+    if !should_run {
+        return RedactResult::default();
+    }
+
+    let mut matched = Vec::new();
+
+    // 1. Pattern-based tokenization (async — stores tokens in PG)
+    if !patterns.is_empty() {
+        let pii_patterns = compile_pii_patterns(patterns);
+        let tok_result = crate::middleware::pii_vault::tokenize_in_value(
+            body, &pii_patterns, project_id, audit_log_id, pool, vault,
+        ).await;
+        matched.extend(tok_result.matched_types);
+    }
+
+    // 2. Field-based redaction is always destructive (fields don't have a "value" to tokenize)
+    if !fields.is_empty() {
+        redact_fields(body, fields, &mut matched);
+    }
+
+    RedactResult { matched_types: matched, should_block: false }
+}
 
 /// Collected header mutations from Transform actions.
 /// Applied after the pre-flight loop completes.

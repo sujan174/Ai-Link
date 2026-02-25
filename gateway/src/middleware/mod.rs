@@ -5,6 +5,7 @@ pub mod fields;
 pub mod guardrail;
 pub mod hitl;
 pub mod policy;
+pub mod pii_vault;
 pub mod rbac;
 pub mod redact;
 pub mod sanitize;

@@ -524,6 +524,9 @@ pub enum RedactOnMatch {
     /// Deny the request entirely and return a structured error listing detected PII types.
     /// Use this in healthcare/finance contexts where sending PII is a hard policy violation.
     Block,
+    /// Replace PII with a vault-backed reversible token (e.g. `tok_pii_cc_a3f1b2...`).
+    /// Authorized callers with `pii:rehydrate` scope can recover the original value.
+    Tokenize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

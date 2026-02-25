@@ -2416,3 +2416,65 @@ pub async fn flush_cache(
         "keys_deleted": deleted
     })))
 }
+
+// ── PII Tokenization Vault ──────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct RehydrateRequest {
+    pub tokens: Vec<String>,
+}
+
+/// POST /api/v1/pii/rehydrate — reverse PII tokens back to original values.
+///
+/// Requires `pii:rehydrate` scope (PCI-DSS: only authorized callers can see raw PII).
+/// Every rehydration request is logged for audit compliance.
+pub async fn rehydrate_pii_tokens(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(payload): Json<RehydrateRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("pii:rehydrate").map_err(|_| StatusCode::FORBIDDEN)?;
+
+    if payload.tokens.is_empty() {
+        return Ok(Json(serde_json::json!({ "values": {} })));
+    }
+
+    // Limit batch size to prevent abuse
+    if payload.tokens.len() > 100 {
+        return Err(StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // Create a VaultCrypto instance for decryption
+    let vault = crate::vault::builtin::VaultCrypto::new(&state.config.master_key)
+        .map_err(|e| {
+            tracing::error!("VaultCrypto init failed in rehydrate: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let project_id = auth.default_project_id();
+
+    let values = crate::middleware::pii_vault::rehydrate_tokens(
+        state.db.pool(),
+        &vault,
+        &payload.tokens,
+        project_id,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("PII rehydration failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Audit log: record who rehydrated what tokens
+    tracing::info!(
+        user_id = ?auth.user_id,
+        org_id = %auth.org_id,
+        token_count = values.len(),
+        "PII tokens rehydrated"
+    );
+
+    Ok(Json(serde_json::json!({
+        "values": values,
+        "token_count": values.len(),
+    })))
+}
