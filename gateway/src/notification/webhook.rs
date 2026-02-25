@@ -108,6 +108,30 @@ impl WebhookEvent {
             }),
         }
     }
+
+    /// Anomaly detection alert — triggered when request velocity exceeds baseline.
+    pub fn anomaly_detected(
+        token_id: &str,
+        token_name: &str,
+        project_id: &str,
+        current_velocity: u64,
+        baseline_mean: f64,
+        threshold: f64,
+    ) -> Self {
+        Self {
+            event_type: "anomaly_detected".to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            token_id: token_id.to_string(),
+            token_name: token_name.to_string(),
+            project_id: project_id.to_string(),
+            details: serde_json::json!({
+                "current_velocity": current_velocity,
+                "baseline_mean": baseline_mean,
+                "threshold": threshold,
+                "severity": if current_velocity as f64 > threshold * 2.0 { "critical" } else { "warning" },
+            }),
+        }
+    }
 }
 
 // ── HMAC Signing ─────────────────────────────────────────────

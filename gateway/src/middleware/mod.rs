@@ -1,9 +1,11 @@
+pub mod anomaly;
 pub mod audit;
 pub mod engine;
 pub mod external_guardrail;
 pub mod fields;
 pub mod guardrail;
 pub mod hitl;
+pub mod oidc;
 pub mod policy;
 pub mod pii_vault;
 pub mod rbac;
