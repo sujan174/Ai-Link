@@ -187,7 +187,7 @@ ailink/
 ├── sdk/
 │   └── python/             # Python SDK (pip install ailink)
 ├── dashboard/              # Next.js admin UI
-├── examples/               # Demo scripts
+├── scripts/                # Integration test suites & CI checks
 ├── docs/                   # Documentation
 ├── docker-compose.yml
 └── README.md
