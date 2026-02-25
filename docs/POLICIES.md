@@ -333,7 +333,7 @@ Modifies headers, JSON body fields, or injects synthetic messages and system pro
 | Operation Type | Description |
 |---|---|
 | `set_header` | Sets an HTTP header (request or response) |
-| `remove_header` | Removes an HTTP header |
+| `remove_header` | Removes an HTTP header (including standard headers like `User-Agent`) |
 | `prepend_system_prompt`| Injects text into the first `system` message. Creates one if absent. |
 | `regex_replace` | Regex find/replace across all strings in the JSON body |
 | `set_body_field` | Sets a JSON field by dot-path (e.g. `temperature`) |
@@ -404,7 +404,7 @@ Fire an external webhook (e.g. Slack, PagerDuty) when a rule matches.
 | Param | Options | Default |
 |---|---|---|
 | `timeout_ms` | integer (ms) | `5000` |
-| `on_fail` | `"allow"` \| `"deny"` | `"allow"` |
+| `on_fail` | `"allow"`, `"deny"`, or `"log"` | `"allow"` |
 
 ### `validate_schema`
 
