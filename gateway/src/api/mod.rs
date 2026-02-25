@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     middleware::{self, Next},
     response::Response,
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use std::sync::Arc;
@@ -152,6 +152,10 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/sessions/:id",
             get(handlers::get_session),
         )
+        // Session Lifecycle
+        .route("/sessions/:id/status", patch(handlers::update_session_status))
+        .route("/sessions/:id/spend-cap", put(handlers::set_session_spend_cap))
+        .route("/sessions/:id/entity", get(handlers::get_session_entity))
         // Services
         .route("/services", get(handlers::list_services).post(handlers::create_service))
         .route("/services/:id", delete(handlers::delete_service))
