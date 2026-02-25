@@ -143,7 +143,11 @@ async def openai_chat(request: Request):
     is_streaming = body.get("stream", False)
     model = body.get("model", "gpt-4o")
     content_override = request.headers.get("x-mock-content")
-    want_tool_call = request.headers.get("x-mock-tool-call", "").lower() == "true"
+    # Detect tool calls from BOTH header (direct mock tests) and body (gateway proxied)
+    want_tool_call = (
+        request.headers.get("x-mock-tool-call", "").lower() == "true"
+        or bool(body.get("tools"))
+    )
     drop_mid_stream = request.headers.get("x-mock-drop-mid-stream", "").lower() == "true"
 
     # LlamaGuard detection — if model == llama-guard, delegate
@@ -181,6 +185,13 @@ async def openai_chat(request: Request):
     prompt_tokens = sum(len((m.get("content") or "").split()) for m in body.get("messages", []))
     completion_tokens = len(text.split())
 
+    # Include debug echo of the received request — lets tests verify
+    # that transforms, header injection, body field changes actually arrived.
+    received_headers = dict(request.headers)
+    # Exclude noisy auto-headers to keep response compact
+    for k in ("host", "content-length", "accept", "accept-encoding", "connection"):
+        received_headers.pop(k, None)
+
     return JSONResponse({
         "id": chat_id,
         "object": "chat.completion",
@@ -192,6 +203,10 @@ async def openai_chat(request: Request):
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
+        },
+        "_debug": {
+            "received_headers": received_headers,
+            "received_body": body,
         },
     })
 
@@ -930,6 +945,30 @@ async def oidc_mint(request: Request):
 
     token = pyjwt.encode(payload, private_pem, algorithm="RS256", headers=headers)
     return {"token": token, "expires_at": exp, "issuer": MOCK_BASE_URL}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Echo endpoint — returns the raw request headers + body for verification
+# Used by integration tests to confirm transforms, header injection, etc.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/echo")
+@app.get("/echo")
+async def echo_endpoint(request: Request):
+    """Returns the exact headers and body the mock received.
+    This lets tests verify that transforms, header injection, and body
+    field modifications actually reached the upstream."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    return JSONResponse({
+        "headers": dict(request.headers),
+        "body": body,
+        "method": request.method,
+        "url": str(request.url),
+        "query_params": dict(request.query_params),
+    })
 
 
 if __name__ == "__main__":
