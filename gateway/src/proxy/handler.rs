@@ -43,9 +43,11 @@ pub async fn proxy_handler(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
-    // TEST HOOK: Extract cost override header (only when AILINK_ENABLE_TEST_HOOKS=1)
-    // SEC: Gated by runtime env var — ensure this is NOT set in production deployments.
-    let (test_cost_override, test_tokens_override, test_latency_override) = if std::env::var("AILINK_ENABLE_TEST_HOOKS").unwrap_or_default() == "1" {
+    // TEST HOOK: Extract cost/token/latency override headers for integration testing.
+    // SEC: Compile-time gated — these headers are STRIPPED from release binaries.
+    // Build with `--features test-hooks` to enable. Never use in production.
+    #[cfg(feature = "test-hooks")]
+    let (test_cost_override, test_tokens_override, test_latency_override) = {
         let cost = headers
             .get("x-ailink-test-cost")
             .and_then(|v| v.to_str().ok())
@@ -69,9 +71,9 @@ pub async fn proxy_handler(
             .and_then(|s| s.parse::<u64>().ok());
             
         (cost, tokens, latency)
-    } else {
-        (None, None, None)
     };
+    #[cfg(not(feature = "test-hooks"))]
+    let (test_cost_override, test_tokens_override, test_latency_override) = (None::<rust_decimal::Decimal>, None::<(u32, u32)>, None::<u64>);
 
     // ── Phase 4: Attribution headers ──────────────────────────
     let user_id = headers
@@ -783,12 +785,15 @@ pub async fn proxy_handler(
                 );
             }
 
-            // ExternalGuardrail: call external vendor API, deny or log on violation
+            // ExternalGuardrail: call external vendor API with a hard deadline, deny or log on violation
             Action::ExternalGuardrail { vendor, endpoint, api_key_env, threshold, on_fail } => {
                 let text = parsed_body.as_ref()
                     .map(|v| v.to_string())
                     .unwrap_or_default();
-                match middleware::external_guardrail::check(
+                // check_with_timeout wraps the vendor call in a tokio::time::timeout (default 5s,
+                // configurable via AILINK_GUARDRAIL_TIMEOUT_SECS). On expiry it returns Err(...)
+                // which falls through to the fail-open branch below — capping worst-case latency.
+                match middleware::external_guardrail::check_with_timeout(
                     vendor, endpoint, api_key_env.as_deref(), *threshold, &text
                 ).await {
                     Ok(result) if result.blocked => {
@@ -1269,10 +1274,25 @@ pub async fn proxy_handler(
 
     // Rewrite upstream URL for the target provider.
     // Gemini uses different endpoints for streaming vs non-streaming.
-    // If DynamicRoute selected a different upstream, use that instead.
+    // If DynamicRoute/ConditionalRoute selected a different upstream, use that instead.
     let upstream_url = if let Some(dyn_url) = dynamic_upstream_override {
-        // DynamicRoute override takes precedence — re-detect provider from new URL
-        dyn_url
+        // DynamicRoute override takes precedence.
+        // Re-detect provider from the new upstream URL + the DynamicRoute-selected model.
+        let dyn_model = parsed_body.as_ref()
+            .and_then(|b| b.get("model"))
+            .and_then(|m| m.as_str())
+            .unwrap_or(&detected_model);
+        let dyn_provider = proxy::model_router::detect_provider(dyn_model, &dyn_url);
+
+        if dyn_provider != proxy::model_router::Provider::OpenAI
+            && dyn_provider != proxy::model_router::Provider::Unknown
+        {
+            // Non-OpenAI provider: let model_router rewrite the URL (e.g. Gemini paths)
+            proxy::model_router::rewrite_upstream_url(dyn_provider, &dyn_url, dyn_model, is_streaming_req)
+        } else {
+            // OpenAI-compatible: append the original request path to the override base URL
+            proxy::transform::rewrite_url(&dyn_url, &effective_path)
+        }
     } else if detected_provider != proxy::model_router::Provider::OpenAI
         && detected_provider != proxy::model_router::Provider::Unknown
     {
@@ -1416,6 +1436,17 @@ pub async fn proxy_handler(
         }
     }
 
+    // Forward standard safe headers (required by strict APIs like GitHub)
+    if let Some(ua) = headers.get(reqwest::header::USER_AGENT) {
+        upstream_headers.insert(reqwest::header::USER_AGENT, ua.clone());
+    } else {
+        // Fallback User-Agent if none provided by client
+        upstream_headers.insert(reqwest::header::USER_AGENT, reqwest::header::HeaderValue::from_static("AILink-Gateway/1.0"));
+    }
+    
+    if let Some(accept) = headers.get(reqwest::header::ACCEPT) {
+        upstream_headers.insert(reqwest::header::ACCEPT, accept.clone());
+    }
 
     // Convert method Axum -> Reqwest
     let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes())

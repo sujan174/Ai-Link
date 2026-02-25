@@ -337,6 +337,80 @@ Returns P50, P90, P99, and Mean latency in milliseconds.
 
 ---
 
+### Guardrail Presets
+
+Enable or disable bundled safety rules (PII, prompt injection, etc.) for a token.
+
+#### List Available Presets
+`GET /guardrails/presets`
+
+Returns the list of supported built-in presets (e.g., `pii_redaction`, `hipaa`, `code_injection`).
+
+#### Enable Guardrails
+`POST /guardrails/enable`
+
+```json
+{
+  "token_id": "ailink_v1_...",
+  "presets": ["pii_redaction", "prompt_injection"],
+  "source": "sdk" // or "dashboard"
+}
+```
+
+#### Disable Guardrails
+`DELETE /guardrails/disable?token_id={token_id}&source=sdk`
+
+#### Check Guardrail Status
+`GET /guardrails/status?token_id={token_id}`
+
+Returns whether guardrails are active, the applied presets, and the source (`sdk` vs `dashboard`) for drift detection.
+
+---
+
+### Config-as-Code (Export/Import)
+
+Manage routing, policies, and tokens as version-controlled YAML or JSON.
+
+#### Export Full Config
+`GET /config/export` (Returns YAML by default)
+`GET /config/export?format=json`
+
+#### Export Policies Only
+`GET /config/export/policies`
+
+#### Export Tokens Only
+`GET /config/export/tokens`
+
+#### Import Config
+`POST /config/import`
+
+Imports a YAML or JSON configuration. Upserts policies and creates token stubs.
+
+---
+
+### Sessions
+
+Query tracked sessions across the gateway.
+
+#### List Sessions
+`GET /sessions?project_id={uuid}&limit=50&offset=0`
+
+#### Get Session Details
+`GET /sessions/{session_id}?project_id={uuid}`
+
+Returns session metadata and an aggregate cost/metrics summary for all requests sharing this `session_id`.
+
+---
+
+### System
+
+#### Get Cache Statistics
+`GET /system/cache-stats`
+
+Returns metrics about the Redis semantic cache and local token caches (hit rate, memory usage, item count).
+
+---
+
 ### Health
 
 #### Liveness

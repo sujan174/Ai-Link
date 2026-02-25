@@ -58,7 +58,7 @@ export default function ApprovalsPage() {
     const rejectedCount = approvals.filter(a => a.status === 'rejected').length;
 
     return (
-        <div className="p-8 space-y-8 max-w-[1600px] mx-auto">
+        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
             {/* Controls */}
             <div className="flex items-center justify-end animate-fade-in mb-2">
                 <div className="flex items-center gap-2">
@@ -157,7 +157,7 @@ function KPICard({ icon: Icon, value, label, color, animate }: {
                     <Icon className="h-4 w-4" />
                 </div>
                 <div>
-                    <p className={cn("text-2xl font-bold tabular-nums", textColors[color])}>
+                    <p className={cn("text-xl font-semibold tabular-nums", textColors[color])}>
                         {value}
                     </p>
                     <p className="text-xs text-muted-foreground">{label}</p>
@@ -179,7 +179,7 @@ function ApprovalDetailPanel({ request, onClose, onDecide }: {
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-border">
                 <div className="flex items-center gap-3 min-w-0">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/20">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 border border-primary/20">
                         <ShieldCheck className="h-4 w-4 text-primary" />
                     </div>
                     <div className="min-w-0">
@@ -193,7 +193,7 @@ function ApprovalDetailPanel({ request, onClose, onDecide }: {
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            <div className="flex-1 overflow-y-auto p-4 space-y-6">
                 {/* Meta Grid */}
                 <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -230,7 +230,7 @@ function ApprovalDetailPanel({ request, onClose, onDecide }: {
                     <p className="text-[11px] text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
                         <ArrowUpRight className="h-3 w-3" /> HTTP Request
                     </p>
-                    <div className="rounded-lg border border-border bg-muted/20 p-4 font-mono text-xs overflow-x-auto">
+                    <div className="rounded-md border border-border bg-muted/20 p-4 font-mono text-xs overflow-x-auto">
                         <div className="mb-2 text-sm font-bold text-primary">
                             {String(summary.method || "GET")} <span className="text-foreground">{String(summary.uri || "/")}</span>
                         </div>
@@ -259,7 +259,7 @@ function ApprovalDetailPanel({ request, onClose, onDecide }: {
                     <p className="text-[11px] text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
                         <FileJson className="h-3 w-3" /> Raw Metadata
                     </p>
-                    <pre className="rounded-lg border border-border bg-muted/20 p-3 text-[10px] font-mono text-muted-foreground overflow-x-auto max-h-[150px]">
+                    <pre className="rounded-md border border-border bg-muted/20 p-3 text-[10px] font-mono text-muted-foreground overflow-x-auto max-h-[150px]">
                         {JSON.stringify(request, null, 2)}
                     </pre>
                 </div>
@@ -267,7 +267,7 @@ function ApprovalDetailPanel({ request, onClose, onDecide }: {
 
             {/* Footer Actions */}
             {request.status === "pending" && (
-                <div className="border-t border-border p-6 bg-muted/10">
+                <div className="border-t border-border p-4 bg-muted/10">
                     <div className="flex items-center gap-3">
                         <Button
                             className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"

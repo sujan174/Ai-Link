@@ -131,8 +131,8 @@ export default function ModelAliasesPage() {
             {/* Header */}
             <div className="flex items-center justify-between animate-fade-in">
                 <div className="space-y-1">
-                    <h2 className="text-3xl font-bold tracking-tight flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-violet-600 shadow-lg shadow-blue-500/20">
+                    <h2 className="text-2xl font-semibold font-bold tracking-tight flex items-center gap-3">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-violet-600 shadow-lg shadow-blue-500/20">
                             <Map className="h-5 w-5 text-white" />
                         </div>
                         Model Aliases
@@ -171,7 +171,7 @@ export default function ModelAliasesPage() {
                                     placeholder="fast, smart, cheap, premium…"
                                     value={alias}
                                     onChange={(e) => setAlias(e.target.value)}
-                                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
                                 />
                             </div>
                             <div>
@@ -181,7 +181,7 @@ export default function ModelAliasesPage() {
                                 <select
                                     value={model}
                                     onChange={(e) => { setModel(e.target.value); setCustomModel(""); }}
-                                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
                                 >
                                     {PROVIDERS.map((p) => (
                                         <optgroup key={p.label} label={p.label}>
@@ -196,14 +196,14 @@ export default function ModelAliasesPage() {
                                     placeholder="Or type a custom model ID…"
                                     value={customModel}
                                     onChange={(e) => setCustomModel(e.target.value)}
-                                    className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
                                 />
                             </div>
                         </div>
 
                         {/* Preview */}
                         {alias && (
-                            <div className="flex items-center gap-3 bg-muted/40 rounded-lg px-4 py-2.5 text-sm">
+                            <div className="flex items-center gap-3 bg-muted/40 rounded-md px-4 py-2.5 text-sm">
                                 <code className="font-mono text-primary font-semibold">{alias}</code>
                                 <ArrowRight className="h-4 w-4 text-muted-foreground" />
                                 <code className="font-mono text-foreground">{customModel.trim() || model}</code>
@@ -225,7 +225,7 @@ export default function ModelAliasesPage() {
             {aliases.length === 0 && !showAdd && (
                 <Card className="border-dashed">
                     <CardContent className="flex flex-col items-center justify-center py-16 gap-4">
-                        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
+                        <div className="flex h-12 w-12 items-center justify-center rounded-md bg-muted">
                             <Map className="h-6 w-6 text-muted-foreground" />
                         </div>
                         <p className="text-sm font-medium">No model aliases configured</p>
@@ -265,7 +265,7 @@ export default function ModelAliasesPage() {
 
             {/* Aliases Table */}
             {aliases.length > 0 && (
-                <div className="rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden shadow-sm animate-fade-in">
+                <div className="rounded-md border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden shadow-sm animate-fade-in">
                     <table className="w-full text-sm">
                         <thead>
                             <tr className="border-b border-border/60 text-left text-muted-foreground bg-muted/20">
@@ -327,7 +327,7 @@ export default function ModelAliasesPage() {
             <Card className="border-border/40 bg-muted/20">
                 <CardContent className="py-4 px-5">
                     <div className="flex gap-3">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10 flex-shrink-0 mt-0.5">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-500/10 flex-shrink-0 mt-0.5">
                             <Map className="h-4 w-4 text-blue-500" />
                         </div>
                         <div className="space-y-1">

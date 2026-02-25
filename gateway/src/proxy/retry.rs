@@ -154,4 +154,126 @@ mod tests {
 
         assert_eq!(res.status(), 200);
     }
+
+    // ── Chaos: 429 + Retry-After Header ────────────────────────
+
+    /// Upstream returns 429 with `Retry-After: 1` twice, then 200.
+    /// Total elapsed time MUST be ≥ 1.8s, proving the header is respected.
+    #[tokio::test]
+    async fn test_retry_respects_429_retry_after_header() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("Retry-After", "1")
+                    .set_body_string(r#"{"error":{"message":"Rate limit exceeded"}}"#),
+            )
+            .up_to_n_times(2)
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"id":"chatcmpl-ok","choices":[]}"#),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = Client::new();
+        let config = RetryConfig {
+            max_retries: 3,
+            status_codes: vec![429, 500, 502, 503],
+            base_backoff_ms: 100,
+            max_backoff_ms: 5000,
+            jitter_ms: 0,
+        };
+
+        let start = std::time::Instant::now();
+        let resp = robust_request(
+            &client,
+            Method::POST,
+            &format!("{}/v1/chat/completions", mock_server.uri()),
+            reqwest::header::HeaderMap::new(),
+            Bytes::from(r#"{"model":"gpt-4o"}"#),
+            &config,
+        )
+        .await
+        .expect("request should succeed after retries");
+        let elapsed = start.elapsed();
+
+        assert_eq!(resp.status(), 200);
+        assert!(
+            elapsed.as_secs_f64() >= 1.8,
+            "Elapsed {:.2}s should be >= 1.8s (two Retry-After: 1 waits)",
+            elapsed.as_secs_f64()
+        );
+    }
+
+    /// 502 Bad Gateway should be retried and eventually succeed.
+    #[tokio::test]
+    async fn test_retry_handles_502_bad_gateway() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(502).set_body_string("<html>502</html>"))
+            .up_to_n_times(2)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"id":"ok"}"#))
+            .mount(&mock_server)
+            .await;
+
+        let client = Client::new();
+        let config = RetryConfig {
+            max_retries: 3,
+            status_codes: vec![429, 500, 502, 503],
+            base_backoff_ms: 10, max_backoff_ms: 100, jitter_ms: 0,
+        };
+
+        let resp = robust_request(
+            &client, Method::POST,
+            &format!("{}/v1/chat/completions", mock_server.uri()),
+            reqwest::header::HeaderMap::new(), Bytes::from("{}"), &config,
+        ).await.expect("should succeed after 502 retries");
+
+        assert_eq!(resp.status(), 200);
+    }
+
+    /// When all retries are exhausted, return the LAST response (not an error).
+    #[tokio::test]
+    async fn test_retry_exhausted_returns_last_response() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429).set_body_string(r#"{"error":"rate limited"}"#))
+            .expect(3) // 1 original + 2 retries
+            .mount(&mock_server)
+            .await;
+
+        let client = Client::new();
+        let config = RetryConfig {
+            max_retries: 2,
+            status_codes: vec![429],
+            base_backoff_ms: 10, max_backoff_ms: 50, jitter_ms: 0,
+        };
+
+        let resp = robust_request(
+            &client, Method::POST,
+            &format!("{}/v1/chat/completions", mock_server.uri()),
+            reqwest::header::HeaderMap::new(), Bytes::from("{}"), &config,
+        ).await.expect("should return last response even on exhaustion");
+
+        assert_eq!(resp.status(), 429, "Should return last 429 after retries exhausted");
+    }
 }

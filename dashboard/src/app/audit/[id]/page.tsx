@@ -104,13 +104,13 @@ export default function AuditDetailPage() {
                     <ArrowLeft className="h-4 w-4" /> Back to Logs
                 </Button>
                 <div className="h-4 w-px bg-border" />
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
                     <span className="font-mono">{log.id}</span>
                 </div>
             </div>
 
             {/* Header Card */}
-            <div className="rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm p-6 space-y-6">
+            <div className="rounded-md border border-border/60 bg-card/50 backdrop-blur-sm p-4 space-y-6">
                 <div className="flex items-start justify-between gap-4">
                     <div className="space-y-1">
                         <div className="flex items-center gap-3">
@@ -119,7 +119,7 @@ export default function AuditDetailPage() {
                             </Badge>
                             <h1 className="text-xl font-bold font-mono tracking-tight break-all">{log.path}</h1>
                         </div>
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
                             <Globe className="h-3.5 w-3.5" />
                             <span className="font-mono">{log.upstream_url}</span>
                         </div>
@@ -208,12 +208,12 @@ export default function AuditDetailPage() {
                     </CardHeader>
                     <CardContent>
                         <div className="flex items-center gap-3 text-sm">
-                            <div className="flex-1 rounded-lg bg-muted/40 border border-border/50 p-3 text-center">
+                            <div className="flex-1 rounded-md bg-muted/40 border border-border/50 p-3 text-center">
                                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">User Sent</p>
                                 <p className="font-mono font-semibold">{log.router_info.original_model || log.model || "—"}</p>
                             </div>
                             <div className="text-muted-foreground font-bold text-lg">→</div>
-                            <div className="flex-1 rounded-lg bg-violet-500/10 border border-violet-500/30 p-3 text-center">
+                            <div className="flex-1 rounded-md bg-violet-500/10 border border-violet-500/30 p-3 text-center">
                                 <p className="text-[10px] uppercase tracking-wider text-violet-400 mb-1">Gateway Sent</p>
                                 <p className="font-mono font-semibold text-violet-300">{log.router_info.translated_model || log.model || "—"}</p>
                             </div>
@@ -272,7 +272,7 @@ export default function AuditDetailPage() {
                 </div>
             )}
 
-            <div className="grid md:grid-cols-3 gap-6">
+            <div className="grid md:grid-cols-3 gap-3">
                 {/* Main Content (Left, 2 cols) */}
                 <div className="md:col-span-2 space-y-6">
                     {/* Request Body */}
@@ -290,16 +290,16 @@ export default function AuditDetailPage() {
                         </CardHeader>
                         <CardContent>
                             {log.log_level === 0 ? (
-                                <div className="h-32 flex flex-col items-center justify-center text-sm text-muted-foreground bg-muted/20 rounded-lg border border-dashed border-border/50">
+                                <div className="h-32 flex flex-col items-center justify-center text-[13px] text-muted-foreground bg-muted/20 rounded-md border border-dashed border-border/50">
                                     <Shield className="h-5 w-5 mb-2 text-muted-foreground/50" />
                                     Payload logging disabled due to token privacy settings (Metadata Only)
                                 </div>
                             ) : log.request_body && log.request_body !== "[EXPIRED]" ? (
-                                <pre className="text-xs font-mono bg-muted/40 rounded-lg p-4 overflow-auto max-h-[400px] whitespace-pre-wrap break-all border border-border/50">
+                                <pre className="text-xs font-mono bg-muted/40 rounded-md p-4 overflow-auto max-h-[400px] whitespace-pre-wrap break-all border border-border/50">
                                     {tryFormatJSON(log.request_body)}
                                 </pre>
                             ) : (
-                                <div className="h-20 flex items-center justify-center text-sm text-muted-foreground bg-muted/20 rounded-lg border border-dashed border-border/50">
+                                <div className="h-20 flex items-center justify-center text-[13px] text-muted-foreground bg-muted/20 rounded-md border border-dashed border-border/50">
                                     No body or expired
                                 </div>
                             )}
@@ -315,16 +315,16 @@ export default function AuditDetailPage() {
                         </CardHeader>
                         <CardContent>
                             {log.log_level === 0 ? (
-                                <div className="h-32 flex flex-col items-center justify-center text-sm text-muted-foreground bg-muted/20 rounded-lg border border-dashed border-border/50">
+                                <div className="h-32 flex flex-col items-center justify-center text-[13px] text-muted-foreground bg-muted/20 rounded-md border border-dashed border-border/50">
                                     <Shield className="h-5 w-5 mb-2 text-muted-foreground/50" />
                                     Payload logging disabled due to token privacy settings (Metadata Only)
                                 </div>
                             ) : log.response_body && log.response_body !== "[EXPIRED]" ? (
-                                <pre className="text-xs font-mono bg-muted/40 rounded-lg p-4 overflow-auto max-h-[400px] whitespace-pre-wrap break-all border border-border/50">
+                                <pre className="text-xs font-mono bg-muted/40 rounded-md p-4 overflow-auto max-h-[400px] whitespace-pre-wrap break-all border border-border/50">
                                     {tryFormatJSON(log.response_body)}
                                 </pre>
                             ) : (
-                                <div className="h-20 flex items-center justify-center text-sm text-muted-foreground bg-muted/20 rounded-lg border border-dashed border-border/50">
+                                <div className="h-20 flex items-center justify-center text-[13px] text-muted-foreground bg-muted/20 rounded-md border border-dashed border-border/50">
                                     No body or expired
                                 </div>
                             )}
@@ -342,13 +342,13 @@ export default function AuditDetailPage() {
                         <CardContent className="space-y-4">
                             <div>
                                 <p className="text-xs font-semibold text-muted-foreground mb-2">Request</p>
-                                <pre className="text-[10px] font-mono bg-muted/40 rounded-lg p-3 overflow-auto max-h-[200px] whitespace-pre-wrap border border-border/50">
+                                <pre className="text-[10px] font-mono bg-muted/40 rounded-md p-3 overflow-auto max-h-[200px] whitespace-pre-wrap border border-border/50">
                                     {log.request_headers ? JSON.stringify(log.request_headers, null, 2) : "—"}
                                 </pre>
                             </div>
                             <div>
                                 <p className="text-xs font-semibold text-muted-foreground mb-2">Response</p>
-                                <pre className="text-[10px] font-mono bg-muted/40 rounded-lg p-3 overflow-auto max-h-[200px] whitespace-pre-wrap border border-border/50">
+                                <pre className="text-[10px] font-mono bg-muted/40 rounded-md p-3 overflow-auto max-h-[200px] whitespace-pre-wrap border border-border/50">
                                     {log.response_headers ? JSON.stringify(log.response_headers, null, 2) : "—"}
                                 </pre>
                             </div>
@@ -400,25 +400,25 @@ export default function AuditDetailPage() {
                             </CardHeader>
                             <CardContent className="space-y-3 text-xs">
                                 {log.model && (
-                                    <div className="flex justify-between items-center bg-violet-500/10 p-2 rounded-lg">
+                                    <div className="flex justify-between items-center bg-violet-500/10 p-2 rounded-md">
                                         <span className="text-violet-400 font-medium">Model</span>
                                         <span className="font-mono">{log.model}</span>
                                     </div>
                                 )}
                                 {log.tokens_per_second != null && (
-                                    <div className="flex justify-between items-center bg-blue-500/10 p-2 rounded-lg">
+                                    <div className="flex justify-between items-center bg-blue-500/10 p-2 rounded-md">
                                         <span className="text-blue-400 font-medium">Speed</span>
                                         <span className="font-mono">{log.tokens_per_second.toFixed(1)} t/s</span>
                                     </div>
                                 )}
                                 {log.finish_reason && (
-                                    <div className="flex justify-between items-center bg-emerald-500/10 p-2 rounded-lg">
+                                    <div className="flex justify-between items-center bg-emerald-500/10 p-2 rounded-md">
                                         <span className="text-emerald-400 font-medium">Finish Reason</span>
                                         <Badge variant="outline" className="text-[10px] px-1.5 py-0">{log.finish_reason}</Badge>
                                     </div>
                                 )}
                                 {log.error_type && (
-                                    <div className="flex justify-between items-center bg-rose-500/10 p-2 rounded-lg">
+                                    <div className="flex justify-between items-center bg-rose-500/10 p-2 rounded-md">
                                         <span className="text-rose-400 font-medium">Error Type</span>
                                         <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-rose-500/15 text-rose-400 border-rose-500/30">
                                             {log.error_type.replace(/_/g, " ")}
@@ -475,7 +475,7 @@ export default function AuditDetailPage() {
                             </CardHeader>
                             <CardContent className="space-y-2">
                                 {(log.tool_calls as Array<{ name?: string; call_id?: string; arguments?: string }>).map((tc, i) => (
-                                    <div key={i} className="bg-violet-500/10 rounded-lg p-2 space-y-1">
+                                    <div key={i} className="bg-violet-500/10 rounded-md p-2 space-y-1">
                                         <div className="flex items-center justify-between">
                                             <span className="text-xs font-semibold text-violet-400 font-mono">{tc.name ?? "unknown"}</span>
                                             {tc.call_id && (

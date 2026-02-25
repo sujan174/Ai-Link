@@ -75,7 +75,7 @@ export default function BillingPage() {
     const capsEntries = Object.entries(tokenSpends);
 
     return (
-        <div className="p-8 space-y-6 max-w-[1600px] mx-auto">
+        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
             {/* Controls */}
             <div className="flex items-center justify-end animate-fade-in mb-2">
                 <div className="flex items-center gap-2">
@@ -98,7 +98,7 @@ export default function BillingPage() {
                         <Activity className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">{usage?.total_requests?.toLocaleString() ?? 0}</div>
+                        <div className="text-xl font-semibold">{usage?.total_requests?.toLocaleString() ?? 0}</div>
                         <p className="text-xs text-muted-foreground">In current period ({currentPeriod})</p>
                     </CardContent>
                 </Card>
@@ -108,7 +108,7 @@ export default function BillingPage() {
                         <Coins className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">{usage?.total_tokens_used?.toLocaleString() ?? 0}</div>
+                        <div className="text-xl font-semibold">{usage?.total_tokens_used?.toLocaleString() ?? 0}</div>
                         <p className="text-xs text-muted-foreground">Total input + output tokens</p>
                     </CardContent>
                 </Card>
@@ -118,7 +118,7 @@ export default function BillingPage() {
                         <DollarSign className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">${Number(usage?.total_spend_usd || 0).toFixed(2)}</div>
+                        <div className="text-xl font-semibold">${Number(usage?.total_spend_usd || 0).toFixed(2)}</div>
                         <p className="text-xs text-muted-foreground">Based on provider pricing</p>
                     </CardContent>
                 </Card>
@@ -128,14 +128,14 @@ export default function BillingPage() {
                         <Calendar className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">{currentPeriod}</div>
+                        <div className="text-xl font-semibold">{currentPeriod}</div>
                         <p className="text-xs text-muted-foreground">Resets in {getDaysRemaining()} days</p>
                     </CardContent>
                 </Card>
             </div>
 
             {/* Spend Chart + Plan Details */}
-            <div className="grid gap-6 md:grid-cols-2 animate-fade-in duration-700">
+            <div className="grid gap-3 md:grid-cols-2 animate-fade-in duration-700">
                 <Card className="col-span-1">
                     <CardHeader>
                         <CardTitle className="text-base">Daily Spend</CardTitle>
@@ -151,7 +151,7 @@ export default function BillingPage() {
                                             <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
                                         </linearGradient>
                                     </defs>
-                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
+                                    <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
                                     <XAxis
                                         dataKey="day"
                                         {...CHART_AXIS_PROPS}
@@ -196,22 +196,22 @@ export default function BillingPage() {
                             <span className="bg-primary/10 text-primary px-2 py-0.5 rounded text-xs font-bold uppercase">Pro</span>
                         </div>
                         <div className="flex justify-between items-center border-b pb-2">
-                            <span className="text-sm text-muted-foreground">Included Requests</span>
+                            <span className="text-[13px] text-muted-foreground">Included Requests</span>
                             <span className="text-sm">1,000,000 / month</span>
                         </div>
                         <div className="flex justify-between items-center border-b pb-2">
-                            <span className="text-sm text-muted-foreground">Overage Rate</span>
+                            <span className="text-[13px] text-muted-foreground">Overage Rate</span>
                             <span className="text-sm">$5.00 / 1M requests</span>
                         </div>
                         <div className="flex justify-between items-center border-b pb-2">
-                            <span className="text-sm text-muted-foreground">Active Webhooks</span>
+                            <span className="text-[13px] text-muted-foreground">Active Webhooks</span>
                             <div className="flex items-center gap-1.5">
                                 <Bell className="h-3.5 w-3.5 text-muted-foreground" />
                                 <span className="text-sm">{webhookCount}</span>
                             </div>
                         </div>
                         <div className="flex justify-between items-center">
-                            <span className="text-sm text-muted-foreground">Tokens with Caps</span>
+                            <span className="text-[13px] text-muted-foreground">Tokens with Caps</span>
                             <div className="flex items-center gap-1.5">
                                 <TrendingUp className="h-3.5 w-3.5 text-violet-500" />
                                 <span className="text-sm">{capsEntries.length}</span>
@@ -226,7 +226,7 @@ export default function BillingPage() {
                 <Card className="animate-fade-in">
                     <CardHeader>
                         <div className="flex items-center gap-2">
-                            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-500/10">
+                            <div className="flex h-7 w-7 items-center justify-center rounded-md bg-violet-500/10">
                                 <TrendingUp className="h-4 w-4 text-violet-500" />
                             </div>
                             <div>
@@ -248,7 +248,7 @@ export default function BillingPage() {
                                 const isExceeded = (dailyPct ?? 0) >= 100 || (monthlyPct ?? 0) >= 100;
 
                                 return (
-                                    <div key={tokenId} className="rounded-lg border border-border/60 p-4 space-y-3">
+                                    <div key={tokenId} className="rounded-md border border-border/60 p-4 space-y-3">
                                         <div className="flex items-center justify-between">
                                             <span className="font-mono text-xs text-muted-foreground truncate max-w-[200px]">{tokenId}</span>
                                             {isExceeded ? (

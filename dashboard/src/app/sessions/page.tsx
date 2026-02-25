@@ -22,8 +22,8 @@ function StatCard({
     icon: Icon, label, value, color
 }: { icon: React.ElementType; label: string; value: string; color: string }) {
     return (
-        <div className="rounded-xl border border-border/60 bg-card/50 p-5 flex items-center gap-4">
-            <div className={cn("p-2.5 rounded-lg", color)}>
+        <div className="rounded-md border border-border/60 bg-card/50 p-5 flex items-center gap-4">
+            <div className={cn("p-2.5 rounded-md", color)}>
                 <Icon className="h-5 w-5" />
             </div>
             <div>
@@ -73,15 +73,15 @@ export default function SessionsPage() {
         : 0;
 
     return (
-        <div className="p-8 space-y-6 max-w-[1600px] mx-auto">
+        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
             {/* Header */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
                     <div className="flex items-center gap-2 mb-1">
                         <Layers className="h-5 w-5 text-primary" />
-                        <h1 className="text-2xl font-bold">Sessions</h1>
+                        <h1 className="text-xl font-semibold">Sessions</h1>
                     </div>
-                    <p className="text-sm text-muted-foreground">
+                    <p className="text-[13px] text-muted-foreground">
                         Agent run cost tracking — group LLM calls by session ID
                     </p>
                 </div>
@@ -107,7 +107,7 @@ export default function SessionsPage() {
             </div>
 
             {/* Table */}
-            <div className="rounded-xl border border-border/60 bg-card/50 overflow-hidden">
+            <div className="rounded-md border border-border/60 bg-card/50 overflow-hidden">
                 <table className="w-full text-sm">
                     <thead>
                         <tr className="border-b border-border/60 bg-muted/30">

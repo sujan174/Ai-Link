@@ -262,6 +262,62 @@ pub async fn delete_project(
     }
 }
 
+/// POST /api/v1/projects/:id/purge — GDPR Article 17 (Right to Erasure)
+///
+/// Irreversibly purges all personal and operational data associated with a project:
+/// - Audit logs / request traces
+/// - Agent sessions
+/// - Virtual key usage records
+///
+/// The project and its virtual keys are preserved so operators can still issue invoices.
+/// To fully remove the project, call DELETE /api/v1/projects/:id after purging.
+///
+/// **This action is irreversible. Requires Admin or SuperAdmin role.**
+pub async fn purge_project_data(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Only Admin (or SuperAdmin) can trigger a data purge
+    if auth.role != ApiKeyRole::Admin && auth.role != ApiKeyRole::SuperAdmin {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "admin or superadmin role required" })),
+        ));
+    }
+
+    let project_id = Uuid::parse_str(&id_str).map_err(|_| (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": "invalid project id" })),
+    ))?;
+
+    tracing::warn!(
+        project_id = %project_id,
+        actor_role = ?auth.role,
+        "GDPR data purge requested"
+    );
+
+    let rows_purged = state
+        .db
+        .purge_project_data(project_id, auth.org_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("purge_project_data failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "purge failed", "detail": e.to_string() })),
+            )
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "status": "purged",
+        "project_id": project_id,
+        "rows_deleted": rows_purged,
+        "gdpr_article": "17 — Right to Erasure"
+    })))
+}
+
+
 /// GET /api/v1/tokens — list all tokens for a project
 pub async fn list_tokens(
     State(state): State<Arc<AppState>>,
@@ -926,6 +982,24 @@ pub async fn create_credential(
             message: "Credential encrypted and stored".to_string(),
         }),
     ))
+}
+
+/// DELETE /api/v1/credentials/:id — soft-delete a credential
+pub async fn delete_credential(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+) -> Result<Json<DeleteResponse>, StatusCode> {
+    auth.require_scope("credentials:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let project_id = auth.default_project_id();
+
+    let deleted = state.db.delete_credential(id, project_id).await.map_err(|e| {
+        tracing::error!("delete_credential failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(DeleteResponse { id, deleted }))
 }
 
 // ── Token Revocation Handler ─────────────────────────────────

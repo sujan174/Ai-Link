@@ -131,7 +131,7 @@ export function ProjectSwitcher({ className, collapsed }: ProjectSwitcherProps) 
                         </DialogDescription>
                     </DialogHeader>
                     <div className="grid gap-3 py-4">
-                        <Label htmlFor="confirm-name" className="text-sm text-muted-foreground">
+                        <Label htmlFor="confirm-name" className="text-[13px] text-muted-foreground">
                             Type <code className="font-mono bg-muted px-1 rounded text-foreground">{projectToDelete?.name}</code> to confirm
                         </Label>
                         <Input

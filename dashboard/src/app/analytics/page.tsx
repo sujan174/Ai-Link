@@ -94,7 +94,7 @@ export default function AnalyticsPage() {
             {/* Header */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div className="space-y-1">
-                    <h2 className="text-3xl font-bold tracking-tight">Analytics</h2>
+                    <h2 className="text-2xl font-semibold font-bold tracking-tight">Analytics</h2>
                     <p className="text-muted-foreground">
                         Global traffic and performance metrics.
                     </p>
@@ -206,7 +206,7 @@ export default function AnalyticsPage() {
                                             </linearGradient>
                                         </defs>
 
-                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
+                                        <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}
@@ -263,7 +263,7 @@ export default function AnalyticsPage() {
                             ) : (
                                 <ResponsiveContainer width="100%" height="100%">
                                     <LineChart data={timeseries} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
+                                        <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}
@@ -345,12 +345,12 @@ export default function AnalyticsPage() {
                                                 <Cell key={`cell-${index}`} fill={entry.fill} />
                                             ))}
                                         </Pie>
-                                        <Tooltip content={<CustomTooltip />} />
+                                        <Tooltip content={<CustomTooltip  contentStyle={{ backgroundColor: "#151722", borderColor: "#2A2D3D", color: "#e5e7eb" }} />} />
                                         <Legend verticalAlign="bottom" height={36} wrapperStyle={{ fontSize: '12px' }} />
                                     </PieChart>
                                 </ResponsiveContainer>
                             ) : (
-                                <div className="h-full w-full flex items-center justify-center text-sm text-muted-foreground border border-dashed border-border/60 rounded-xl bg-card/30">
+                                <div className="h-full w-full flex items-center justify-center text-[13px] text-muted-foreground border border-dashed border-border/60 rounded-md bg-card/30">
                                     No status data
                                 </div>
                             )}
@@ -373,7 +373,7 @@ export default function AnalyticsPage() {
                             ) : (
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={timeseries} barCategoryGap="30%" margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
+                                        <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}
@@ -442,7 +442,7 @@ function KPICard({
                     <Skeleton className="h-7 w-20" />
                 ) : (
                     <div className="space-y-1">
-                        <div className="text-2xl font-bold font-mono">{value ?? "—"}</div>
+                        <div className="text-xl font-semibold font-mono">{value ?? "—"}</div>
                         {subtext && (
                             <p className="text-xs text-muted-foreground">
                                 {subtext}

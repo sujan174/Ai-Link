@@ -156,7 +156,7 @@ export function Sidebar({ className }: SidebarProps) {
             {/* Header */}
             <div className={cn("flex flex-col gap-4 border-b border-[var(--sidebar-border)] transition-all", collapsed ? "p-2" : "p-4")}>
                 <Link href="/" className={cn("flex items-center gap-2.5 font-bold text-lg group", collapsed ? "justify-center" : "px-2")}>
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 text-white text-sm font-black shadow-lg shadow-blue-500/20 group-hover:shadow-blue-500/40 transition-shadow">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-violet-600 text-white text-sm font-black shadow-lg shadow-blue-500/20 group-hover:shadow-blue-500/40 transition-shadow">
                         A
                     </div>
                     {!collapsed && (

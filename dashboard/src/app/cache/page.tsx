@@ -62,7 +62,7 @@ function KPICard({
     return (
         <Card className="glass-card hover-lift">
             <CardContent className="p-4 flex items-center gap-4">
-                <div className={cn("p-2.5 rounded-xl flex-shrink-0", color)}>
+                <div className={cn("p-2.5 rounded-md flex-shrink-0", color)}>
                     <Icon className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
@@ -232,7 +232,7 @@ export default function CacheManagementPage() {
                 <Card className="glass-card">
                     <CardHeader className="pb-3">
                         <div className="flex items-center gap-2">
-                            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10">
+                            <div className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-500/10">
                                 <Layers className="h-4 w-4 text-blue-500" />
                             </div>
                             <div>
@@ -292,7 +292,7 @@ export default function CacheManagementPage() {
                 <Card className="glass-card">
                     <CardHeader className="pb-3">
                         <div className="flex items-center gap-2">
-                            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10">
+                            <div className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-500/10">
                                 <Info className="h-4 w-4 text-emerald-500" />
                             </div>
                             <div>
@@ -346,7 +346,7 @@ export default function CacheManagementPage() {
                 <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-violet-500/10">
+                            <div className="flex h-8 w-8 items-center justify-center rounded-md bg-violet-500/10">
                                 <Lock className="h-4 w-4 text-violet-500" />
                             </div>
                             <div>
@@ -370,7 +370,7 @@ export default function CacheManagementPage() {
                         </div>
                     ) : !stats || stats.sample_entries.length === 0 ? (
                         <div className="flex flex-col items-center justify-center py-12 gap-3 text-center">
-                            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
+                            <div className="flex h-12 w-12 items-center justify-center rounded-md bg-muted">
                                 <Database className="h-6 w-6 text-muted-foreground" />
                             </div>
                             <p className="text-sm font-medium">No cached entries</p>
@@ -449,7 +449,7 @@ export default function CacheManagementPage() {
                 ].map(({ icon: Icon, color, title, desc }) => (
                     <Card key={title} className="glass-card">
                         <CardContent className="p-4 flex gap-3">
-                            <div className={cn("flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg", color)}>
+                            <div className={cn("flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md", color)}>
                                 <Icon className="h-4 w-4" />
                             </div>
                             <div>

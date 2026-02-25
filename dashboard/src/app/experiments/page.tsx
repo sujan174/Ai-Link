@@ -54,9 +54,9 @@ export default function ExperimentsPage() {
 
     if (experimentNames.length === 0) {
         return (
-            <div className="p-8 max-w-[1600px] mx-auto space-y-8">
+            <div className="p-4 max-w-[1600px] mx-auto space-y-6">
                 <div>
-                    <h2 className="text-3xl font-bold tracking-tight">Experiments</h2>
+                    <h2 className="text-2xl font-semibold font-bold tracking-tight">Experiments</h2>
                     <p className="text-muted-foreground">A/B test traffic splits and compare variant performance.</p>
                 </div>
                 <EmptyState
@@ -71,10 +71,10 @@ export default function ExperimentsPage() {
     }
 
     return (
-        <div className="p-8 space-y-8 max-w-[1600px] mx-auto">
+        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
             {/* Header */}
             <div className="space-y-1">
-                <h2 className="text-3xl font-bold tracking-tight">
+                <h2 className="text-2xl font-semibold font-bold tracking-tight">
                     Experiments
                 </h2>
                 <p className="text-muted-foreground">
@@ -107,7 +107,7 @@ export default function ExperimentsPage() {
                                 </div>
                             </div>
 
-                            <div className="grid lg:grid-cols-3 gap-6">
+                            <div className="grid lg:grid-cols-3 gap-3">
                                 {/* Variant Cards */}
                                 <div className="lg:col-span-2 grid sm:grid-cols-2 gap-4">
                                     {variants.map((v, i) => {
@@ -170,7 +170,7 @@ export default function ExperimentsPage() {
                                         <div className="h-[250px] w-full mt-4">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <BarChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                                                    <CartesianGrid strokeDasharray="3 3" stroke="#333" vertical={false} />
+                                                    <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
                                                     <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#888' }} />
                                                     <YAxis yAxisId="left" orientation="left" stroke="#888" axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
                                                     <YAxis yAxisId="right" orientation="right" stroke="#888" axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />

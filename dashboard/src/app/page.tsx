@@ -89,7 +89,7 @@ export default function OverviewPage() {
 
             {/* Onboarding State */}
             {!loading && totalRequests === 0 && !dismissed ? (
-                <Card className="border-dashed border-2 bg-muted/20 animate-fade-in mb-8 relative">
+                <Card className="border-dashed border-2 bg-muted/20 animate-fade-in mb-6 relative">
                     <Button
                         variant="ghost"
                         size="icon"
@@ -103,7 +103,7 @@ export default function OverviewPage() {
                         <XCircle className="h-4 w-4" />
                     </Button>
                     <CardHeader className="text-center pb-2">
-                        <CardTitle className="text-2xl font-bold flex items-center justify-center gap-2">
+                        <CardTitle className="text-xl font-semibold flex items-center justify-center gap-2">
                             <Zap className="h-6 w-6 text-primary" />
                             Welcome to AILink
                         </CardTitle>
@@ -123,7 +123,7 @@ export default function OverviewPage() {
                                         Add a Provider Credential
                                         {credentials.length > 0 && <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/30">Complete</span>}
                                     </h3>
-                                    <p className="text-sm text-muted-foreground">Securely store an OpenAI, Anthropic, or Gemini API key in the vault.</p>
+                                    <p className="text-[13px] text-muted-foreground">Securely store an OpenAI, Anthropic, or Gemini API key in the vault.</p>
                                     {credentials.length === 0 && (
                                         <div className="pt-2">
                                             <Link href="/vault"><Button size="sm">Add Credential</Button></Link>
@@ -142,7 +142,7 @@ export default function OverviewPage() {
                                         Create an isolated Token
                                         {tokens.length > 0 && <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full border border-emerald-500/30">Complete</span>}
                                     </h3>
-                                    <p className="text-sm text-muted-foreground">Mint a virtual token (`ailink_v1_...`) bound to your credential. Give this to your agent.</p>
+                                    <p className="text-[13px] text-muted-foreground">Mint a virtual token (`ailink_v1_...`) bound to your credential. Give this to your agent.</p>
                                     {credentials.length > 0 && tokens.length === 0 && (
                                         <div className="pt-2">
                                             <Link href="/virtual-keys"><Button size="sm">Create Token</Button></Link>
@@ -160,9 +160,9 @@ export default function OverviewPage() {
                                     <h3 className="font-semibold text-lg flex items-center gap-2">
                                         Send your first proxy request
                                     </h3>
-                                    <p className="text-sm text-muted-foreground">Use this pre-filled curl command. The gateway will inject the real key and log the request below.</p>
+                                    <p className="text-[13px] text-muted-foreground">Use this pre-filled curl command. The gateway will inject the real key and log the request below.</p>
 
-                                    <div className="w-full bg-muted/80 rounded-lg p-4 text-left font-mono text-xs relative group mt-3 overflow-x-auto">
+                                    <div className="w-full bg-muted/80 rounded-md p-4 text-left font-mono text-xs relative group mt-3 overflow-x-auto">
                                         <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                             <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => {
                                                 navigator.clipboard.writeText(`curl -X POST http://localhost:8443/v1/chat/completions \\
@@ -235,7 +235,7 @@ export default function OverviewPage() {
 
             {/* Dynamic Alert Banner */}
             {!loading && alertMessage && (
-                <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 animate-fade-in flex items-start gap-4 shadow-sm shadow-rose-500/5">
+                <div className="rounded-md border border-rose-500/30 bg-rose-500/10 p-4 animate-fade-in flex items-start gap-4 shadow-sm shadow-rose-500/5">
                     <div className="mt-0.5 rounded-full bg-rose-500/20 p-2 text-rose-500 shrink-0">
                         <AlertTriangle className="h-5 w-5" />
                     </div>
@@ -247,7 +247,7 @@ export default function OverviewPage() {
             )}
 
             {/* Main Content Grid */}
-            <div className="grid gap-6 md:grid-cols-7">
+            <div className="grid gap-3 md:grid-cols-7">
 
                 {/* Latency Chart (Span 4) */}
                 <Card className="md:col-span-4 glass-card animate-slide-up stagger-3 flex flex-col">
@@ -269,7 +269,7 @@ export default function OverviewPage() {
                                                 <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
                                             </linearGradient>
                                         </defs>
-                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
+                                        <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}
@@ -322,7 +322,7 @@ export default function OverviewPage() {
                         <CardContent>
                             <div className="flex items-end gap-3">
                                 <span className={cn(
-                                    "text-4xl font-bold tabular-nums tracking-tighter",
+                                    "text-2xl font-semibold font-bold tabular-nums tracking-tighter",
                                     successRate >= 95 ? "text-emerald-500" : successRate >= 80 ? "text-amber-500" : "text-rose-500"
                                 )}>
                                     {loading ? "..." : `${successRate}%`}
@@ -355,12 +355,12 @@ export default function OverviewPage() {
                         </CardHeader>
                         <CardContent>
                             <div className="flex items-center gap-4">
-                                <div className={cn("h-10 w-10 rounded-lg flex items-center justify-center",
+                                <div className={cn("h-10 w-10 rounded-md flex items-center justify-center",
                                     pendingApprovals > 0 ? "bg-amber-500/10 text-amber-500 animate-pulse" : "bg-muted text-muted-foreground")}>
                                     <ShieldCheck className="h-5 w-5" />
                                 </div>
                                 <div>
-                                    <div className="text-2xl font-bold tabular-nums">
+                                    <div className="text-xl font-semibold tabular-nums">
                                         {loading ? "-" : pendingApprovals}
                                     </div>
                                     <div className="text-xs text-muted-foreground">
@@ -385,7 +385,7 @@ export default function OverviewPage() {
                         <div className="space-y-0divide-y divide-border/50">
                             {Array.from({ length: 5 }).map((_, i) => (
                                 <div key={i} className="flex items-center gap-4 p-4">
-                                    <div className="h-8 w-8 rounded-lg bg-muted/50 shimmer" />
+                                    <div className="h-8 w-8 rounded-md bg-muted/50 shimmer" />
                                     <div className="flex-1 space-y-2">
                                         <div className="h-3 w-48 bg-muted/50 rounded shimmer" />
                                     </div>
@@ -480,7 +480,7 @@ function KPICard({
                         {loading ? (
                             <div className="h-8 w-24 bg-muted/50 rounded shimmer my-1" />
                         ) : (
-                            <p className="text-2xl font-bold tabular-nums tracking-tight font-mono">
+                            <p className="text-xl font-semibold tabular-nums tracking-tight font-mono">
                                 {value}
                             </p>
                         )}
@@ -488,7 +488,7 @@ function KPICard({
                             {subtitle}
                         </p>
                     </div>
-                    <div className={cn("p-2 rounded-lg", colors[iconColor])}>
+                    <div className={cn("p-2 rounded-md", colors[iconColor])}>
                         <Icon className="h-4 w-4" />
                     </div>
                 </div>

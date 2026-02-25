@@ -34,7 +34,7 @@ export default function ProjectSettingsPage() {
     }, [project]);
 
     if (!project) {
-        return <div className="p-8 animate-pulse text-muted-foreground">Loading project details...</div>;
+        return <div className="p-4 animate-pulse text-muted-foreground">Loading project details...</div>;
     }
 
     const handleRename = async (e: React.FormEvent) => {
@@ -73,7 +73,7 @@ export default function ProjectSettingsPage() {
     };
 
     return (
-        <div className="flex flex-col gap-8 max-w-4xl animate-fade-in p-6 pt-2">
+        <div className="flex flex-col gap-4 max-w-4xl animate-fade-in p-4 pt-2">
             {/* General Settings */}
 
             {/* General Settings */}
@@ -131,7 +131,7 @@ export default function ProjectSettingsPage() {
                 <CardContent className="space-y-4">
                     <div className="rounded-md border border-destructive/20 bg-background p-4">
                         <h3 className="font-semibold text-destructive mb-2">Delete Project</h3>
-                        <p className="text-sm text-muted-foreground mb-4">
+                        <p className="text-[13px] text-muted-foreground mb-4">
                             This will permanently delete the project <strong>{project.name}</strong> and all its associated resources (tokens, logs, services). This action cannot be undone.
                         </p>
 

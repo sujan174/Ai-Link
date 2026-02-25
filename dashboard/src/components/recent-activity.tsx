@@ -22,7 +22,7 @@ export function RecentActivity({ logs }: RecentActivityProps) {
             <CardContent>
                 <div className="space-y-8">
                     {logs.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">No recent activity.</p>
+                        <p className="text-[13px] text-muted-foreground">No recent activity.</p>
                     ) : (
                         logs.map((log) => (
                             <div key={log.id} className="flex items-center">

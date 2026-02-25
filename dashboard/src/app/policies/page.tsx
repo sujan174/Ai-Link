@@ -99,7 +99,7 @@ export default function PoliciesPage() {
     const totalRules = policies.reduce((sum, p) => sum + (p.rules?.length || 0), 0);
 
     return (
-        <div className="p-8 space-y-6 max-w-[1600px] mx-auto">
+        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
             {/* Controls */}
             <div className="flex items-center justify-end animate-fade-in mb-2">
                 <div className="flex items-center gap-2">
@@ -139,7 +139,7 @@ export default function PoliciesPage() {
                         <div className="rounded-md border border-border/60 bg-card/50 h-[400px] shimmer" />
                     </div>
                 ) : (
-                    <div className="rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden shadow-sm">
+                    <div className="rounded-md border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden shadow-sm">
                         <DataTable
                             columns={columns}
                             data={policies}
@@ -208,7 +208,7 @@ function KPIMini({ icon: Icon, value, label, color, loading }: {
     return (
         <Card className="glass-card hover-lift">
             <CardContent className="p-4 flex items-center gap-4">
-                <div className={cn("p-2.5 rounded-xl transition-colors", bgColors[color])}>
+                <div className={cn("p-2.5 rounded-md transition-colors", bgColors[color])}>
                     <Icon className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
@@ -237,7 +237,7 @@ function PolicyDetailPanel({ policy, onClose, onEdit, onHistory }: {
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-border">
                 <div className="flex items-center gap-3 min-w-0">
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/20">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 border border-primary/20">
                         <ShieldAlert className="h-4 w-4 text-primary" />
                     </div>
                     <div className="min-w-0">
@@ -262,7 +262,7 @@ function PolicyDetailPanel({ policy, onClose, onEdit, onHistory }: {
             </div>
 
             {/* Content */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            <div className="flex-1 overflow-y-auto p-4 space-y-6">
                 {/* Meta */}
                 <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -306,7 +306,7 @@ function PolicyDetailPanel({ policy, onClose, onEdit, onHistory }: {
                 {/* Raw JSON */}
                 <div>
                     <p className="text-[11px] text-muted-foreground uppercase tracking-wider mb-2">Raw Definition</p>
-                    <pre className="bg-muted/30 rounded-lg p-3 text-[11px] font-mono text-muted-foreground overflow-x-auto max-h-[200px]">
+                    <pre className="bg-muted/30 rounded-md p-3 text-[11px] font-mono text-muted-foreground overflow-x-auto max-h-[200px]">
                         {JSON.stringify(policy.rules, null, 2)}
                     </pre>
                 </div>
@@ -334,7 +334,7 @@ function RuleCard({ rule, index }: { rule: Record<string, unknown>; index: numbe
     // Legacy format detection
     if (rule.type) {
         return (
-            <div className="rounded-lg border border-border bg-muted/20 p-3">
+            <div className="rounded-md border border-border bg-muted/20 p-3">
                 <div className="flex items-center gap-2 mb-2">
                     <span className="text-[10px] font-mono text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded">
                         #{index + 1}
@@ -350,7 +350,7 @@ function RuleCard({ rule, index }: { rule: Record<string, unknown>; index: numbe
     const at = ACTION_TYPES.find(a => a.value === actionType);
 
     return (
-        <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-2">
+        <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2">
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                     <span className="text-[10px] font-mono text-muted-foreground bg-muted/50 px-1.5 py-0.5 rounded">
@@ -660,7 +660,7 @@ function PolicyFormDialog({ mode, initialPolicy, onSuccess }: {
                 )}
 
                 {/* Input Mode Toggle */}
-                <div className="flex items-center gap-1 border rounded-lg p-0.5 w-fit">
+                <div className="flex items-center gap-1 border rounded-md p-0.5 w-fit">
                     <button
                         type="button"
                         className={cn(
@@ -735,7 +735,7 @@ function VisualRuleEditor({ rule, index, total, onUpdate, onRemove }: {
     const at = ACTION_TYPES.find(a => a.value === rule.actionType);
 
     return (
-        <div className="rounded-lg border border-border bg-muted/10 p-4 space-y-4">
+        <div className="rounded-md border border-border bg-muted/10 p-4 space-y-4">
             {/* Header */}
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">

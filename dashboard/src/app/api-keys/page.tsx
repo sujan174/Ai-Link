@@ -76,7 +76,7 @@ export default function ApiKeysPage() {
     };
 
     return (
-        <div className="p-8 space-y-6 max-w-[1600px] mx-auto">
+        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
             {/* Controls */}
             <div className="flex items-center justify-end animate-fade-in mb-2">
                 <div className="flex items-center gap-2">
@@ -119,7 +119,7 @@ export default function ApiKeysPage() {
                     onAction={() => setCreateOpen(true)}
                 />
             ) : (
-                <div className="grid gap-6 animate-fade-in duration-500">
+                <div className="grid gap-3 animate-fade-in duration-500">
                     <Card>
                         <DataTable
                             columns={columns}

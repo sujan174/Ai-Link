@@ -20,6 +20,48 @@ use serde_json::Value;
 
 use crate::models::policy::ExternalVendor;
 
+/// Default wall-clock budget for any single external guardrail vendor call.
+///
+/// This caps latency added to the hot path by slow or unreachable vendors.
+/// Operators can override this via the `AILINK_GUARDRAIL_TIMEOUT_SECS` env var.
+pub const DEFAULT_GUARDRAIL_TIMEOUT_SECS: u64 = 5;
+
+/// Return the configured guardrail timeout, reading `AILINK_GUARDRAIL_TIMEOUT_SECS`
+/// from the environment if set.
+fn guardrail_timeout() -> Duration {
+    let secs = std::env::var("AILINK_GUARDRAIL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_GUARDRAIL_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
+
+/// Call the external guardrail with a hard deadline.
+///
+/// Wraps [`check`] in a [`tokio::time::timeout`]. On expiry, returns
+/// `Err("external_guardrail timed out after Xs")` — the caller decides
+/// whether to fail-open or fail-closed based on the policy's `on_fail` field.
+pub async fn check_with_timeout(
+    vendor: &ExternalVendor,
+    endpoint: &str,
+    api_key_env: Option<&str>,
+    threshold: f32,
+    text: &str,
+) -> Result<ExternalGuardrailResult, String> {
+    let timeout = guardrail_timeout();
+    tokio::time::timeout(
+        timeout,
+        check(vendor, endpoint, api_key_env, threshold, text),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        Err(format!(
+            "external_guardrail({vendor:?}) timed out after {}s — vendor unresponsive",
+            timeout.as_secs()
+        ))
+    })
+}
+
 /// The result returned by any external guardrail check.
 #[derive(Debug, Clone)]
 pub struct ExternalGuardrailResult {

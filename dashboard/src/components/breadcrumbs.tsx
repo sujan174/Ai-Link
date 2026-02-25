@@ -8,10 +8,17 @@ import { Fragment } from "react";
 const ROUTE_LABELS: Record<string, string> = {
     "audit": "Traffic Inspector",
     "tokens": "Tokens",
-    "credentials": "Credentials",
+    "virtual-keys": "Virtual Keys",
+    "credentials": "The Vault",
     "policies": "Policies",
     "approvals": "Approvals",
-    "analytics": "Analytics",
+    "analytics": "Global Analytics",
+    "guardrails": "Guardrails",
+    "cache": "Cache Management",
+    "playground": "Playground",
+    "sessions": "Agent Sessions",
+    "settings": "Settings",
+    "experiments": "Experiments",
 };
 
 export function Breadcrumbs() {
@@ -21,20 +28,20 @@ export function Breadcrumbs() {
     if (segments.length === 0) return null;
 
     return (
-        <nav className="flex items-center text-sm text-muted-foreground">
+        <nav className="flex items-center text-[13px] text-muted-foreground">
             <Link href="/" className="hover:text-foreground transition-colors">
                 <Home className="h-4 w-4" />
             </Link>
             {segments.map((segment, index) => {
                 const isLast = index === segments.length - 1;
                 const path = `/${segments.slice(0, index + 1).join("/")}`;
-                const label = ROUTE_LABELS[segment] || segment;
+                const label = ROUTE_LABELS[segment] || segment.charAt(0).toUpperCase() + segment.slice(1);
 
                 return (
                     <Fragment key={path}>
-                        <ChevronRight className="h-4 w-4 mx-1 text-muted-foreground/50" />
+                        <ChevronRight className="h-4 w-4 mx-1 text-[#2A2D3D]" />
                         {isLast ? (
-                            <span className="font-bold text-xl tracking-tight text-foreground truncate max-w-[300px]">
+                            <span className="font-semibold text-lg tracking-tight text-foreground truncate max-w-[400px]">
                                 {label}
                             </span>
                         ) : (

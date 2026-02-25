@@ -662,5 +662,61 @@ mod tests {
         let result = acc.finalize();
         assert_eq!(result.content, "ws");
     }
+
+    // ── Chaos: Stream Abort & Resilience ────────────────────────
+
+    /// Client disconnects after 3 chunks — no [DONE] marker.
+    /// Accumulator must finalize cleanly with partial content.
+    #[test]
+    fn test_stream_abort_preserves_partial_content() {
+        let mut acc = StreamAccumulator::new_with_start(std::time::Instant::now());
+        let chunks = [
+            r#"data: {"choices":[{"delta":{"content":"Hello"},"index":0}]}"#,
+            r#"data: {"choices":[{"delta":{"content":" cruel"},"index":0}]}"#,
+            r#"data: {"choices":[{"delta":{"content":" world"},"index":0}]}"#,
+        ];
+        for chunk in &chunks {
+            assert!(!acc.push_sse_line(chunk), "should not be done on partial stream");
+        }
+        let result = acc.finalize();
+        assert_eq!(result.content, "Hello cruel world");
+        assert_eq!(result.chunk_count, 3);
+        assert!(result.finish_reason.is_none(), "no finish_reason on abort");
+    }
+
+    /// Immediate abort — zero chunks received, finalize shouldn't panic.
+    #[test]
+    fn test_stream_empty_finalize_no_panic() {
+        let acc = StreamAccumulator::new_with_start(std::time::Instant::now());
+        let result = acc.finalize();
+        assert_eq!(result.content, "");
+        assert_eq!(result.chunk_count, 0);
+        assert!(result.tool_calls.is_empty());
+    }
+
+    /// Stream with only SSE comments / keep-alives — no data payload.
+    #[test]
+    fn test_stream_only_comments_no_data() {
+        let mut acc = StreamAccumulator::new_with_start(std::time::Instant::now());
+        acc.push_sse_line(": keep-alive");
+        acc.push_sse_line("");
+        acc.push_sse_line(": another comment");
+        let result = acc.finalize();
+        assert_eq!(result.content, "");
+        assert_eq!(result.chunk_count, 0);
+    }
+
+    /// Usage in the final chunk must be captured (OpenAI stream_options.include_usage).
+    #[test]
+    fn test_stream_usage_captured_from_final_chunk() {
+        let mut acc = StreamAccumulator::new_with_start(std::time::Instant::now());
+        acc.push_sse_line(r#"data: {"choices":[{"delta":{"content":"Hi"}}]}"#);
+        acc.push_sse_line(r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#);
+        acc.push_sse_line("data: [DONE]");
+        let result = acc.finalize();
+        assert_eq!(result.content, "Hi");
+        assert_eq!(result.prompt_tokens, Some(10));
+        assert_eq!(result.completion_tokens, Some(5));
+    }
 }
 

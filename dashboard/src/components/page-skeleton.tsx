@@ -19,9 +19,9 @@ export function PageSkeleton({
                 {Array.from({ length: cards }).map((_, i) => (
                     <div
                         key={i}
-                        className="rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm p-4 flex items-center gap-3"
+                        className="rounded-md border border-border/60 bg-card/50 backdrop-blur-sm p-4 flex items-center gap-3"
                     >
-                        <Skeleton className="h-10 w-10 rounded-lg" />
+                        <Skeleton className="h-10 w-10 rounded-md" />
                         <div className="space-y-2 flex-1">
                             <Skeleton className="h-3 w-20" />
                             <Skeleton className="h-5 w-16" />
@@ -31,7 +31,7 @@ export function PageSkeleton({
             </div>
 
             {/* Table skeleton */}
-            <div className="rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden">
+            <div className="rounded-md border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden">
                 {/* Header */}
                 <div className="flex items-center border-b px-4 py-3 gap-4">
                     {Array.from({ length: 5 }).map((_, i) => (

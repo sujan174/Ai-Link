@@ -82,8 +82,29 @@ pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body
                     }
                 }
                 Err(e) => {
-                    let err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string());
-                    let _ = tx.send(Err(err)).await;
+                    // Emit a structured SSE error event so SSE clients receive a
+                    // parseable error payload instead of a silent TCP reset.
+                    // Format mirrors the OpenAI streaming error shape so SDK error
+                    // handlers can process it uniformly.
+                    let sse_error = format!(
+                        "data: {{\"error\":{{\"message\":\"upstream connection lost: {}\",\"type\":\"stream_error\"}}}}\n\n",
+                        e.to_string().replace('"', "'")
+                    );
+                    let _ = tx.send(Ok(Bytes::from(sse_error))).await;
+
+                    // Populate the slot with partial results so audit logging still
+                    // captures whatever tokens/content arrived before the drop.
+                    {
+                        let mut slot_guard = slot_for_bg.lock().await;
+                        if slot_guard.is_none() {
+                            let mut acc_guard = accumulator.lock().await;
+                            let partial = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
+                            *slot_guard = Some(partial.finish());
+                        }
+                    }
+
+                    let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string());
+                    let _ = tx.send(Err(io_err)).await;
                     break;
                 }
             }

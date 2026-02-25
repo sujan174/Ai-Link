@@ -21,7 +21,7 @@ export default function Error({
                 <AlertTriangle className="h-10 w-10 text-rose-500" />
             </div>
             <div className="space-y-2">
-                <h2 className="text-2xl font-bold tracking-tight">Something went wrong!</h2>
+                <h2 className="text-xl font-semibold tracking-tight">Something went wrong!</h2>
                 <p className="max-w-[500px] text-muted-foreground text-balance">
                     {error.message || "An unexpected error occurred. We've logged it for our team."}
                 </p>

@@ -94,7 +94,7 @@ export const columns: ColumnDef<Policy>[] = [
             const actionTypes = getActionIcons(policy.rules);
             return (
                 <div className="flex items-center gap-3 min-w-[200px]">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 border border-primary/20">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 border border-primary/20">
                         {actionTypes.length > 0 ? <ActionIcon type={actionTypes[0]} /> : <ShieldAlert className="h-3.5 w-3.5 text-primary" />}
                     </div>
                     <div className="min-w-0">

@@ -748,4 +748,87 @@ mod tests {
         assert_eq!(config.recovery_cooldown_secs, 30);
         assert_eq!(config.half_open_max_requests, 1);
     }
+
+    // ── Chaos: 429 Failover & Total Outage ─────────────────────
+
+    /// Provider A gets 429 rate-limited (3 failures) → LB must route 100% to Provider B.
+    #[test]
+    fn test_lb_failover_on_429_to_backup_provider() {
+        let lb = LoadBalancer::new();
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 3,
+            recovery_cooldown_secs: 60,
+            half_open_max_requests: 1,
+        };
+        let upstreams = vec![
+            UpstreamTarget { url: "https://api.openai.com".into(), credential_id: None, weight: 100, priority: 1 },
+            UpstreamTarget { url: "https://backup.azure.com".into(), credential_id: None, weight: 100, priority: 1 },
+        ];
+        lb.select("tok_prod", &upstreams, &config);
+
+        // Simulate 3 consecutive 429s
+        for _ in 0..3 {
+            lb.mark_failed("tok_prod", "https://api.openai.com", &config);
+        }
+
+        let mut openai_count = 0;
+        for _ in 0..20 {
+            if let Some(idx) = lb.select("tok_prod", &upstreams, &config) {
+                if idx == 0 { openai_count += 1; }
+            }
+        }
+        assert_eq!(openai_count, 0, "OpenAI (circuit OPEN) should receive 0 requests");
+    }
+
+    /// All upstreams failed → LB must return None (no healthy target available).
+    #[test]
+    fn test_lb_all_upstreams_failed_returns_none() {
+        let lb = LoadBalancer::new();
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 2,
+            recovery_cooldown_secs: 3600,
+            half_open_max_requests: 1,
+        };
+        let upstreams = vec![
+            UpstreamTarget { url: "https://a.com".into(), credential_id: None, weight: 100, priority: 1 },
+            UpstreamTarget { url: "https://b.com".into(), credential_id: None, weight: 100, priority: 1 },
+        ];
+        lb.select("tok1", &upstreams, &config);
+        for _ in 0..2 {
+            lb.mark_failed("tok1", "https://a.com", &config);
+            lb.mark_failed("tok1", "https://b.com", &config);
+        }
+        assert!(lb.select("tok1", &upstreams, &config).is_none(),
+            "All upstreams failed — should return None");
+    }
+
+    /// After cooldown=0, a failed upstream should become eligible for half-open retry.
+    #[test]
+    fn test_lb_circuit_recovery_after_cooldown() {
+        let lb = LoadBalancer::new();
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 1,
+            recovery_cooldown_secs: 0,
+            half_open_max_requests: 1,
+        };
+        let upstreams = vec![
+            UpstreamTarget { url: "https://primary.com".into(), credential_id: None, weight: 100, priority: 1 },
+            UpstreamTarget { url: "https://backup.com".into(), credential_id: None, weight: 100, priority: 2 },
+        ];
+        lb.select("tok1", &upstreams, &config);
+        lb.mark_failed("tok1", "https://primary.com", &config);
+
+        let mut found_primary = false;
+        for _ in 0..10 {
+            if lb.select("tok1", &upstreams, &config) == Some(0) {
+                found_primary = true;
+                break;
+            }
+        }
+        assert!(found_primary, "Primary should be retryable after cooldown=0");
+    }
 }
+

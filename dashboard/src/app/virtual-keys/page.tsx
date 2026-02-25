@@ -109,7 +109,7 @@ export default function TokensPage() {
   const revokedCount = tokens.length - activeCount;
 
   return (
-    <div className="p-8 space-y-6 max-w-[1600px] mx-auto">
+    <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
       {/* Controls */}
       <div className="flex items-center justify-end animate-fade-in mb-2">
         <div className="flex items-center gap-2">
@@ -141,7 +141,7 @@ export default function TokensPage() {
               <Key className="h-4 w-4" />
             </div>
             <div>
-              <p className="text-2xl font-bold tabular-nums">{tokens.length}</p>
+              <p className="text-xl font-semibold tabular-nums">{tokens.length}</p>
               <p className="text-xs text-muted-foreground">Total Tokens</p>
             </div>
           </div>
@@ -152,7 +152,7 @@ export default function TokensPage() {
               <Shield className="h-4 w-4" />
             </div>
             <div>
-              <p className="text-2xl font-bold tabular-nums text-emerald-500">{activeCount}</p>
+              <p className="text-xl font-semibold tabular-nums text-emerald-500">{activeCount}</p>
               <p className="text-xs text-muted-foreground">Active</p>
             </div>
           </div>
@@ -163,7 +163,7 @@ export default function TokensPage() {
               <Trash2 className="h-4 w-4" />
             </div>
             <div>
-              <p className="text-2xl font-bold tabular-nums text-rose-500">{revokedCount}</p>
+              <p className="text-xl font-semibold tabular-nums text-rose-500">{revokedCount}</p>
               <p className="text-xs text-muted-foreground">Revoked</p>
             </div>
           </div>
@@ -410,7 +410,7 @@ function CreateTokenForm({ onSuccess, onCreate }: { onSuccess: () => void; onCre
             </p>
             <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
               {upstreams.map((u, i) => (
-                <div key={i} className="rounded-lg border border-border/60 bg-muted/20 p-3 space-y-2">
+                <div key={i} className="rounded-md border border-border/60 bg-muted/20 p-3 space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
                       Endpoint {i + 1}

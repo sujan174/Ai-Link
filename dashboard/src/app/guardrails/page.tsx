@@ -80,7 +80,7 @@ function KPICard({
     return (
         <Card className="glass-card hover-lift">
             <CardContent className="p-4 flex items-center gap-4">
-                <div className={cn("p-2.5 rounded-xl flex-shrink-0", color)}>
+                <div className={cn("p-2.5 rounded-md flex-shrink-0", color)}>
                     <Icon className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
@@ -134,7 +134,7 @@ function PresetToggleCard({
             <CardContent className="p-4 space-y-2.5">
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3 min-w-0 flex-1">
-                        <div className={cn("p-2 rounded-lg flex-shrink-0", colorCls.split(" ").slice(0, 2).join(" "))}>
+                        <div className={cn("p-2 rounded-md flex-shrink-0", colorCls.split(" ").slice(0, 2).join(" "))}>
                             <Icon className="h-4 w-4" />
                         </div>
                         <div className="min-w-0 flex-1">
@@ -233,7 +233,7 @@ function TokenSelector({
             <button
                 onClick={() => setOpen(!open)}
                 className={cn(
-                    "w-full flex items-center justify-between gap-2 rounded-lg border px-3 py-2.5 text-sm transition-colors",
+                    "w-full flex items-center justify-between gap-2 rounded-md border px-3 py-2.5 text-sm transition-colors",
                     "hover:border-foreground/30 focus:outline-none focus:ring-2 focus:ring-emerald-500/20",
                     open ? "border-emerald-500/50" : "border-border",
                     !selected && "text-muted-foreground"
@@ -257,7 +257,7 @@ function TokenSelector({
             </button>
 
             {open && (
-                <div className="absolute z-50 mt-1 w-full rounded-lg border border-border bg-popover shadow-lg animate-fade-in">
+                <div className="absolute z-50 mt-1 w-full rounded-md border border-border bg-popover shadow-lg animate-fade-in">
                     <div className="p-2 border-b border-border">
                         <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5">
                             <Search className="h-3.5 w-3.5 text-muted-foreground" />
@@ -433,7 +433,7 @@ export default function GuardrailsPage() {
             <Card className="glass-card animate-slide-up stagger-2">
                 <CardHeader className="pb-3">
                     <div className="flex items-center gap-2">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-500/10">
                             <Activity className="h-4 w-4 text-emerald-500" />
                         </div>
                         <div>
@@ -452,7 +452,7 @@ export default function GuardrailsPage() {
                             <p className="text-xs font-semibold">Select API Token</p>
                         </div>
                         {tokensLoading ? (
-                            <div className="h-10 bg-muted/40 rounded-lg shimmer" />
+                            <div className="h-10 bg-muted/40 rounded-md shimmer" />
                         ) : (
                             <TokenSelector
                                 tokens={tokens}
@@ -462,7 +462,7 @@ export default function GuardrailsPage() {
                         )}
                         {/* Current guardrails status */}
                         {statusLoading && (
-                            <div className="h-10 bg-muted/40 rounded-lg shimmer" />
+                            <div className="h-10 bg-muted/40 rounded-md shimmer" />
                         )}
                         {tokenStatus?.has_guardrails && !statusLoading && (
                             <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 space-y-1.5">
@@ -523,7 +523,7 @@ export default function GuardrailsPage() {
                         </div>
 
                         {!selectedTokenId && (
-                            <div className="rounded-lg border border-dashed border-border p-6 text-center">
+                            <div className="rounded-md border border-dashed border-border p-4 text-center">
                                 <Info className="h-5 w-5 text-muted-foreground mx-auto mb-2" />
                                 <p className="text-xs text-muted-foreground">Select a token above to configure guardrails</p>
                             </div>
@@ -587,7 +587,7 @@ export default function GuardrailsPage() {
                                     </div>
                                     <div className="grid gap-2 sm:grid-cols-2">
                                         {(presetsLoading ? Array.from({ length: 3 }).map((_, i) => (
-                                            <div key={i} className="h-20 bg-muted/40 rounded-lg shimmer" />
+                                            <div key={i} className="h-20 bg-muted/40 rounded-md shimmer" />
                                         )) : grouped.safety.map(p => (
                                             <PresetToggleCard
                                                 key={p.name}
@@ -610,7 +610,7 @@ export default function GuardrailsPage() {
                                     </div>
                                     <div className="grid gap-2 sm:grid-cols-2">
                                         {(presetsLoading ? Array.from({ length: 3 }).map((_, i) => (
-                                            <div key={i} className="h-20 bg-muted/40 rounded-lg shimmer" />
+                                            <div key={i} className="h-20 bg-muted/40 rounded-md shimmer" />
                                         )) : grouped.privacy.map(p => (
                                             <PresetToggleCard
                                                 key={p.name}
@@ -633,7 +633,7 @@ export default function GuardrailsPage() {
                                     </div>
                                     <div className="grid gap-2 sm:grid-cols-2">
                                         {(presetsLoading ? Array.from({ length: 2 }).map((_, i) => (
-                                            <div key={i} className="h-20 bg-muted/40 rounded-lg shimmer" />
+                                            <div key={i} className="h-20 bg-muted/40 rounded-md shimmer" />
                                         )) : grouped.compliance.map(p => (
                                             <PresetToggleCard
                                                 key={p.name}
@@ -699,7 +699,7 @@ export default function GuardrailsPage() {
             <Card className="glass-card animate-slide-up stagger-3">
                 <CardHeader className="pb-3">
                     <div className="flex items-center gap-2">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-500/10">
                             <Activity className="h-4 w-4 text-emerald-500" />
                         </div>
                         <div>
@@ -736,9 +736,9 @@ export default function GuardrailsPage() {
                                 desc: "Custom regex compiled with 1MB size cap. Zero catastrophic backtracking."
                             },
                         ].map(({ icon: Icon, color, title, desc }) => (
-                            <div key={title} className="rounded-lg border border-border/40 bg-muted/10 p-4 space-y-2">
+                            <div key={title} className="rounded-md border border-border/40 bg-muted/10 p-4 space-y-2">
                                 <div className="flex items-center gap-2">
-                                    <div className={cn("flex h-7 w-7 items-center justify-center rounded-lg", color)}>
+                                    <div className={cn("flex h-7 w-7 items-center justify-center rounded-md", color)}>
                                         <Icon className="h-3.5 w-3.5" />
                                     </div>
                                     <p className="text-sm font-semibold">{title}</p>
@@ -751,7 +751,7 @@ export default function GuardrailsPage() {
             </Card>
 
             {/* SDK / API Quick-Start */}
-            <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-4 flex gap-3 items-start animate-slide-up stagger-4">
+            <div className="rounded-md border border-emerald-500/20 bg-emerald-500/5 p-4 flex gap-3 items-start animate-slide-up stagger-4">
                 <Code className="h-5 w-5 text-emerald-500 flex-shrink-0 mt-0.5" />
                 <div className="space-y-1.5 flex-1">
                     <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">Also available via API &amp; SDK</p>

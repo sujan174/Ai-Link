@@ -47,7 +47,7 @@ function StatCard({
     return (
         <Card className="glass-card hover-lift">
             <CardContent className="p-4 flex items-center gap-4">
-                <div className={cn("p-2.5 rounded-xl transition-colors", color)}>
+                <div className={cn("p-2.5 rounded-md transition-colors", color)}>
                     <Icon className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
@@ -135,7 +135,7 @@ export default function AuditPage() {
     }
 
     return (
-        <div className="p-8 space-y-6 max-w-[1600px] mx-auto">
+        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
             {/* Controls */}
             <div className="flex items-center justify-end animate-fade-in mb-2">
                 {/* Controls */}
@@ -250,7 +250,7 @@ export default function AuditPage() {
                         onAction={selectedToken !== "all" ? () => handleFilterChange("all") : undefined}
                     />
                 ) : (
-                    <div className="rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden shadow-sm">
+                    <div className="rounded-md border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden shadow-sm">
                         <DataTable
                             columns={columns}
                             data={logs}

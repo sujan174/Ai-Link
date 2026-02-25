@@ -72,7 +72,7 @@ export function CommandPalette() {
                 </div>
                 <div className="max-h-[300px] overflow-y-auto p-2">
                     {filteredGroups.length === 0 ? (
-                        <p className="text-sm text-muted-foreground text-center py-6">No results found.</p>
+                        <p className="text-[13px] text-muted-foreground text-center py-6">No results found.</p>
                     ) : (
                         filteredGroups.map((group, i) => (
                             <div key={i} className="mb-2">

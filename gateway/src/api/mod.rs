@@ -108,12 +108,21 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(handlers::list_credentials).post(handlers::create_credential),
         )
         .route(
+            "/credentials/:id",
+            delete(handlers::delete_credential),
+        )
+        .route(
             "/projects",
             get(handlers::list_projects).post(handlers::create_project),
         )
         .route(
             "/projects/:id",
             put(handlers::update_project).delete(handlers::delete_project),
+        )
+        .route(
+            "/projects/:id/purge",
+            // GDPR Article 17 — Right to Erasure: purges all project data (audit logs, sessions, usage)
+            post(handlers::purge_project_data),
         )
         .route(
             "/approvals", // HITL requests

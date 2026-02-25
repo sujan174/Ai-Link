@@ -226,17 +226,28 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
         // Enforce 25 MB body size limit on all routes
         .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .layer(tower_http::trace::TraceLayer::new_for_http())
-        // SEC-06: restrict CORS origins (reads DASHBOARD_ORIGIN env var, defaults to localhost for dev)
+        // SEC-06: Restrict CORS origins.
+        // - Dev: allows any localhost:* for convenience
+        // - Production (AILINK_ENV=production): only the explicit DASHBOARD_ORIGIN is permitted
         .layer({
             use tower_http::cors::AllowOrigin;
             use axum::http::{HeaderName, Method};
             let dashboard_origin = std::env::var("DASHBOARD_ORIGIN")
                 .unwrap_or_else(|_| "http://localhost:3000".to_string());
+            let is_production = std::env::var("AILINK_ENV")
+                .map(|v| v == "production")
+                .unwrap_or(false);
             CorsLayer::new()
                 .allow_origin(AllowOrigin::predicate(move |origin, _| {
                     let origin_str = origin.to_str().unwrap_or("");
-                    origin_str == dashboard_origin
-                        || origin_str.starts_with("http://localhost:")
+                    if origin_str == dashboard_origin {
+                        return true;
+                    }
+                    // In production, do NOT allow arbitrary localhost origins
+                    if is_production {
+                        return false;
+                    }
+                    origin_str.starts_with("http://localhost:")
                         || origin_str.starts_with("http://127.0.0.1:")
                 }))
                 .allow_methods([
@@ -368,6 +379,23 @@ async fn security_headers_middleware(
 
     // Remove server identity header
     headers.remove("Server");
+
+    // HSTS: Instructs browsers to only use HTTPS.
+    // Currently set to max-age=0 (no-op) for HTTP dev environments.
+    // When TLS is enabled in production, change to:
+    //   "max-age=63072000; includeSubDomains; preload"
+    let is_production = std::env::var("AILINK_ENV")
+        .map(|v| v == "production")
+        .unwrap_or(false);
+    let hsts_value = if is_production {
+        "max-age=63072000; includeSubDomains; preload"
+    } else {
+        "max-age=0"
+    };
+    headers.insert(
+        "Strict-Transport-Security",
+        hsts_value.parse().unwrap(),
+    );
 
     resp
 }

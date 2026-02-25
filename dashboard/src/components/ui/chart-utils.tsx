@@ -18,7 +18,7 @@ export function CustomTooltip({
     }
 
     return (
-        <div className="rounded-xl border border-border/50 bg-background/95 p-3 shadow-xl backdrop-blur-sm">
+        <div className="rounded-md border border-border/50 bg-background/95 p-3 shadow-xl backdrop-blur-sm">
             <p className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 {labelFormatter ? labelFormatter(label as string) : label}
             </p>

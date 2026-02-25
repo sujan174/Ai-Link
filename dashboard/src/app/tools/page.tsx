@@ -236,7 +236,7 @@ export default function ServicesPage() {
             {/* How it works */}
             <Card className="border-dashed border-blue-500/30 bg-blue-500/5">
                 <CardContent className="py-4">
-                    <p className="text-sm text-muted-foreground">
+                    <p className="text-[13px] text-muted-foreground">
                         <strong className="text-foreground">How it works:</strong> Register a
                         service (e.g., Stripe) with its base URL and a credential. Then your AI
                         agent sends requests to{" "}
@@ -255,7 +255,7 @@ export default function ServicesPage() {
                     <CardContent className="py-16 text-center">
                         <Globe className="h-12 w-12 mx-auto text-muted-foreground/30 mb-4" />
                         <h3 className="text-lg font-medium">No services registered</h3>
-                        <p className="text-sm text-muted-foreground mt-1">
+                        <p className="text-[13px] text-muted-foreground mt-1">
                             Click &quot;Add Service&quot; to register your first external API.
                         </p>
                     </CardContent>

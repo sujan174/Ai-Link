@@ -42,8 +42,8 @@ function StatCard({
     color: string
 }) {
     return (
-        <div className="rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm p-4 flex items-center gap-3 min-w-0">
-            <div className={`rounded-lg p-2 ${color}`}>
+        <div className="rounded-md border border-border/60 bg-card/50 backdrop-blur-sm p-4 flex items-center gap-3 min-w-0">
+            <div className={`rounded-md p-2 ${color}`}>
                 <Icon className="h-4 w-4" />
             </div>
             <div className="min-w-0">
@@ -212,21 +212,21 @@ export default function TokenDetailPage() {
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
                             <div className="space-y-1">
                                 <p className="text-xs text-muted-foreground">Total Requests</p>
-                                <p className="text-2xl font-bold tabular-nums">{usage.total_requests.toLocaleString()}</p>
+                                <p className="text-xl font-semibold tabular-nums">{usage.total_requests.toLocaleString()}</p>
                             </div>
                             <div className="space-y-1">
                                 <p className="text-xs text-muted-foreground">Success Rate</p>
-                                <p className="text-2xl font-bold tabular-nums text-emerald-500">
+                                <p className="text-xl font-semibold tabular-nums text-emerald-500">
                                     {usage.total_requests > 0 ? ((usage.success_count / usage.total_requests) * 100).toFixed(1) : 0}%
                                 </p>
                             </div>
                             <div className="space-y-1">
                                 <p className="text-xs text-muted-foreground">Avg Latency</p>
-                                <p className="text-2xl font-bold tabular-nums text-amber-500">{Math.round(usage.avg_latency_ms)}ms</p>
+                                <p className="text-xl font-semibold tabular-nums text-amber-500">{Math.round(usage.avg_latency_ms)}ms</p>
                             </div>
                             <div className="space-y-1">
                                 <p className="text-xs text-muted-foreground">Est. Cost</p>
-                                <p className="text-2xl font-bold tabular-nums text-violet-500">${usage.total_cost_usd.toFixed(4)}</p>
+                                <p className="text-xl font-semibold tabular-nums text-violet-500">${usage.total_cost_usd.toFixed(4)}</p>
                             </div>
                         </div>
                     </CardContent>
@@ -234,7 +234,7 @@ export default function TokenDetailPage() {
             )}
 
             {/* Info Cards & Quick Start */}
-            <div className="grid md:grid-cols-3 gap-6">
+            <div className="grid md:grid-cols-3 gap-3">
                 <Card className="glass-card md:col-span-2">
                     <CardHeader className="pb-3 flex flex-row items-center justify-between">
                         <CardTitle className="text-sm font-medium">Quick Start Guide</CardTitle>
@@ -242,7 +242,7 @@ export default function TokenDetailPage() {
                     <CardContent className="space-y-4">
                         <div>
                             <p className="text-xs text-muted-foreground mb-2">cURL Example</p>
-                            <div className="w-full bg-muted/80 rounded-lg p-3 text-left font-mono text-xs relative group overflow-x-auto">
+                            <div className="w-full bg-muted/80 rounded-md p-3 text-left font-mono text-xs relative group overflow-x-auto">
                                 <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => {
                                         navigator.clipboard.writeText(`curl -X POST http://localhost:8443/v1/chat/completions \\
@@ -263,7 +263,7 @@ export default function TokenDetailPage() {
                         </div>
                         <div>
                             <p className="text-xs text-muted-foreground mb-2">Python SDK</p>
-                            <div className="w-full bg-muted/80 rounded-lg p-3 text-left font-mono text-xs relative group overflow-x-auto">
+                            <div className="w-full bg-muted/80 rounded-md p-3 text-left font-mono text-xs relative group overflow-x-auto">
                                 <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => {
                                         navigator.clipboard.writeText(`from ailink import AIlinkClient\n\nclient = AIlinkClient(api_key="${token.id}")\noai = client.openai()\nresponse = oai.chat.completions.create(\n    model="gpt-4o-mini",\n    messages=[{"role": "user", "content": "Hello AILink!"}]\n)\nprint(response.choices[0].message.content)`);
@@ -283,7 +283,7 @@ export default function TokenDetailPage() {
                     </CardContent>
                 </Card>
 
-                <div className="grid gap-6">
+                <div className="grid gap-3">
                     <Card className="glass-card">
                         <CardHeader className="pb-3">
                             <CardTitle className="text-sm font-medium">Configuration</CardTitle>
@@ -327,7 +327,7 @@ export default function TokenDetailPage() {
             <Card className="glass-card">
                 <CardHeader className="pb-3 flex flex-row items-center justify-between">
                     <div className="flex items-center gap-2">
-                        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-500/10">
+                        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-violet-500/10">
                             <DollarSign className="h-4 w-4 text-violet-500" />
                         </div>
                         <CardTitle className="text-sm font-medium">Budget &amp; Spend Caps</CardTitle>
@@ -419,7 +419,7 @@ export default function TokenDetailPage() {
                     </div>
                 </div>
 
-                <div className="rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden">
+                <div className="rounded-md border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden">
                     <DataTable
                         columns={columns}
                         data={logs}

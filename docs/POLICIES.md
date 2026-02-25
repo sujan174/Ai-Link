@@ -29,6 +29,17 @@ Policies are JSON documents containing a list of `rules`. Each rule has a `when`
 | `phase` | `"pre"` \| `"post"` | `"pre"` | When to evaluate: before or after the upstream call |
 | `rules` | array | required | Ordered list of condition→action rules |
 
+### Rule Fields
+
+Inside the `rules` array, each rule object supports:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `comment` | string | `null` | Optional description of the rule |
+| `when` | object | required | Condition that triggers the rule |
+| `then` | object \| array | required | Action(s) to execute if matched |
+| `async_check` | boolean | `false` | Run rule asynchronously in the background (non-blocking). Allowed for `log`, `tag`, `webhook`, `validate_schema`, `content_filter`, `external_guardrail`. |
+
 ---
 
 ## Policy Modes
@@ -302,7 +313,7 @@ Removes sensitive data from request or response bodies.
 
 ### `transform`
 
-Modifies headers or appends system prompts.
+Modifies headers, JSON body fields, or injects synthetic messages and system prompts.
 
 ```json
 {
@@ -310,10 +321,24 @@ Modifies headers or appends system prompts.
   "operations": [
     { "type": "set_header", "name": "X-Custom", "value": "Verified" },
     { "type": "remove_header", "name": "X-Internal-Debug" },
-    { "type": "append_system_prompt", "text": "Do not hallucinate." }
+    { "type": "prepend_system_prompt", "text": "Do not hallucinate." },
+    { "type": "set_body_field", "path": "temperature", "value": 0.5 },
+    { "type": "remove_body_field", "path": "user.id" },
+    { "type": "regex_replace", "pattern": "internal-db-\\w+", "replacement": "[REDACTED]", "global": true },
+    { "type": "add_to_message_list", "role": "system", "content": "Keep it brief.", "position": "first" }
   ]
 }
 ```
+
+| Operation Type | Description |
+|---|---|
+| `set_header` | Sets an HTTP header (request or response) |
+| `remove_header` | Removes an HTTP header |
+| `prepend_system_prompt`| Injects text into the first `system` message. Creates one if absent. |
+| `regex_replace` | Regex find/replace across all strings in the JSON body |
+| `set_body_field` | Sets a JSON field by dot-path (e.g. `temperature`) |
+| `remove_body_field` | Deletes a JSON field by dot-path |
+| `add_to_message_list` | Injects synthetic message into the OpenAI messages array (`position`: `first`, `last`, `before_last`) |
 
 ### `override`
 
@@ -380,6 +405,70 @@ Fire an external webhook (e.g. Slack, PagerDuty) when a rule matches.
 |---|---|---|
 | `timeout_ms` | integer (ms) | `5000` |
 | `on_fail` | `"allow"` \| `"deny"` | `"allow"` |
+
+### `validate_schema`
+
+Validates that the LLM response body (or extracted JSON from markdown blocks) conforms to a declared JSON Schema (draft 2020-12). *Applied in the `"post"` phase only.*
+
+```json
+{
+  "action": "validate_schema",
+  "schema": {
+    "type": "object",
+    "required": ["answer", "confidence"],
+    "properties": {
+      "answer": { "type": "string" },
+      "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+    }
+  },
+  "not": false,
+  "message": "Response must include answer and confidence fields"
+}
+```
+
+### `conditional_route`
+
+Selects an upstream target based on request properties. The first branch whose condition evaluates to true wins. Can replace `dynamic_route` when hardcoded conditional fallback paths are needed.
+
+```json
+{
+  "action": "conditional_route",
+  "branches": [
+    {
+      "condition": {"field": "body.model", "op": "eq", "value": "gpt-4o"},
+      "target": {"model": "claude-3-5-sonnet-20241022", "upstream_url": "https://api.anthropic.com"}
+    },
+    {
+      "condition": {"field": "header.x-user-tier", "op": "eq", "value": "premium"},
+      "target": {"model": "gpt-4o-mini", "upstream_url": "https://api.openai.com"}
+    }
+  ],
+  "fallback": {"model": "gpt-4o-mini", "upstream_url": "https://api.openai.com"}
+}
+```
+
+### `external_guardrail`
+
+Delegates the guardrail safety check to an external vendor API. Can be extremely fast when combined with `async_check: true`.
+
+```json
+{
+  "action": "external_guardrail",
+  "vendor": "azure_content_safety",
+  "endpoint": "https://<your-resource>.cognitiveservices.azure.com",
+  "api_key_env": "AZURE_CONTENT_SAFETY_KEY",
+  "threshold": 4,
+  "on_fail": "deny"
+}
+```
+
+| Param | Description |
+|---|---|
+| `vendor` | `"azure_content_safety"`, `"aws_comprehend"`, or `"llama_guard"` |
+| `endpoint` | Upstream vendor URL (for LlamaGuard, your Ollama/vLLM server) |
+| `api_key_env` | Environment variable name holding the API key |
+| `threshold` | Float. Threshold above which a request/response is flagged (vendor-specific) |
+| `on_fail` | `"allow"`, `"deny"`, or `"log"` (default: `"deny"`) |
 
 ---
 

@@ -48,6 +48,7 @@ class TokensResource:
         fallback_url: Optional[str] = None,
         upstreams: Optional[List[Any]] = None,  # List[Upstream | dict]
         log_level: Optional[str] = None,        # "metadata" | "redacted" | "full"
+        expires_at: Optional[str] = None,       # ISO8601 timestamp string
     ) -> TokenCreateResponse:
         """
         Create a new virtual token.
@@ -94,6 +95,8 @@ class TokensResource:
             ]
         if log_level:
             payload["log_level_name"] = log_level
+        if expires_at:
+            payload["expires_at"] = expires_at
         resp = self._client._http.post("/api/v1/tokens", json=payload)
         raise_for_status(resp)
         return TokenCreateResponse(**resp.json())
@@ -268,6 +271,7 @@ class AsyncTokensResource:
         project_id: Optional[str] = None,
         policy_ids: Optional[List[str]] = None,
         circuit_breaker: Optional[Dict[str, Any]] = None,
+        expires_at: Optional[str] = None,
     ) -> TokenCreateResponse:
         """
         Create a new virtual token.
@@ -297,6 +301,8 @@ class AsyncTokensResource:
             payload["policy_ids"] = policy_ids
         if circuit_breaker is not None:
             payload["circuit_breaker"] = circuit_breaker
+        if expires_at:
+            payload["expires_at"] = expires_at
         resp = await self._client._http.post("/api/v1/tokens", json=payload)
         raise_for_status(resp)
         return TokenCreateResponse(**resp.json())

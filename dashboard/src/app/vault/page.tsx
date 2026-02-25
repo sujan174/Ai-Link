@@ -65,7 +65,7 @@ export default function CredentialsPage() {
     const activeCount = credentials.filter((c) => c.is_active).length;
 
     return (
-        <div className="p-8 space-y-6 max-w-[1600px] mx-auto">
+        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
             {/* Controls */}
             <div className="flex items-center justify-end animate-fade-in mb-2">
                 <div className="flex items-center gap-2">
@@ -203,11 +203,11 @@ export default function CredentialsPage() {
 
                     {newSecret ? (
                         <div className="space-y-4 py-4">
-                            <div className="rounded-lg bg-emerald-500/10 p-4 border border-emerald-500/20">
+                            <div className="rounded-md bg-emerald-500/10 p-4 border border-emerald-500/20">
                                 <div className="flex items-center gap-2 text-emerald-500 font-medium mb-2">
                                     <Check className="h-4 w-4" /> Rotation Successful
                                 </div>
-                                <p className="text-sm text-muted-foreground mb-4">
+                                <p className="text-[13px] text-muted-foreground mb-4">
                                     Here is your new secret. Copy it now, you won't see it again.
                                 </p>
                                 <div className="relative">
@@ -261,7 +261,7 @@ function StatCard({ icon: Icon, label, value, color, loading }: {
     return (
         <Card className="glass-card hover-lift">
             <CardContent className="p-5 flex items-center gap-4">
-                <div className={cn("p-3 rounded-xl transition-colors", bgColors[color])}>
+                <div className={cn("p-3 rounded-md transition-colors", bgColors[color])}>
                     <Icon className="h-6 w-6" />
                 </div>
                 <div>
@@ -269,7 +269,7 @@ function StatCard({ icon: Icon, label, value, color, loading }: {
                     {loading ? (
                         <div className="h-8 w-16 bg-muted/50 rounded shimmer my-0.5" />
                     ) : (
-                        <p className="text-3xl font-bold tabular-nums tracking-tight">{value}</p>
+                        <p className="text-2xl font-semibold font-bold tabular-nums tracking-tight">{value}</p>
                     )}
                 </div>
             </CardContent>

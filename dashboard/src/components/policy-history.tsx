@@ -25,7 +25,7 @@ export function PolicyHistoryDialog({ policyId, open, onOpenChange }: { policyId
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-[800px] h-[80vh] flex flex-col p-0 gap-0 overflow-hidden">
-                <DialogHeader className="p-6 pb-4 border-b">
+                <DialogHeader className="p-4 pb-4 border-b">
                     <DialogTitle className="flex items-center gap-2">
                         <Clock className="w-5 h-5 text-muted-foreground" />
                         Policy History
@@ -37,9 +37,9 @@ export function PolicyHistoryDialog({ policyId, open, onOpenChange }: { policyId
                     <div className={`w-full md:w-1/3 border-r border-border/40 flex flex-col bg-muted/5 ${selectedVersion ? 'hidden md:flex' : 'flex'}`}>
                         <div className="flex-1 overflow-y-auto">
                             {loading ? (
-                                <div className="p-8 flex justify-center"><Loader2 className="animate-spin text-muted-foreground" /></div>
+                                <div className="p-4 flex justify-center"><Loader2 className="animate-spin text-muted-foreground" /></div>
                             ) : versions.length === 0 ? (
-                                <div className="p-8 text-center text-muted-foreground text-sm">No history found</div>
+                                <div className="p-4 text-center text-muted-foreground text-sm">No history found</div>
                             ) : (
                                 <div className="divide-y divide-border/40">
                                     {versions.map((v) => (
@@ -73,7 +73,7 @@ export function PolicyHistoryDialog({ policyId, open, onOpenChange }: { policyId
                                         <ArrowLeft className="w-4 h-4 mr-2" /> Back
                                     </Button>
                                 </div>
-                                <div className="p-6 overflow-y-auto flex-1 space-y-6">
+                                <div className="p-4 overflow-y-auto flex-1 space-y-6">
                                     <div>
                                         <h3 className="text-lg font-semibold flex items-center gap-2">
                                             Version {selectedVersion.version}
@@ -84,11 +84,11 @@ export function PolicyHistoryDialog({ policyId, open, onOpenChange }: { policyId
                                     </div>
 
                                     <div className="grid grid-cols-2 gap-4">
-                                        <div className="p-3 rounded-lg border bg-muted/5">
+                                        <div className="p-3 rounded-md border bg-muted/5">
                                             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Mode</label>
                                             <div className="text-sm font-medium mt-1">{selectedVersion.mode || 'enforce'}</div>
                                         </div>
-                                        <div className="p-3 rounded-lg border bg-muted/5">
+                                        <div className="p-3 rounded-md border bg-muted/5">
                                             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Phase</label>
                                             <div className="text-sm font-medium mt-1">{selectedVersion.phase || 'pre-flight'}</div>
                                         </div>
@@ -96,7 +96,7 @@ export function PolicyHistoryDialog({ policyId, open, onOpenChange }: { policyId
 
                                     <div>
                                         <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 block">Rules Configuration</label>
-                                        <div className="rounded-lg border bg-muted/50 p-4 font-mono text-xs overflow-x-auto whitespace-pre">
+                                        <div className="rounded-md border bg-muted/50 p-4 font-mono text-xs overflow-x-auto whitespace-pre">
                                             {JSON.stringify(selectedVersion.rules, null, 2)}
                                         </div>
                                     </div>
@@ -104,7 +104,7 @@ export function PolicyHistoryDialog({ policyId, open, onOpenChange }: { policyId
                                     {!!selectedVersion.retry && (
                                         <div>
                                             <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 block">Retry Policy</label>
-                                            <div className="rounded-lg border bg-muted/50 p-4 font-mono text-xs overflow-x-auto whitespace-pre">
+                                            <div className="rounded-md border bg-muted/50 p-4 font-mono text-xs overflow-x-auto whitespace-pre">
                                                 {JSON.stringify(selectedVersion.retry, null, 2)}
                                             </div>
                                         </div>

@@ -24,7 +24,7 @@ export default function UpstreamsPage() {
         <div className="space-y-6 pt-2 animate-fade-in">
             {/* Header */}
             <div className="space-y-1 animate-fade-in">
-                <h2 className="text-3xl font-bold tracking-tight">Upstream Status</h2>
+                <h2 className="text-2xl font-semibold font-bold tracking-tight">Upstream Status</h2>
                 <p className="text-muted-foreground text-sm">
                     Real-time health monitoring of upstream LLM providers (OpenAI, Anthropic, etc.)
                 </p>
@@ -60,7 +60,7 @@ export default function UpstreamsPage() {
                 {isLoading && upstreams.length === 0 ? (
                     <PageSkeleton cards={0} rows={5} />
                 ) : upstreams.length === 0 ? (
-                    <div className="rounded-xl border border-dashed border-border/60 bg-card/30 p-12 text-center">
+                    <div className="rounded-md border border-dashed border-border/60 bg-card/30 p-12 text-center">
                         <div className="mx-auto h-12 w-12 rounded-full bg-muted/50 flex items-center justify-center mb-4">
                             <Server className="h-6 w-6 text-muted-foreground" />
                         </div>
@@ -70,7 +70,7 @@ export default function UpstreamsPage() {
                         </p>
                     </div>
                 ) : (
-                    <div className="rounded-xl border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden shadow-sm">
+                    <div className="rounded-md border border-border/60 bg-card/50 backdrop-blur-sm overflow-hidden shadow-sm">
                         <table className="w-full text-sm">
                             <thead>
                                 <tr className="border-b border-border/60 text-left text-muted-foreground bg-muted/20">
@@ -153,7 +153,7 @@ function StatCard({ icon: Icon, label, value, color, loading }: {
     return (
         <Card className="glass-card hover-lift">
             <CardContent className="p-5 flex items-center gap-4">
-                <div className={cn("p-3 rounded-xl transition-colors", bgColors[color])}>
+                <div className={cn("p-3 rounded-md transition-colors", bgColors[color])}>
                     <Icon className="h-6 w-6" />
                 </div>
                 <div>
@@ -161,7 +161,7 @@ function StatCard({ icon: Icon, label, value, color, loading }: {
                     {loading ? (
                         <div className="h-8 w-16 bg-muted/50 rounded shimmer my-0.5" />
                     ) : (
-                        <p className="text-3xl font-bold tabular-nums tracking-tight">{value}</p>
+                        <p className="text-2xl font-semibold font-bold tabular-nums tracking-tight">{value}</p>
                     )}
                 </div>
             </CardContent>

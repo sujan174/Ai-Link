@@ -103,7 +103,7 @@ export function NotificationBell() {
                 <DropdownMenuSeparator />
                 <div className="max-h-[350px] overflow-y-auto">
                     {notifications.length === 0 ? (
-                        <div className="p-8 text-center text-xs text-muted-foreground">
+                        <div className="p-4 text-center text-xs text-muted-foreground">
                             No notifications
                         </div>
                     ) : (

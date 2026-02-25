@@ -55,6 +55,8 @@ AIlink sits between your agent and every external API. Instead of handing agents
 | 🏷️ **Model Aliases** | Decouple agents from specific models; swap upstream providers without changing agent code |
 | 🎣 **Webhooks** | Get real-time event notifications for automated workflows (e.g. token created, approval needed) |
 | 💲 **Pricing Overrides** | Accurate, per-model custom spend tracking and cost accounting |
+| 🤖 **Realtime API** | Transparent WebSocket bidding proxy for OpenAI Realtime Voice/Audio sessions |
+| ⚙️ **Config-as-Code** | Export and sync policies, tokens, and routing via YAML |
 | ⚡ **Fast** | Rust gateway, tiered caching, <1ms overhead on the hot path |
 
 ---

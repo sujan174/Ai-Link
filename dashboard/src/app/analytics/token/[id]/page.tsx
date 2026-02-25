@@ -89,7 +89,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
     }));
 
     return (
-        <div className="p-8 space-y-8 max-w-[1600px] mx-auto">
+        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
             {/* Header */}
             <div className="flex items-center justify-between animate-fade-in">
                 <div className="space-y-1">
@@ -97,7 +97,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                         <Button variant="ghost" size="icon" onClick={() => router.back()}>
                             <ArrowLeft className="h-4 w-4" />
                         </Button>
-                        <h2 className="text-3xl font-bold tracking-tight">Token Analytics</h2>
+                        <h2 className="text-2xl font-semibold font-bold tracking-tight">Token Analytics</h2>
                     </div>
                     <p className="text-muted-foreground ml-10">
                         Performance metrics for <code className="bg-muted px-1.5 py-0.5 rounded text-xs">{params.id}</code>
@@ -118,7 +118,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                         <Activity className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">{volume.reduce((acc, v) => acc + v.count, 0)}</div>
+                        <div className="text-xl font-semibold">{volume.reduce((acc, v) => acc + v.count, 0)}</div>
                         <p className="text-xs text-muted-foreground">Requests in last 24 hours</p>
                     </CardContent>
                 </Card>
@@ -128,7 +128,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                         <Zap className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">{Math.round(latency?.p50 || 0)}ms</div>
+                        <div className="text-xl font-semibold">{Math.round(latency?.p50 || 0)}ms</div>
                         <p className="text-xs text-muted-foreground">Detailed: P90 {Math.round(latency?.p90 || 0)}ms, P99 {Math.round(latency?.p99 || 0)}ms</p>
                     </CardContent>
                 </Card>
@@ -138,7 +138,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                         <TrendingUp className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
-                        <div className="text-2xl font-bold">
+                        <div className="text-xl font-semibold">
                             {(() => {
                                 const total = statusData.reduce((acc, s) => acc + s.count, 0);
                                 const errors = statusData.filter(s => s.status >= 400).reduce((acc, s) => acc + s.count, 0);
@@ -166,7 +166,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                                         <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
                                     </linearGradient>
                                 </defs>
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" opacity={0.4} />
+                                <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
                                 <XAxis
                                     dataKey="hour"
                                     {...CHART_AXIS_PROPS}
@@ -215,7 +215,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                                         <Cell key={`cell-${index}`} fill={entry.color} />
                                     ))}
                                 </Pie>
-                                <Tooltip content={<CustomTooltip />} />
+                                <Tooltip content={<CustomTooltip  contentStyle={{ backgroundColor: "#151722", borderColor: "#2A2D3D", color: "#e5e7eb" }} />} />
                             </PieChart>
                         </ResponsiveContainer>
                         <div className="space-y-4">
@@ -229,7 +229,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                                     <span className="text-sm font-bold tabular-nums">{entry.value}</span>
                                 </div>
                             ))}
-                            {finalPieData.length === 0 && <span className="text-sm text-muted-foreground">No data available</span>}
+                            {finalPieData.length === 0 && <span className="text-[13px] text-muted-foreground">No data available</span>}
                         </div>
                     </CardContent>
                 </Card>

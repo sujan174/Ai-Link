@@ -80,7 +80,7 @@ export function PlaygroundClient() {
     };
 
     return (
-        <div className="grid lg:grid-cols-2 gap-6 h-[calc(100vh-140px)]">
+        <div className="grid lg:grid-cols-2 gap-3 h-[calc(100vh-140px)]">
             {/* Request Panel */}
             <Card className="flex flex-col h-full border-border/60 shadow-sm overflow-hidden">
                 <CardHeader className="py-3 px-4 border-b bg-muted/20 flex flex-row items-center justify-between">

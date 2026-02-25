@@ -85,6 +85,40 @@ async with AsyncClient(api_key="ailink_v1_...", gateway_url="https://gateway.ail
 | `gpt-*`, `o1-*`, `o3-*`, `o4-*` | OpenAI | `gpt-4o`, `o3-mini` |
 | `claude-*` | Anthropic | `claude-3-5-sonnet-20241022`, `claude-3-haiku` |
 | `gemini-*` | Google | `gemini-2.0-flash`, `gemini-1.5-pro` |
+| *(custom)* | Groq, Mistral, Cohere, Ollama | (Configured via upstream URL on token) |
+
+---
+
+### Batches & Fine-Tuning
+
+AIlink fully supports proxying OpenAI's `/v1/batches` and `/v1/fine_tuning` APIs. Ensure your underlying token credential supports these endpoints.
+
+```python
+# Create a batch
+batch = oai.batches.create(
+    input_file_id="file-xyz",
+    endpoint="/v1/chat/completions",
+    completion_window="24h"
+)
+
+# Start a fine-tuning job
+job = oai.fine_tuning.jobs.create(
+    training_file="file-abc",
+    model="gpt-4o-mini-2024-07-18"
+)
+```
+
+---
+
+### Realtime API (WebSocket)
+
+AIlink provides a transparent bidding WS proxy for the OpenAI Realtime API. Use the `realtime` client wrapper:
+
+```python
+async with client.realtime("gpt-4o-realtime-preview") as ws:
+    await ws.send({"type": "session.update", ...})
+    event = await ws.recv()
+```
 
 ---
 
@@ -449,6 +483,8 @@ with client.with_upstream_key("sk-my-openai-key") as byok:
     })
 ```
 
+By default, the `with_upstream_key` context manager enforces that the underlying token has `credential_id == None` (a strict passthrough un-bound token). If you want to allow overriding an existing credential, pass `allow_override=True`.
+
 The `header` argument controls the auth scheme (default `"Bearer"`). For APIs that use a raw key:
 
 ```python
@@ -500,6 +536,18 @@ with client.with_upstream_key("sk-my-key") as byok_client:
 ```
 
 > **Audit log fields:** `session_id` and `parent_span_id` are stored on every audit log entry and can be filtered via the Management API.
+
+---
+
+### Ad-hoc Guardrails (Per-Request)
+
+You can apply specific guardrail presets on a per-request basis using the `with_guardrails` context manager. This overrides the default presets (if any) configured on the token.
+
+```python
+# Apply PII redaction and Prompt Injection checks just for this request
+with client.with_guardrails(["pii_redaction", "prompt_injection"]) as g:
+    response = g.openai().chat.completions.create(...)
+```
 
 ---
 
@@ -574,6 +622,46 @@ project_id = new_proj["id"]
 
 # Delete a project
 admin.projects.delete(project_id)
+```
+
+---
+
+## Configuration Management
+
+Manage AIlink configuration programmatically, enabling Config-as-Code setups.
+
+### Config Export / Import
+
+Export projects, tokens, and policies as YAML config files that can be committed to a git repository, and import them seamlessly.
+
+```python
+admin = AIlinkClient.admin(admin_key="ailink_admin_...")
+
+# Export all configuration as YAML string
+yaml_config = admin.config.export()
+with open("ailink_config.yaml", "w") as f:
+    f.write(yaml_config)
+
+# Import and apply configuration from YAML string
+with open("ailink_config.yaml", "r") as f:
+    import_result = admin.config.import_yaml(f.read())
+    print(import_result)
+```
+
+### Guardrail Operations
+
+Enable bundled guardrail presets on a token programmatically. The gateway detects drift if modified outside SDK code.
+
+```python
+# Enable guardrails (idempotent, records source as 'sdk')
+admin.guardrails.enable("ailink_v1_tok_xyz", ["pii_redaction", "prompt_injection"])
+
+# Disable
+admin.guardrails.disable("ailink_v1_tok_xyz")
+
+# Get status and active presets
+status = admin.guardrails.status("ailink_v1_tok_xyz")
+print(status.presets)
 ```
 
 ---

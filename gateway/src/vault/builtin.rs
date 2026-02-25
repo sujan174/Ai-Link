@@ -188,10 +188,11 @@ pub fn parse_master_key(hex: &str) -> anyhow::Result<[u8; 32]> {
 mod tests {
     use super::*;
 
+    const TEST_KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
     #[test]
     fn test_encryption_roundtrip() {
-        let master_key = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
-        let crypto = VaultCrypto::new(master_key).unwrap();
+        let crypto = VaultCrypto::new(TEST_KEY).unwrap();
 
         let secret = "sk_live_123456789";
         let (enc_dek, dek_nonce, enc_secret, secret_nonce) = crypto.encrypt_string(secret).unwrap();
@@ -200,5 +201,111 @@ mod tests {
             .decrypt_string(&enc_dek, &dek_nonce, &enc_secret, &secret_nonce)
             .unwrap();
         assert_eq!(decrypted, secret);
+    }
+
+    // ── Chaos: Tampered Ciphertext ──────────────────────────────
+
+    /// Flipping one bit in the encrypted DEK must cause authenticated decryption to fail.
+    #[test]
+    fn test_tampered_encrypted_dek_rejected() {
+        let crypto = VaultCrypto::new(TEST_KEY).unwrap();
+        let (mut enc_dek, dek_nonce, enc_secret, secret_nonce) =
+            crypto.encrypt_string("sk-secret").unwrap();
+        enc_dek[0] ^= 0x01;
+        assert!(
+            crypto.decrypt_string(&enc_dek, &dek_nonce, &enc_secret, &secret_nonce).is_err(),
+            "Tampered DEK should fail AES-GCM authentication"
+        );
+    }
+
+    /// Flipping one bit in the encrypted secret must cause decryption to fail.
+    #[test]
+    fn test_tampered_encrypted_secret_rejected() {
+        let crypto = VaultCrypto::new(TEST_KEY).unwrap();
+        let (enc_dek, dek_nonce, mut enc_secret, secret_nonce) =
+            crypto.encrypt_string("sk-secret").unwrap();
+        enc_secret[0] ^= 0x01;
+        assert!(
+            crypto.decrypt_string(&enc_dek, &dek_nonce, &enc_secret, &secret_nonce).is_err(),
+            "Tampered encrypted secret should fail"
+        );
+    }
+
+    /// Flipping one bit in the DEK nonce must cause decryption to fail.
+    #[test]
+    fn test_tampered_dek_nonce_rejected() {
+        let crypto = VaultCrypto::new(TEST_KEY).unwrap();
+        let (enc_dek, mut dek_nonce, enc_secret, secret_nonce) =
+            crypto.encrypt_string("sk-secret").unwrap();
+        dek_nonce[0] ^= 0x01;
+        assert!(
+            crypto.decrypt_string(&enc_dek, &dek_nonce, &enc_secret, &secret_nonce).is_err(),
+            "Tampered DEK nonce should fail"
+        );
+    }
+
+    /// Flipping one bit in the secret nonce must cause decryption to fail.
+    #[test]
+    fn test_tampered_secret_nonce_rejected() {
+        let crypto = VaultCrypto::new(TEST_KEY).unwrap();
+        let (enc_dek, dek_nonce, enc_secret, mut secret_nonce) =
+            crypto.encrypt_string("sk-secret").unwrap();
+        secret_nonce[0] ^= 0x01;
+        assert!(
+            crypto.decrypt_string(&enc_dek, &dek_nonce, &enc_secret, &secret_nonce).is_err(),
+            "Tampered secret nonce should fail"
+        );
+    }
+
+    /// Wrong master key must fail — prevents cross-environment key confusion.
+    #[test]
+    fn test_wrong_master_key_rejected() {
+        let crypto_a = VaultCrypto::new(TEST_KEY).unwrap();
+        let crypto_b = VaultCrypto::new("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap();
+        let (enc_dek, dek_nonce, enc_secret, secret_nonce) =
+            crypto_a.encrypt_string("sk-secret").unwrap();
+        assert!(
+            crypto_b.decrypt_string(&enc_dek, &dek_nonce, &enc_secret, &secret_nonce).is_err(),
+            "Decrypting with wrong master key should fail"
+        );
+    }
+
+    /// Truncated ciphertext should fail, not panic.
+    #[test]
+    fn test_truncated_ciphertext_rejected() {
+        let crypto = VaultCrypto::new(TEST_KEY).unwrap();
+        let (enc_dek, dek_nonce, enc_secret, secret_nonce) =
+            crypto.encrypt_string("sk-secret").unwrap();
+        let truncated = &enc_secret[..2];
+        assert!(
+            crypto.decrypt_string(&enc_dek, &dek_nonce, truncated, &secret_nonce).is_err(),
+            "Truncated ciphertext should fail"
+        );
+    }
+
+    /// Empty ciphertext should fail cleanly.
+    #[test]
+    fn test_empty_ciphertext_rejected() {
+        let crypto = VaultCrypto::new(TEST_KEY).unwrap();
+        let (enc_dek, dek_nonce, _enc_secret, secret_nonce) =
+            crypto.encrypt_string("sk-secret").unwrap();
+        assert!(
+            crypto.decrypt_string(&enc_dek, &dek_nonce, &[], &secret_nonce).is_err(),
+            "Empty ciphertext should fail"
+        );
+    }
+
+    /// Short master key (<64 hex chars) must be rejected at construction.
+    #[test]
+    fn test_short_master_key_rejected() {
+        assert!(VaultCrypto::new("deadbeef").is_err());
+    }
+
+    /// Invalid hex in master key must be rejected at construction.
+    #[test]
+    fn test_invalid_hex_master_key_rejected() {
+        assert!(VaultCrypto::new(
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        ).is_err());
     }
 }

@@ -92,11 +92,11 @@ export function MobileNav() {
                     <span className="sr-only">Toggle menu</span>
                 </Button>
             </DialogTrigger>
-            <DialogContent className="fixed inset-y-0 left-0 z-50 h-full w-3/4 max-w-sm gap-4 border-r bg-background p-6 shadow-xl transition-transform animate-slide-right sm:max-w-xs overflow-y-auto">
-                <div className="flex flex-col gap-6 h-full">
+            <DialogContent className="fixed inset-y-0 left-0 z-50 h-full w-3/4 max-w-sm gap-4 border-r bg-background p-4 shadow-xl transition-transform animate-slide-right sm:max-w-xs overflow-y-auto">
+                <div className="flex flex-col gap-3 h-full">
                     {/* Logo */}
                     <div className="flex items-center gap-2 font-bold text-lg">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 text-white text-sm font-black">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-violet-600 text-white text-sm font-black">
                             A
                         </div>
                         <span className="bg-gradient-to-r from-blue-500 to-violet-500 bg-clip-text text-transparent">
@@ -106,7 +106,7 @@ export function MobileNav() {
 
                     <ProjectSwitcher />
 
-                    <nav className="flex flex-col gap-6 flex-1">
+                    <nav className="flex flex-col gap-3 flex-1">
                         {groups.map((group) => (
                             <div key={group.label} className="flex flex-col gap-1">
                                 <h4 className="px-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
@@ -141,7 +141,7 @@ export function MobileNav() {
                         {mounted && (
                             <button
                                 onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-                                className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
+                                className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-[13px] text-muted-foreground hover:bg-muted"
                             >
                                 {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                                 {theme === "dark" ? "Light Mode" : "Dark Mode"}

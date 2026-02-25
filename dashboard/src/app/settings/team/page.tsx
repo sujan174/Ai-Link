@@ -66,7 +66,7 @@ export default function TeamPage() {
     };
 
     return (
-        <div className="p-8 space-y-8 max-w-[1200px] mx-auto animate-fade-in">
+        <div className="p-4 space-y-6 max-w-[1200px] mx-auto animate-fade-in">
             {/* Controls */}
             <div className="flex items-center justify-end mb-2">
                 <Button onClick={() => setShowInvite(true)}>
@@ -93,7 +93,7 @@ export default function TeamPage() {
                 <CardContent>
                     <div className="space-y-4">
                         {members.map((member) => (
-                            <div key={member.id} className="flex items-center justify-between p-2 rounded-lg hover:bg-muted/50 transition-colors group">
+                            <div key={member.id} className="flex items-center justify-between p-2 rounded-md hover:bg-muted/50 transition-colors group">
                                 <div className="flex items-center gap-4">
                                     <Avatar>
                                         <AvatarImage src="" />
@@ -108,11 +108,11 @@ export default function TeamPage() {
                                                 <Badge variant="secondary" className="text-[10px] h-5">Owner</Badge>
                                             )}
                                         </p>
-                                        <p className="text-sm text-muted-foreground">{member.email}</p>
+                                        <p className="text-[13px] text-muted-foreground">{member.email}</p>
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-4">
-                                    <div className="flex items-center text-sm text-muted-foreground">
+                                    <div className="flex items-center text-[13px] text-muted-foreground">
                                         {member.role === "Owner" ? <Shield className="h-4 w-4 mr-1.5" /> : <User className="h-4 w-4 mr-1.5" />}
                                         {member.role}
                                     </div>

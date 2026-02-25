@@ -121,7 +121,7 @@ export default function WebhooksPage() {
     if (loading) return <PageSkeleton />;
 
     return (
-        <div className="p-8 space-y-6 max-w-[1200px] mx-auto">
+        <div className="p-4 space-y-6 max-w-[1200px] mx-auto">
             {/* Controls */}
             <div className="flex items-center justify-end animate-fade-in mb-2">
                 <div className="flex items-center gap-2">
@@ -155,7 +155,7 @@ export default function WebhooksPage() {
                                 placeholder="https://your-server.com/webhook"
                                 value={newUrl}
                                 onChange={(e) => setNewUrl(e.target.value)}
-                                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
                             />
                         </div>
                         <div>
@@ -196,7 +196,7 @@ export default function WebhooksPage() {
             {webhooks.length === 0 ? (
                 <Card className="border-dashed">
                     <CardContent className="flex flex-col items-center justify-center py-16 gap-3">
-                        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
+                        <div className="flex h-12 w-12 items-center justify-center rounded-md bg-muted">
                             <WebhookIcon className="h-6 w-6 text-muted-foreground" />
                         </div>
                         <p className="text-sm font-medium">No webhooks configured</p>
@@ -269,7 +269,7 @@ export default function WebhooksPage() {
             <Card className="border-border/40 bg-muted/20">
                 <CardContent className="py-4 px-5">
                     <div className="flex gap-3">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10 flex-shrink-0 mt-0.5">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-500/10 flex-shrink-0 mt-0.5">
                             <WebhookIcon className="h-4 w-4 text-blue-500" />
                         </div>
                         <div className="space-y-1">
@@ -279,7 +279,7 @@ export default function WebhooksPage() {
                                 <code className="font-mono bg-muted px-1 rounded">Content-Type: application/json</code>.
                                 Deliveries are fire-and-forget — failures are logged but do not block requests.
                             </p>
-                            <pre className="mt-2 text-[10px] font-mono bg-muted/60 rounded-lg p-3 overflow-x-auto text-muted-foreground">
+                            <pre className="mt-2 text-[10px] font-mono bg-muted/60 rounded-md p-3 overflow-x-auto text-muted-foreground">
                                 {`{
   "event_type": "spend_cap_exceeded",
   "timestamp": "2026-02-18T22:00:00Z",

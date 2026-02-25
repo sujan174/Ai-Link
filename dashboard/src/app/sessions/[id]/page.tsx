@@ -41,7 +41,7 @@ function StatCard({ icon: Icon, label, value, sub, color }: {
     return (
         <Card className="border-border/60 bg-card/50">
             <CardContent className="p-5 flex items-center gap-4">
-                <div className={cn("p-2.5 rounded-lg", color)}>
+                <div className={cn("p-2.5 rounded-md", color)}>
                     <Icon className="h-5 w-5" />
                 </div>
                 <div>
@@ -127,12 +127,12 @@ export default function SessionDetailPage() {
                 <div className="h-4 w-px bg-border" />
                 <div className="flex items-center gap-2">
                     <Layers className="h-4 w-4 text-muted-foreground" />
-                    <span className="font-mono text-sm text-muted-foreground break-all">{session.session_id}</span>
+                    <span className="font-mono text-[13px] text-muted-foreground break-all">{session.session_id}</span>
                 </div>
             </div>
 
             {/* Time Range */}
-            <div className="rounded-xl border border-border/60 bg-card/50 px-6 py-4 flex flex-wrap items-center gap-4 text-sm">
+            <div className="rounded-md border border-border/60 bg-card/50 px-6 py-4 flex flex-wrap items-center gap-4 text-sm">
                 <div>
                     <span className="text-muted-foreground">Started: </span>
                     <span className="font-medium">{format(new Date(session.first_request_at), "MMM d, yyyy HH:mm:ss")}</span>
@@ -179,7 +179,7 @@ export default function SessionDetailPage() {
                     <CardContent>
                         <ResponsiveContainer width="100%" height={Math.max(180, chartData.length * 40 + 60)}>
                             <BarChart layout="vertical" data={chartData} margin={{ top: 0, right: 20, bottom: 0, left: -20 }}>
-                                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="var(--border)" opacity={0.4} />
+                                <CartesianGrid stroke="#1F2233" strokeDasharray="3 3" vertical={false} />
                                 <XAxis type="number" tickFormatter={(v) => `${v}ms`} {...CHART_AXIS_PROPS} />
                                 <YAxis type="category" dataKey="name" {...CHART_AXIS_PROPS} width={50} />
                                 <Tooltip
@@ -188,7 +188,7 @@ export default function SessionDetailPage() {
                                         if (!active || !payload?.length) return null;
                                         const d = payload[0].payload;
                                         return (
-                                            <div className="rounded-xl border border-border/50 bg-background/95 p-3 text-sm shadow-xl backdrop-blur-sm z-[100]">
+                                            <div className="rounded-md border border-border/50 bg-background/95 p-3 text-sm shadow-xl backdrop-blur-sm z-[100]">
                                                 <p className="font-mono text-xs text-muted-foreground uppercase tracking-wider mb-2">{d.name} ({d.model})</p>
                                                 <p className="font-medium text-emerald-400">{d.durationMs}ms duration</p>
                                                 <p className="text-xs text-muted-foreground mt-1">Started at +{d.offsetMs}ms</p>
