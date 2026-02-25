@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS pii_token_vault (
 );
 
 -- Fast token lookup (the hot path for re-hydration)
-CREATE UNIQUE INDEX idx_pii_token ON pii_token_vault(token);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pii_token ON pii_token_vault(token);
 -- Tenant-scoped queries
-CREATE INDEX idx_pii_project ON pii_token_vault(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pii_project ON pii_token_vault(project_id, created_at DESC);
 -- TTL reaper: find expired tokens for cleanup
-CREATE INDEX idx_pii_expires ON pii_token_vault(expires_at) WHERE expires_at < NOW();
+CREATE INDEX IF NOT EXISTS idx_pii_expires ON pii_token_vault(expires_at);

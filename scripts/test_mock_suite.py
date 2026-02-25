@@ -1553,6 +1553,281 @@ test("ConditionalRoute: model_is → route override", t17_conditional_route_head
 test("DynamicRoute: cost strategy → prefers cheaper", t17_dynamic_route_cost)
 
 # ═══════════════════════════════════════════════════════════════
+#  Phase 18 — ToolScope (Tool-Level RBAC enforcement)
+# ═══════════════════════════════════════════════════════════════
+section("Phase 18 — ToolScope (Tool-Level RBAC enforcement)")
+
+
+def t18_tool_scope_blocked_tool_rejected():
+    """ToolScope policy with blocked_tools=[stripe.*] should deny requests containing stripe.createCharge."""
+    p = admin.policies.create(
+        name=f"ts-block-{RUN_ID}",
+        rules=[{"when": {"always": True}, "then": {
+            "action": "tool_scope",
+            "allowed_tools": [],
+            "blocked_tools": ["stripe.*"],
+        }}],
+    )
+    _cleanup_policies.append(p.id)
+    t = admin.tokens.create(
+        name=f"ts-block-tok-{RUN_ID}",
+        upstream_url=MOCK_GATEWAY, credential_id=_mock_cred_id, policy_ids=[p.id],
+    )
+    _cleanup_tokens.append(t.token_id)
+
+    # Request with a blocked tool
+    payload = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "charge my card"}],
+        "tools": [{"type": "function", "function": {"name": "stripe.createCharge", "description": "charge"}}],
+    }
+    r = gw("POST", "/v1/chat/completions", token=t.token_id, json=payload)
+    assert r.status_code in (403, 422), (
+        f"Expected 403/422 for blocked tool, got HTTP {r.status_code}: {r.text[:200]}"
+    )
+    assert "blocked" in r.text.lower() or "tool" in r.text.lower(), (
+        f"Error message should mention 'blocked' or 'tool': {r.text[:200]}"
+    )
+    return f"Blocked tool stripe.createCharge → HTTP {r.status_code} ✓"
+
+
+def t18_tool_scope_allowed_tool_passes():
+    """ToolScope with allowed_tools=[jira.*] should allow requests with jira.read."""
+    p = admin.policies.create(
+        name=f"ts-allow-{RUN_ID}",
+        rules=[{"when": {"always": True}, "then": {
+            "action": "tool_scope",
+            "allowed_tools": ["jira.*"],
+            "blocked_tools": [],
+        }}],
+    )
+    _cleanup_policies.append(p.id)
+    t = admin.tokens.create(
+        name=f"ts-allow-tok-{RUN_ID}",
+        upstream_url=MOCK_GATEWAY, credential_id=_mock_cred_id, policy_ids=[p.id],
+    )
+    _cleanup_tokens.append(t.token_id)
+
+    payload = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "read issues"}],
+        "tools": [{"type": "function", "function": {"name": "jira.read", "description": "read"}}],
+    }
+    r = gw("POST", "/v1/chat/completions", token=t.token_id, json=payload)
+    assert r.status_code == 200, (
+        f"Expected 200 for allowed tool, got HTTP {r.status_code}: {r.text[:200]}"
+    )
+    return "Allowed tool jira.read → HTTP 200 ✓"
+
+
+def t18_tool_scope_no_tools_not_false_positive():
+    """ToolScope with blocked_tools should NOT trigger when request has NO tools."""
+    p = admin.policies.create(
+        name=f"ts-nofp-{RUN_ID}",
+        rules=[{"when": {"always": True}, "then": {
+            "action": "tool_scope",
+            "allowed_tools": ["jira.*"],
+            "blocked_tools": ["stripe.*"],
+        }}],
+    )
+    _cleanup_policies.append(p.id)
+    t = admin.tokens.create(
+        name=f"ts-nofp-tok-{RUN_ID}",
+        upstream_url=MOCK_GATEWAY, credential_id=_mock_cred_id, policy_ids=[p.id],
+    )
+    _cleanup_tokens.append(t.token_id)
+
+    # Request with no tools — should pass through
+    r = chat(t.token_id, "Hello, how are you?")
+    assert r.status_code == 200, (
+        f"Expected 200 for no-tool request, got HTTP {r.status_code}: {r.text[:200]}"
+    )
+    return "No tools in request → passes ToolScope without false positive ✓"
+
+
+def t18_tool_scope_unlisted_tool_denied():
+    """Tool not in allowlist should be denied when allowlist is active."""
+    p = admin.policies.create(
+        name=f"ts-unlist-{RUN_ID}",
+        rules=[{"when": {"always": True}, "then": {
+            "action": "tool_scope",
+            "allowed_tools": ["jira.read"],
+            "blocked_tools": [],
+        }}],
+    )
+    _cleanup_policies.append(p.id)
+    t = admin.tokens.create(
+        name=f"ts-unlist-tok-{RUN_ID}",
+        upstream_url=MOCK_GATEWAY, credential_id=_mock_cred_id, policy_ids=[p.id],
+    )
+    _cleanup_tokens.append(t.token_id)
+
+    payload = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "delete everything"}],
+        "tools": [{"type": "function", "function": {"name": "db.dropAll", "description": "drop"}}],
+    }
+    r = gw("POST", "/v1/chat/completions", token=t.token_id, json=payload)
+    assert r.status_code in (403, 422), (
+        f"Expected 403/422 for unlisted tool, got HTTP {r.status_code}: {r.text[:200]}"
+    )
+    return f"Unlisted tool db.dropAll denied with allowlist active → HTTP {r.status_code} ✓"
+
+
+test("ToolScope: blocked tool (stripe.*) rejected", t18_tool_scope_blocked_tool_rejected)
+test("ToolScope: allowed tool (jira.*) passes", t18_tool_scope_allowed_tool_passes)
+test("ToolScope: no tools = no false positive", t18_tool_scope_no_tools_not_false_positive)
+test("ToolScope: unlisted tool denied with allowlist", t18_tool_scope_unlisted_tool_denied)
+
+# ═══════════════════════════════════════════════════════════════
+#  Phase 19 — Session Lifecycle (X-Session-Id proxy integration)
+# ═══════════════════════════════════════════════════════════════
+section("Phase 19 — Session Lifecycle (X-Session-Id proxy integration)")
+
+
+def t19_session_auto_create():
+    """First request with X-Session-Id should auto-create the session and succeed."""
+    sid = f"sess-{RUN_ID}-autocreate"
+    payload = {"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello with session"}]}
+    r = gw("POST", "/v1/chat/completions", token=_openai_tok, json=payload,
+           headers={"X-Session-Id": sid})
+    assert r.status_code == 200, (
+        f"Expected 200 for auto-created session, got HTTP {r.status_code}: {r.text[:200]}"
+    )
+
+    # Check session exists via admin API (use /entity endpoint which reads from sessions table)
+    sr = gw("GET", f"/api/v1/sessions/{sid}/entity",
+             headers={"x-admin-key": ADMIN_KEY})
+    if sr.status_code == 200:
+        data = sr.json()
+        assert data.get("status") == "active", f"Session should be active, got: {data.get('status')}"
+        return f"Session '{sid}' auto-created, status=active, total_cost={data.get('total_cost_usd', '?')} ✓"
+    return f"Session auto-created (proxy returned 200, entity API returned {sr.status_code})"
+
+
+def t19_session_paused_rejected():
+    """A paused session should reject new requests."""
+    sid = f"sess-{RUN_ID}-paused"
+    payload = {"model": "gpt-4o", "messages": [{"role": "user", "content": "Creating session"}]}
+
+    # Step 1: Send first request to auto-create the session
+    r1 = gw("POST", "/v1/chat/completions", token=_openai_tok, json=payload,
+            headers={"X-Session-Id": sid})
+    assert r1.status_code == 200, (
+        f"Step 1 (create session) failed: HTTP {r1.status_code}: {r1.text[:200]}"
+    )
+
+    # Step 2: Pause the session via admin API
+    pause_r = gw("PATCH", f"/api/v1/sessions/{sid}/status",
+                  headers={"x-admin-key": ADMIN_KEY},
+                  json={"status": "paused"})
+    assert pause_r.status_code in (200, 204), (
+        f"Step 2 (pause session) failed: HTTP {pause_r.status_code}: {pause_r.text[:200]}"
+    )
+
+    # Step 3: New request with the paused session should be rejected
+    payload2 = {"model": "gpt-4o", "messages": [{"role": "user", "content": "This should fail"}]}
+    r2 = gw("POST", "/v1/chat/completions", token=_openai_tok, json=payload2,
+            headers={"X-Session-Id": sid})
+    assert r2.status_code in (403, 422, 429), (
+        f"Expected rejection for paused session, got HTTP {r2.status_code}: {r2.text[:200]}"
+    )
+    return f"Paused session rejection → HTTP {r2.status_code} ✓"
+
+
+def t19_session_completed_rejected():
+    """A completed session should reject new requests."""
+    sid = f"sess-{RUN_ID}-completed"
+    payload = {"model": "gpt-4o", "messages": [{"role": "user", "content": "Creating session"}]}
+
+    # Create + complete the session
+    gw("POST", "/v1/chat/completions", token=_openai_tok, json=payload,
+       headers={"X-Session-Id": sid})
+    gw("PATCH", f"/api/v1/sessions/{sid}/status",
+       headers={"x-admin-key": ADMIN_KEY},
+       json={"status": "completed"})
+
+    # Try to use it
+    payload2 = {"model": "gpt-4o", "messages": [{"role": "user", "content": "This should fail"}]}
+    r = gw("POST", "/v1/chat/completions", token=_openai_tok, json=payload2,
+           headers={"X-Session-Id": sid})
+    assert r.status_code in (403, 422, 429), (
+        f"Expected rejection for completed session, got HTTP {r.status_code}: {r.text[:200]}"
+    )
+    return f"Completed session rejection → HTTP {r.status_code} ✓"
+
+
+def t19_session_no_header_passes():
+    """Requests without X-Session-Id should pass through normally (no false positive)."""
+    r = chat(_openai_tok, "No session header test")
+    assert r.status_code == 200, (
+        f"Expected 200 for request without session, got HTTP {r.status_code}: {r.text[:200]}"
+    )
+    return "No X-Session-Id → passes without session lifecycle interference ✓"
+
+
+test("Session: auto-create on first X-Session-Id", t19_session_auto_create)
+test("Session: paused session rejects requests", t19_session_paused_rejected)
+test("Session: completed session rejects requests", t19_session_completed_rejected)
+test("Session: no header = no false positive", t19_session_no_header_passes)
+
+# ═══════════════════════════════════════════════════════════════
+#  Phase 20 — Anomaly Detection (non-blocking, informational)
+# ═══════════════════════════════════════════════════════════════
+section("Phase 20 — Anomaly Detection (non-blocking velocity check)")
+
+
+def t20_anomaly_does_not_block():
+    """Anomaly detection MUST NOT block requests — it's informational only.
+    Send multiple rapid requests and verify they all succeed."""
+    t = admin.tokens.create(
+        name=f"anomaly-tok-{RUN_ID}",
+        upstream_url=MOCK_GATEWAY, credential_id=_mock_cred_id,
+    )
+    _cleanup_tokens.append(t.token_id)
+
+    # Send 10 rapid requests — all should succeed
+    fail_count = 0
+    for i in range(10):
+        r = chat(t.token_id, f"rapid request {i}")
+        if r.status_code != 200:
+            fail_count += 1
+    assert fail_count == 0, (
+        f"Anomaly detection should not block: {fail_count}/10 requests failed"
+    )
+    return "10 rapid requests → all HTTP 200, anomaly detection is non-blocking ✓"
+
+
+def t20_anomaly_with_session():
+    """Anomaly detection + session lifecycle should coexist without conflict."""
+    sid = f"sess-{RUN_ID}-anomaly"
+    t = admin.tokens.create(
+        name=f"anomaly-sess-tok-{RUN_ID}",
+        upstream_url=MOCK_GATEWAY, credential_id=_mock_cred_id,
+    )
+    _cleanup_tokens.append(t.token_id)
+
+    for i in range(5):
+        payload = {"model": "gpt-4o", "messages": [{"role": "user", "content": f"session+anomaly test {i}"}]}
+        r = gw("POST", "/v1/chat/completions", token=t.token_id, json=payload,
+               headers={"X-Session-Id": sid})
+        assert r.status_code == 200, (
+            f"Request {i} with session+anomaly failed: HTTP {r.status_code}: {r.text[:200]}"
+        )
+
+    # Verify session was tracked
+    sr = gw("GET", f"/api/v1/sessions/{sid}/entity",
+            headers={"x-admin-key": ADMIN_KEY})
+    if sr.status_code == 200:
+        data = sr.json()
+        return f"5 requests with session+anomaly → status={data.get('status', '?')}, total_cost={data.get('total_cost_usd', '?')} ✓"
+    return "5 requests with session+anomaly → all HTTP 200, coexistence verified ✓"
+
+
+test("Anomaly: rapid requests NOT blocked (informational only)", t20_anomaly_does_not_block)
+test("Anomaly: coexists with session lifecycle", t20_anomaly_with_session)
+
+# ═══════════════════════════════════════════════════════════════
 #  Cleanup
 # ═══════════════════════════════════════════════════════════════
 section("Cleanup")
