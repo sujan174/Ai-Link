@@ -933,3 +933,24 @@ export const updateOidcProvider = (
 export const deleteOidcProvider = (id: string) =>
   api<{ deleted: boolean }>(`/oidc/providers/${id}`, { method: "DELETE" });
 
+// ── Anomaly Detection ────────────────────────────────────────
+
+export interface AnomalyEvent {
+  token_id: string;
+  current_velocity: number;
+  baseline_mean: number;
+  threshold: number;
+  is_anomalous: boolean;
+  window_secs: number;
+  total_data_points: number;
+}
+
+export interface AnomalyResponse {
+  events: AnomalyEvent[];
+  total: number;
+  window_secs: number;
+  sigma_threshold: number;
+}
+
+export const getAnomalyEvents = () =>
+  api<AnomalyResponse>("/anomalies");

@@ -337,6 +337,7 @@ pub async fn create_token(
     Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreateTokenRequest>,
 ) -> Result<(StatusCode, Json<CreateTokenResponse>), StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("tokens:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = payload.project_id.unwrap_or_else(|| auth.default_project_id());
     verify_project_ownership(&state, auth.org_id, project_id).await?;
@@ -411,6 +412,7 @@ pub async fn revoke_token(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("tokens:write").map_err(|_| StatusCode::FORBIDDEN)?;
     // Verify the token belongs to the org by looking it up first
     let token = state.db.get_token(&id).await.map_err(|e| {
@@ -665,6 +667,7 @@ pub async fn update_session_status(
     Query(params): Query<PaginationParams>,
     Json(payload): Json<UpdateSessionStatusRequest>,
 ) -> Result<Json<crate::store::postgres::SessionEntity>, StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("sessions:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
     verify_project_ownership(&state, auth.org_id, project_id).await?;
@@ -707,6 +710,7 @@ pub async fn set_session_spend_cap(
     Query(params): Query<PaginationParams>,
     Json(payload): Json<SetSpendCapRequest>,
 ) -> Result<Json<crate::store::postgres::SessionEntity>, StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("sessions:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
     verify_project_ownership(&state, auth.org_id, project_id).await?;
@@ -845,6 +849,9 @@ pub async fn create_policy(
     Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreatePolicyRequest>,
 ) -> impl IntoResponse {
+    if let Err(_) = auth.require_role("admin") {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     if let Err(_) = auth.require_scope("policies:write") {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -915,6 +922,7 @@ pub async fn update_policy(
     Path(id_str): Path<String>,
     Json(payload): Json<UpdatePolicyRequest>,
 ) -> Result<Json<PolicyResponse>, StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("policies:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
     let project_id = auth.default_project_id();
@@ -967,6 +975,7 @@ pub async fn delete_policy(
     Extension(auth): Extension<AuthContext>,
     Path(id_str): Path<String>,
 ) -> Result<Json<DeleteResponse>, StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("policies:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
     let project_id = auth.default_project_id();
@@ -1022,6 +1031,7 @@ pub async fn create_credential(
     Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreateCredentialRequest>,
 ) -> Result<(StatusCode, Json<CreateCredentialResponse>), StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("credentials:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = payload.project_id.unwrap_or_else(|| auth.default_project_id());
     verify_project_ownership(&state, auth.org_id, project_id).await?;
@@ -1094,6 +1104,7 @@ pub async fn delete_credential(
     Extension(auth): Extension<AuthContext>,
     Path(id_str): Path<String>,
 ) -> Result<Json<DeleteResponse>, StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("credentials:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
     let project_id = auth.default_project_id();
@@ -1323,6 +1334,7 @@ pub async fn create_service(
     Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreateServiceRequest>,
 ) -> Result<(StatusCode, Json<crate::models::service::Service>), StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("services:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = payload.project_id.unwrap_or_else(|| auth.default_project_id());
     verify_project_ownership(&state, auth.org_id, project_id).await?;
@@ -1390,6 +1402,7 @@ pub async fn delete_service(
     Path(id_str): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("services:write").map_err(|_| StatusCode::FORBIDDEN)?;
     let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
     let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
@@ -1454,6 +1467,9 @@ pub async fn create_api_key(
     Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreateApiKeyRequest>,
 ) -> Result<(StatusCode, Json<CreateApiKeyResponse>), (StatusCode, Json<serde_json::Value>)> {
+    auth.require_role("admin").map_err(|s| {
+        (s, Json(json!({ "error": { "code": "forbidden", "message": "Admin role required" } })))
+    })?;
     auth.require_scope("keys:manage").map_err(|_| {
         (StatusCode::FORBIDDEN, Json(json!({ "error": { "code": "forbidden", "message": "Insufficient permissions: requires scope 'keys:manage'" } })))
     })?;
@@ -1519,6 +1535,9 @@ pub async fn revoke_api_key(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    auth.require_role("admin").map_err(|s| {
+        (s, Json(json!({ "error": { "code": "forbidden", "message": "Admin role required" } })))
+    })?;
     auth.require_scope("keys:manage").map_err(|_| {
         (StatusCode::FORBIDDEN, Json(json!({ "error": { "code": "forbidden", "message": "Insufficient permissions: requires scope 'keys:manage'" } })))
     })?;
@@ -1898,6 +1917,7 @@ pub async fn upsert_spend_cap(
     Json(payload): Json<UpsertSpendCapRequest>,
 ) -> Result<StatusCode, StatusCode> {
     // SEC-04: scope check
+    auth.require_role("admin")?;
     auth.require_scope("tokens:write").map_err(|_| StatusCode::FORBIDDEN)?;
     // SEC-05: ownership check
     verify_token_ownership(&state, &token_id, &auth).await?;
@@ -1929,6 +1949,7 @@ pub async fn delete_spend_cap(
     Path((token_id, period)): Path<(String, String)>,
 ) -> Result<StatusCode, StatusCode> {
     // SEC-04: scope check
+    auth.require_role("admin")?;
     auth.require_scope("tokens:write").map_err(|_| StatusCode::FORBIDDEN)?;
     // SEC-05: ownership check
     verify_token_ownership(&state, &token_id, &auth).await?;
@@ -2005,6 +2026,7 @@ pub async fn create_webhook(
     Json(payload): Json<CreateWebhookRequest>,
 ) -> Result<(StatusCode, Json<WebhookRow>), StatusCode> {
     // SEC-04: scope check
+    auth.require_role("admin")?;
     auth.require_scope("webhooks:write").map_err(|_| StatusCode::FORBIDDEN)?;
     // SEC-09: validate webhook URL
     validate_webhook_url(&payload.url)?;
@@ -2052,6 +2074,7 @@ pub async fn delete_webhook(
     Path(id_str): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
     // SEC-04: scope check
+    auth.require_role("admin")?;
     auth.require_scope("webhooks:write").map_err(|_| StatusCode::FORBIDDEN)?;
 
     let id = uuid::Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -2077,6 +2100,7 @@ pub async fn test_webhook(
     Json(payload): Json<TestWebhookRequest>,
 ) -> Result<Json<TestWebhookResponse>, StatusCode> {
     // SEC-04: scope check
+    auth.require_role("admin")?;
     auth.require_scope("webhooks:write").map_err(|_| StatusCode::FORBIDDEN)?;
     // SEC-02: validate URL before making outbound request
     validate_webhook_url(&payload.url)?;
@@ -2225,6 +2249,7 @@ pub async fn upsert_pricing(
     Extension(auth): Extension<AuthContext>,
     Json(payload): Json<UpsertPricingRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("pricing:write").map_err(|_| StatusCode::FORBIDDEN)?;
 
     if payload.provider.is_empty() || payload.model_pattern.is_empty() {
@@ -2274,6 +2299,7 @@ pub async fn delete_pricing(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("pricing:write").map_err(|_| StatusCode::FORBIDDEN)?;
 
     let deleted = state.db.delete_model_pricing(id).await.map_err(|e| {
@@ -2542,6 +2568,7 @@ pub async fn rehydrate_pii_tokens(
     Extension(auth): Extension<AuthContext>,
     Json(payload): Json<RehydrateRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_role("admin")?;
     auth.require_scope("pii:rehydrate").map_err(|_| StatusCode::FORBIDDEN)?;
 
     if payload.tokens.is_empty() {
@@ -2585,5 +2612,110 @@ pub async fn rehydrate_pii_tokens(
     Ok(Json(serde_json::json!({
         "values": values,
         "token_count": values.len(),
+    })))
+}
+
+// ── Anomaly Detection Events ─────────────────────────────────
+
+/// GET /api/v1/anomalies — list recent anomaly velocity data per token.
+///
+/// Scans Redis `anomaly:tok:*` sorted sets, computes current velocity
+/// vs. baseline for each token, and returns results.
+pub async fn get_anomaly_events(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_role("admin")?;
+
+    let mut conn = state.cache.redis();
+    let config = crate::middleware::anomaly::AnomalyConfig::default();
+    let now = chrono::Utc::now().timestamp() as f64;
+
+    // SCAN for anomaly keys
+    let mut cursor: u64 = 0;
+    let mut events: Vec<serde_json::Value> = Vec::new();
+
+    loop {
+        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg("anomaly:tok:*")
+            .arg("COUNT")
+            .arg(200u32)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| {
+                tracing::error!("anomaly SCAN failed: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        for key in &keys {
+            let token_id = key.strip_prefix("anomaly:tok:").unwrap_or(key);
+
+            // Current window velocity
+            let window_start = now - config.window_secs as f64;
+            let current_velocity: u64 = redis::cmd("ZCOUNT")
+                .arg(key)
+                .arg(window_start)
+                .arg(now)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(0);
+
+            // Total data points for baseline
+            let cutoff = now - config.baseline_secs as f64;
+            let total_points: u64 = redis::cmd("ZCOUNT")
+                .arg(key)
+                .arg(cutoff)
+                .arg(now)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(0);
+
+            // Simple baseline estimate: total / number of windows
+            let num_windows = (config.baseline_secs / config.window_secs) as f64;
+            let baseline_mean = if num_windows > 0.0 {
+                total_points as f64 / num_windows
+            } else {
+                0.0
+            };
+
+            let threshold = baseline_mean + config.sigma_threshold * baseline_mean.sqrt();
+            let is_anomalous = current_velocity as f64 > threshold && total_points >= config.min_datapoints as u64;
+
+            events.push(serde_json::json!({
+                "token_id": token_id,
+                "current_velocity": current_velocity,
+                "baseline_mean": (baseline_mean * 100.0).round() / 100.0,
+                "threshold": (threshold * 100.0).round() / 100.0,
+                "is_anomalous": is_anomalous,
+                "window_secs": config.window_secs,
+                "total_data_points": total_points,
+            }));
+        }
+
+        cursor = next_cursor;
+        if cursor == 0 || events.len() >= 100 {
+            break;
+        }
+    }
+
+    // Sort: anomalous first, then by velocity desc
+    events.sort_by(|a, b| {
+        let a_anom = a["is_anomalous"].as_bool().unwrap_or(false);
+        let b_anom = b["is_anomalous"].as_bool().unwrap_or(false);
+        if a_anom != b_anom {
+            return b_anom.cmp(&a_anom);
+        }
+        let a_vel = a["current_velocity"].as_u64().unwrap_or(0);
+        let b_vel = b["current_velocity"].as_u64().unwrap_or(0);
+        b_vel.cmp(&a_vel)
+    });
+
+    Ok(Json(serde_json::json!({
+        "events": events,
+        "total": events.len(),
+        "window_secs": config.window_secs,
+        "sigma_threshold": config.sigma_threshold,
     })))
 }

@@ -207,6 +207,8 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/pii/rehydrate", post(handlers::rehydrate_pii_tokens))
         // Upstream Health
         .route("/health/upstreams", get(handlers::get_upstream_health))
+        // Anomaly Detection
+        .route("/anomalies", get(handlers::get_anomaly_events))
         // Spend Caps
         .route("/tokens/:id/spend", get(handlers::get_spend_caps).put(handlers::upsert_spend_cap))
         .route("/tokens/:id/spend/:period", delete(handlers::delete_spend_cap))

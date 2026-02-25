@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import useSWR from "swr";
-import { swrFetcher, AuditLog, Token, ApprovalRequest, AnalyticsTimeseriesPoint } from "@/lib/api";
+import { swrFetcher, AuditLog, Token, ApprovalRequest, AnalyticsTimeseriesPoint, AnomalyResponse } from "@/lib/api";
 import {
     Activity,
     Zap,
@@ -14,6 +14,7 @@ import {
     CheckCircle2,
     XCircle,
     AlertTriangle,
+    AlertOctagon,
     Database,
     Loader2,
 } from "lucide-react";
@@ -33,6 +34,7 @@ export default function OverviewPage() {
     const { data: approvals = [], isLoading: approvalsLoading } = useSWR<ApprovalRequest[]>("/approvals", swrFetcher, { refreshInterval: 10000 });
     const { data: usage, isLoading: usageLoading } = useSWR<any>("/billing/usage", swrFetcher, { refreshInterval: 10000 });
     const { data: latencySeries = [], isLoading: latencyLoading } = useSWR<AnalyticsTimeseriesPoint[]>("/analytics/timeseries?range=168", swrFetcher, { refreshInterval: 10000 });
+    const { data: anomalyData } = useSWR<AnomalyResponse>("/anomalies", swrFetcher, { refreshInterval: 15000 });
 
     // UI State
     const [dismissed, setDismissed] = useState(false);
@@ -244,6 +246,77 @@ export default function OverviewPage() {
                         <p className="text-sm text-rose-500/90 mt-1">{alertMessage}</p>
                     </div>
                 </div>
+            )}
+
+            {/* Anomaly Detection Widget */}
+            {anomalyData && anomalyData.events.length > 0 && (
+                <Card className="glass-card animate-fade-in">
+                    <CardHeader className="pb-2 flex flex-row items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <div className={cn(
+                                "p-1.5 rounded-md",
+                                anomalyData.events.some(e => e.is_anomalous)
+                                    ? "bg-rose-500/10 text-rose-500"
+                                    : "bg-muted text-muted-foreground"
+                            )}>
+                                <AlertOctagon className="h-4 w-4" />
+                            </div>
+                            <CardTitle className="text-sm font-medium text-muted-foreground">
+                                Anomaly Detection
+                            </CardTitle>
+                            {anomalyData.events.some(e => e.is_anomalous) && (
+                                <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/20 animate-pulse">
+                                    Alert
+                                </span>
+                            )}
+                        </div>
+                        <span className="text-[10px] text-muted-foreground/60 font-mono">
+                            {anomalyData.events.length} token{anomalyData.events.length !== 1 ? "s" : ""} monitored
+                        </span>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="space-y-2">
+                            {anomalyData.events.slice(0, 8).map((event) => (
+                                <div
+                                    key={event.token_id}
+                                    className={cn(
+                                        "flex items-center justify-between gap-4 px-3 py-2 rounded-md text-sm transition-colors",
+                                        event.is_anomalous
+                                            ? "bg-rose-500/8 border border-rose-500/20"
+                                            : "bg-muted/30"
+                                    )}
+                                >
+                                    <div className="flex items-center gap-2.5 min-w-0">
+                                        <div className={cn(
+                                            "h-2 w-2 rounded-full shrink-0",
+                                            event.is_anomalous
+                                                ? "bg-rose-500 animate-pulse shadow-[0_0_6px_rgba(225,29,72,0.6)]"
+                                                : "bg-emerald-500"
+                                        )} />
+                                        <span className="font-mono text-xs truncate text-foreground/80">
+                                            {event.token_id.slice(0, 20)}…
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center gap-4 shrink-0 text-xs">
+                                        <div className="text-right">
+                                            <span className={cn(
+                                                "font-semibold font-mono tabular-nums",
+                                                event.is_anomalous ? "text-rose-400" : "text-foreground"
+                                            )}>
+                                                {event.current_velocity}
+                                            </span>
+                                            <span className="text-muted-foreground ml-1">req/{event.window_secs / 60}m</span>
+                                        </div>
+                                        <div className="text-right text-muted-foreground/60">
+                                            <span className="font-mono tabular-nums">{event.baseline_mean}</span>
+                                            <span className="ml-1">avg</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </CardContent>
+                </Card>
             )}
 
             {/* Main Content Grid */}

@@ -47,6 +47,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 aes-gcm = "0.10"
 rand = "0.8"
 base64 = "0.21"
+jsonwebtoken = "9"
 
 # utilities
 anyhow = "1"

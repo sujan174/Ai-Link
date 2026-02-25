@@ -160,8 +160,155 @@ pub fn extract_kid(token: &str) -> Option<String> {
     header.get("kid").and_then(|v| v.as_str()).map(String::from)
 }
 
-/// Decode JWT claims (without cryptographic verification — that's done separately).
-/// This is used for claim extraction after JWKS-based signature verification.
+/// Extract the `alg` field from the JWT header.
+fn extract_alg(token: &str) -> Option<String> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let header_bytes = engine.decode(parts[0]).ok()?;
+    let header: serde_json::Value = serde_json::from_slice(&header_bytes).ok()?;
+    header.get("alg").and_then(|v| v.as_str()).map(String::from)
+}
+
+/// Construct a `jsonwebtoken::DecodingKey` from a JWK.
+fn decoding_key_from_jwk(jwk: &Jwk) -> anyhow::Result<jsonwebtoken::DecodingKey> {
+    match jwk.kty.as_str() {
+        "RSA" => {
+            let n = jwk.n.as_deref()
+                .ok_or_else(|| anyhow::anyhow!("RSA JWK missing 'n' field"))?;
+            let e = jwk.e.as_deref()
+                .ok_or_else(|| anyhow::anyhow!("RSA JWK missing 'e' field"))?;
+            Ok(jsonwebtoken::DecodingKey::from_rsa_components(n, e)?)
+        }
+        "EC" => {
+            let x = jwk.x.as_deref()
+                .ok_or_else(|| anyhow::anyhow!("EC JWK missing 'x' field"))?;
+            let y = jwk.y.as_deref()
+                .ok_or_else(|| anyhow::anyhow!("EC JWK missing 'y' field"))?;
+            Ok(jsonwebtoken::DecodingKey::from_ec_components(x, y)?)
+        }
+        other => Err(anyhow::anyhow!("Unsupported JWK key type: {}", other)),
+    }
+}
+
+/// Map a JWT `alg` string to a `jsonwebtoken::Algorithm`.
+fn alg_from_str(alg: &str) -> anyhow::Result<jsonwebtoken::Algorithm> {
+    match alg {
+        "RS256" => Ok(jsonwebtoken::Algorithm::RS256),
+        "RS384" => Ok(jsonwebtoken::Algorithm::RS384),
+        "RS512" => Ok(jsonwebtoken::Algorithm::RS512),
+        "ES256" => Ok(jsonwebtoken::Algorithm::ES256),
+        "ES384" => Ok(jsonwebtoken::Algorithm::ES384),
+        "PS256" => Ok(jsonwebtoken::Algorithm::PS256),
+        "PS384" => Ok(jsonwebtoken::Algorithm::PS384),
+        "PS512" => Ok(jsonwebtoken::Algorithm::PS512),
+        "EdDSA" => Ok(jsonwebtoken::Algorithm::EdDSA),
+        other   => Err(anyhow::anyhow!("Unsupported JWT algorithm: {}", other)),
+    }
+}
+
+/// Verify a JWT's cryptographic signature against the provider's JWKS,
+/// then extract and validate claims (exp, iss, aud).
+///
+/// This is the **primary entry point** for secure JWT validation.
+pub async fn verify_jwt_signature(
+    token: &str,
+    provider: &OidcProvider,
+) -> anyhow::Result<OidcClaims> {
+    // 1. Resolve JWKS URI (from provider or via discovery)
+    let jwks_uri = match &provider.jwks_uri {
+        Some(uri) => uri.clone(),
+        None => {
+            let discovery = discover(&provider.issuer_url).await?;
+            discovery.jwks_uri
+        }
+    };
+
+    // 2. Get (cached) JWKS
+    let jwks = get_jwks(&jwks_uri).await?;
+
+    // 3. Extract kid + alg from JWT header
+    let kid = extract_kid(token);
+    let alg_str = extract_alg(token)
+        .ok_or_else(|| anyhow::anyhow!("JWT header missing 'alg' field"))?;
+    let algorithm = alg_from_str(&alg_str)?;
+
+    // 4. Find the matching JWK
+    let jwk = if let Some(ref kid_val) = kid {
+        jwks.keys.iter()
+            .find(|k| k.kid.as_deref() == Some(kid_val))
+            .ok_or_else(|| anyhow::anyhow!("No JWK found with kid='{}'", kid_val))?
+    } else {
+        // No kid in header — use the first key that matches the algorithm & use=sig
+        jwks.keys.iter()
+            .find(|k| {
+                k.key_use.as_deref() != Some("enc") &&
+                k.alg.as_deref().map_or(true, |a| a == alg_str)
+            })
+            .ok_or_else(|| anyhow::anyhow!("No suitable JWK found in JWKS"))?
+    };
+
+    // 5. Build DecodingKey
+    let decoding_key = decoding_key_from_jwk(jwk)?;
+
+    // 6. Build Validation
+    let mut validation = jsonwebtoken::Validation::new(algorithm);
+    validation.set_issuer(&[&provider.issuer_url]);
+    if let Some(ref aud) = provider.audience {
+        validation.set_audience(&[aud]);
+    } else {
+        validation.validate_aud = false;
+    }
+    validation.validate_exp = true;
+
+    // 7. Decode + verify
+    let token_data = jsonwebtoken::decode::<serde_json::Value>(
+        token,
+        &decoding_key,
+        &validation,
+    ).map_err(|e| anyhow::anyhow!("JWT signature verification failed: {}", e))?;
+
+    let raw = token_data.claims;
+
+    // 8. Extract standard claims
+    let sub = raw.get("sub")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("JWT missing 'sub' claim"))?
+        .to_string();
+    let exp = raw.get("exp")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| anyhow::anyhow!("JWT missing 'exp' claim"))?;
+
+    Ok(OidcClaims {
+        sub,
+        email: raw.get("email").and_then(|v| v.as_str()).map(String::from),
+        name: raw.get("name").and_then(|v| v.as_str()).map(String::from),
+        iss: raw.get("iss").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        aud: raw.get("aud").and_then(|v| v.as_str()).map(String::from),
+        exp,
+        iat: raw.get("iat").and_then(|v| v.as_i64()),
+        raw,
+    })
+}
+
+/// Full OIDC validation pipeline: verify signature → extract claims → map to RBAC.
+///
+/// Call this from the auth middleware when a Bearer JWT is received.
+pub async fn validate_jwt(
+    token: &str,
+    provider: &OidcProvider,
+) -> anyhow::Result<OidcAuthResult> {
+    let claims = verify_jwt_signature(token, provider).await?;
+    Ok(map_claims_to_rbac(&claims, provider))
+}
+
+/// Decode JWT claims **without** cryptographic verification.
+/// 
+/// **DEPRECATED** — use `verify_jwt_signature()` for production validation.
+/// Kept for backward-compatible unit tests and non-IdP fallback paths.
 pub fn decode_claims(token: &str) -> anyhow::Result<OidcClaims> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
