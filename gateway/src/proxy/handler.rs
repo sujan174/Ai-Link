@@ -967,7 +967,89 @@ pub async fn proxy_handler(
         });
     }
 
-    // -- 3.6 Handle HITL --
+    // -- 3.6 Session Lifecycle Guard --
+    // If this request has a session_id, auto-create the session on first use,
+    // then enforce status (reject if paused/completed) and session-level spend cap.
+    if let Some(ref sid) = session_id {
+        // Upsert: auto-create session on first request, or touch updated_at
+        match state.db.upsert_session(sid, token.project_id, Uuid::parse_str(&token.id).ok(), None).await {
+            Ok(entity) => {
+                // Reject requests against paused or completed sessions
+                if entity.status != "active" {
+                    tracing::info!(
+                        session_id = %sid,
+                        status = %entity.status,
+                        "Session lifecycle: request rejected (non-active session)"
+                    );
+                    return Err(AppError::PolicyDenied {
+                        policy: "SessionLifecycle".to_string(),
+                        reason: format!("Session '{}' is {} — cannot accept new requests", sid, entity.status),
+                    });
+                }
+
+                // Check session-level spend cap
+                if let Some(cap) = entity.spend_cap_usd {
+                    if entity.total_cost_usd >= cap {
+                        tracing::info!(
+                            session_id = %sid,
+                            total = %entity.total_cost_usd,
+                            cap = %cap,
+                            "Session spend cap exceeded"
+                        );
+                        return Err(AppError::SpendCapReached {
+                            message: format!("Session '{}' has exceeded its spend cap ({} USD)", sid, cap),
+                        });
+                    }
+                }
+            }
+            Err(e) => {
+                // Fail open: log error but don't block the request
+                tracing::warn!(
+                    session_id = %sid,
+                    error = %e,
+                    "Session upsert failed (fail-open)"
+                );
+            }
+        }
+    }
+
+    // -- 3.7 Anomaly Detection (non-blocking, informational) --
+    // Record this request's timestamp in a Redis sliding window and check
+    // if the token's velocity exceeds 3σ from its rolling baseline.
+    {
+        let anomaly_config = middleware::anomaly::AnomalyConfig::default();
+        let mut redis_conn = state.cache.redis();
+        match middleware::anomaly::record_and_check(&mut redis_conn, &token.id.to_string(), &anomaly_config).await {
+            Ok(result) if result.is_anomalous => {
+                tracing::warn!(
+                    token_id = %token.id,
+                    velocity = result.current_velocity,
+                    mean = result.baseline_mean,
+                    threshold = result.threshold,
+                    "Anomaly detected: velocity spike for token"
+                );
+                // Fire webhook (non-blocking)
+                let webhook_event = crate::notification::webhook::WebhookEvent::anomaly_detected(
+                    &token.id.to_string(),
+                    &token.name,
+                    &token.project_id.to_string(),
+                    result.current_velocity,
+                    result.baseline_mean,
+                    result.threshold,
+                );
+                let webhook_urls = state.config.webhook_urls.clone();
+                state.webhook.dispatch(&webhook_urls, webhook_event).await;
+                // NOTE: anomaly detection is informational — we do NOT block the request.
+                // Use rate limiting policies for enforcement.
+            }
+            Ok(_) => {} // Normal velocity
+            Err(e) => {
+                tracing::debug!(error = %e, "Anomaly check failed (non-critical, proceeding)");
+            }
+        }
+    }
+
+    // -- 3.8 Handle HITL --
     if hitl_required {
         let hitl_start = Instant::now();
 
@@ -1734,6 +1816,7 @@ pub async fn proxy_handler(
         let tenant_id_bg = tenant_id.clone();
         let ext_req_id_bg = external_request_id.clone();
         let session_id_bg = session_id.clone();
+        let session_id_for_spend = session_id.clone();
         let parent_span_id_bg = parent_span_id.clone();
 
         tokio::spawn(async move {
@@ -1818,6 +1901,15 @@ pub async fn proxy_handler(
             };
             audit.shadow_violations = if shadow_violations_bg.is_empty() { None } else { Some(shadow_violations_bg) };
             audit.emit(&state_bg);
+
+            // -- Session spend increment (streaming) --
+            if let Some(ref sid) = session_id_for_spend {
+                let cost = estimated_cost_usd.unwrap_or_default();
+                let tokens = prompt_tokens.unwrap_or(0) as i64 + completion_tokens.unwrap_or(0) as i64;
+                if let Err(e) = state_bg.db.increment_session_spend(sid, token_bg_project_id, cost, tokens).await {
+                    tracing::warn!(session_id = %sid, error = %e, "Failed to increment session spend (streaming)");
+                }
+            }
         });
 
         return Ok(sse_response);
@@ -2297,7 +2389,23 @@ pub async fn proxy_handler(
     audit.cache_hit = false; // not a cache hit — we went to upstream
     audit.experiment_name = experiment_name;
     audit.variant_name = variant_name;
+    let session_id_for_spend = audit.session_id.clone();
     audit.emit(&state);
+
+    // -- Session spend increment (non-streaming) --
+    // session_id was consumed by audit builder above, so we use the clone
+    if let Some(ref sid) = session_id_for_spend {
+        let cost = estimated_cost_usd.unwrap_or_default();
+        let tokens = audit_prompt_tokens.unwrap_or(0) as i64 + audit_completion_tokens.unwrap_or(0) as i64;
+        let state_for_session = state.clone();
+        let sid_owned = sid.clone();
+        let project_id = token.project_id;
+        tokio::spawn(async move {
+            if let Err(e) = state_for_session.db.increment_session_spend(&sid_owned, project_id, cost, tokens).await {
+                tracing::warn!(session_id = %sid_owned, error = %e, "Failed to increment session spend");
+            }
+        });
+    }
 
     // ── Response Cache: store successful, non-streaming responses ──
     if let Some(ref key) = cache_key {

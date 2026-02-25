@@ -303,6 +303,103 @@ async fn admin_auth(
             req.extensions_mut().insert(ctx);
             return Ok(next.run(req).await);
         }
+        // ── Path C: OIDC JWT (if token looks like a JWT) ──────────
+        //
+        // JWTs have 3 dot-separated base64 parts. API keys start with "ak_".
+        // If it looks like a JWT, try OIDC. If that fails, fall through to
+        // the API key path below (graceful degradation).
+        if k.split('.').count() == 3 && !k.starts_with("ak_") {
+            use crate::middleware::oidc;
+
+            match oidc::decode_claims(k) {
+                Ok(claims) => {
+                    // Look up the OIDC provider by issuer
+                    match state.db.get_oidc_provider_by_issuer(&claims.iss).await {
+                        Ok(Some(provider_row)) => {
+                            // Check audience if configured
+                            if let Some(ref expected_aud) = provider_row.audience {
+                                let claims_aud = claims.aud.as_deref().unwrap_or("");
+                                if claims_aud != expected_aud && claims_aud != &provider_row.client_id {
+                                    tracing::warn!(
+                                        issuer = %claims.iss,
+                                        expected = %expected_aud,
+                                        got = %claims_aud,
+                                        "OIDC: audience mismatch"
+                                    );
+                                    return Err(StatusCode::UNAUTHORIZED);
+                                }
+                            }
+
+                            // Convert DB row → OidcProvider for claim mapping
+                            let provider = oidc::OidcProvider {
+                                id: provider_row.id,
+                                org_id: provider_row.org_id,
+                                name: provider_row.name,
+                                issuer_url: provider_row.issuer_url,
+                                client_id: provider_row.client_id,
+                                jwks_uri: provider_row.jwks_uri,
+                                audience: provider_row.audience,
+                                claim_mapping: provider_row.claim_mapping,
+                                default_role: provider_row.default_role,
+                                default_scopes: provider_row.default_scopes,
+                                enabled: provider_row.enabled,
+                            };
+
+                            let auth_result = oidc::map_claims_to_rbac(&claims, &provider);
+
+                            // Map OIDC role string → ApiKeyRole
+                            let role = match auth_result.role.as_str() {
+                                "superadmin" => ApiKeyRole::SuperAdmin,
+                                "admin" => ApiKeyRole::Admin,
+                                "member" => ApiKeyRole::Member,
+                                "readonly" => ApiKeyRole::ReadOnly,
+                                _ => ApiKeyRole::ReadOnly, // safe default
+                            };
+
+                            let role_str = format!("{:?}", role);
+                            tracing::info!(
+                                user = %auth_result.user_id,
+                                provider = %provider.name,
+                                role = %role_str,
+                                "OIDC: JWT authenticated successfully"
+                            );
+
+                            let ctx = AuthContext {
+                                org_id: auth_result.org_id,
+                                user_id: None, // OIDC users don't have a local UUID yet
+                                role,
+                                scopes: auth_result.scopes,
+                                key_id: None,
+                            };
+
+                            req.extensions_mut().insert(ctx);
+                            return Ok(next.run(req).await);
+                        }
+                        Ok(None) => {
+                            tracing::debug!(
+                                issuer = %claims.iss,
+                                "OIDC: no provider configured for issuer, falling through to API key"
+                            );
+                            // Fall through to API key path
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "OIDC: DB error looking up provider, falling through to API key"
+                            );
+                            // Fall through to API key path
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "Bearer token looks like JWT but failed to decode, trying API key path"
+                    );
+                    // Fall through to API key path
+                }
+            }
+        }
 
         // ── Path B: API Key (DB) ─────────────────────────────────
         // Key format: ak_live_prefix_hex
@@ -331,7 +428,6 @@ async fn admin_auth(
             }
 
             // Update last used (fire and forget / async)
-            // We clone the ID to move into the async block
             let key_id = key.id;
             let db = state.db.clone();
             tokio::spawn(async move {
@@ -348,7 +444,7 @@ async fn admin_auth(
                 "admin" => ApiKeyRole::Admin,
                 "member" => ApiKeyRole::Member,
                 "readonly" => ApiKeyRole::ReadOnly,
-                _ => ApiKeyRole::Member, // fallback
+                _ => ApiKeyRole::Member,
             };
 
             let ctx = AuthContext {
@@ -363,7 +459,6 @@ async fn admin_auth(
             return Ok(next.run(req).await);
         } else {
             // Invalid API key
-            // Don't log full keys, just partial
             let masked = if k.len() > 8 {
                 format!("{}…{}", &k[..4], &k[k.len()-4..])
             } else {
