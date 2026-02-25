@@ -219,6 +219,40 @@ export const listSessions = (limit = 100, offset = 0) =>
 export const getSession = (id: string) =>
   api<SessionSummary>(`/sessions/${encodeURIComponent(id)}`);
 
+// ── Session Entity (sessions table — status, spend cap) ───────
+
+/** Live session row from the sessions table (status, caps, cost). */
+export interface SessionEntity {
+  session_id: string;
+  token_id: string;
+  project_id: string;
+  status: "active" | "paused" | "completed";
+  total_cost_usd: string;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  spend_cap_usd: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const getSessionEntity = (id: string) =>
+  api<SessionEntity>(`/sessions/${encodeURIComponent(id)}/entity`);
+
+export const updateSessionStatus = (
+  id: string,
+  status: "active" | "paused" | "completed"
+) =>
+  api<{ session_id: string; status: string; updated: boolean }>(
+    `/sessions/${encodeURIComponent(id)}/status`,
+    { method: "PATCH", body: JSON.stringify({ status }) }
+  );
+
+export const setSessionSpendCap = (id: string, spend_cap_usd: number | null) =>
+  api<{ session_id: string; spend_cap_usd: string | null }>(
+    `/sessions/${encodeURIComponent(id)}/spend-cap`,
+    { method: "PUT", body: JSON.stringify({ spend_cap_usd }) }
+  );
+
 export const swrFetcher = <T>(path: string) => api<T>(path);
 
 // ── Upstream Health ─────────────────────────────
@@ -855,3 +889,47 @@ export const disableGuardrails = (token_id: string) =>
     method: "DELETE",
     body: JSON.stringify({ token_id }),
   });
+
+// ── OIDC / SSO Providers ───────────────────────────────────────
+
+export interface OidcProvider {
+  id: string;
+  project_id: string;
+  issuer_url: string;
+  client_id: string;
+  audience: string | null;
+  /** JSON claim-to-role mapping: { "roles.admin": "admin" } */
+  claim_mappings: Record<string, string> | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateOidcProviderRequest {
+  issuer_url: string;
+  client_id: string;
+  audience?: string;
+  claim_mappings?: Record<string, string>;
+}
+
+export const listOidcProviders = () =>
+  api<OidcProvider[]>("/oidc/providers");
+
+export const createOidcProvider = (data: CreateOidcProviderRequest) =>
+  api<OidcProvider>("/oidc/providers", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const updateOidcProvider = (
+  id: string,
+  data: Partial<CreateOidcProviderRequest> & { is_active?: boolean }
+) =>
+  api<OidcProvider>(`/oidc/providers/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+
+export const deleteOidcProvider = (id: string) =>
+  api<{ deleted: boolean }>(`/oidc/providers/${id}`, { method: "DELETE" });
+

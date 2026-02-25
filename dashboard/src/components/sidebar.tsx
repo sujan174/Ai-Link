@@ -131,6 +131,7 @@ export function Sidebar({ className }: SidebarProps) {
                 { href: "/vault", label: "The Vault", icon: Fingerprint },
                 { href: "/api-keys", label: "Platform API Keys", icon: LockKeyhole },
                 { href: "/webhooks", label: "Webhooks", icon: Webhook },
+                { href: "/settings/sso", label: "SSO / OIDC", icon: ShieldAlert },
                 { href: "/billing", label: "Usage & Billing", icon: CreditCard },
                 { href: "/settings", label: "Settings", icon: Settings },
             ]

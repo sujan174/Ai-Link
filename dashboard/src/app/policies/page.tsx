@@ -73,6 +73,7 @@ const ACTION_TYPES = [
     { value: "RequireApproval", label: "HITL Approval", icon: ShieldCheck, color: "text-amber-400", desc: "Require human approval" },
     { value: "RateLimit", label: "Rate Limit", icon: Zap, color: "text-blue-400", desc: "Limit request rate" },
     { value: "Redact", label: "Redact PII", icon: ShieldAlert, color: "text-violet-400", desc: "Scrub sensitive data" },
+    { value: "ToolScope", label: "Tool RBAC", icon: Code2, color: "text-indigo-400", desc: "Allow/deny specific tool names" },
     { value: "Transform", label: "Transform", icon: FileText, color: "text-cyan-400", desc: "Modify request/response" },
     { value: "Log", label: "Log", icon: FileText, color: "text-emerald-400", desc: "Log event" },
     { value: "Throttle", label: "Throttle", icon: Clock, color: "text-orange-400", desc: "Add delay" },
@@ -418,6 +419,10 @@ interface RuleForm {
     tagValue: string;
     // Transform
     transformOps: string;
+    // ToolScope (Tool RBAC)
+    toolScopeAllowed: string;   // comma-separated allowed tool patterns (allowlist)
+    toolScopeBlocked: string;   // comma-separated blocked tool patterns (denylist)
+    toolScopeDenyMessage: string;
     // Phase
     phase: string;
 }
@@ -444,6 +449,9 @@ function emptyRule(): RuleForm {
         tagKey: "",
         tagValue: "",
         transformOps: "",
+        toolScopeAllowed: "",
+        toolScopeBlocked: "",
+        toolScopeDenyMessage: "Tool not permitted by policy",
         phase: "pre",
     };
 }
@@ -514,6 +522,14 @@ function PolicyFormDialog({ mode, initialPolicy, onSuccess }: {
             case "Transform":
                 try { return { Transform: { operations: JSON.parse(rule.transformOps || "[]") } }; }
                 catch { return { Transform: { operations: [] } }; }
+            case "ToolScope":
+                return {
+                    ToolScope: {
+                        allowed_tools: rule.toolScopeAllowed.split(",").map(s => s.trim()).filter(Boolean),
+                        blocked_tools: rule.toolScopeBlocked.split(",").map(s => s.trim()).filter(Boolean),
+                        deny_message: rule.toolScopeDenyMessage,
+                    }
+                };
             default:
                 return { Deny: { status: 403, message: "Unknown action" } };
         }
@@ -908,6 +924,43 @@ function VisualRuleEditor({ rule, index, total, onUpdate, onRemove }: {
                                 onChange={(e) => onUpdate({ transformOps: e.target.value })}
                                 placeholder={'[{"AppendSystemPrompt": {"text": "Be helpful"}}]'}
                             />
+                        </div>
+                    )}
+                    {rule.actionType === "ToolScope" && (
+                        <div className="space-y-2">
+                            <div className="grid grid-cols-2 gap-2">
+                                <div className="space-y-0.5">
+                                    <Label className="text-[10px] text-muted-foreground">
+                                        Blocked Tools <span className="text-rose-400">(denylist)</span>
+                                    </Label>
+                                    <Input
+                                        value={rule.toolScopeBlocked}
+                                        onChange={(e) => onUpdate({ toolScopeBlocked: e.target.value })}
+                                        className="h-7 text-[11px] font-mono"
+                                        placeholder="stripe.*, db.drop*"
+                                    />
+                                </div>
+                                <div className="space-y-0.5">
+                                    <Label className="text-[10px] text-muted-foreground">
+                                        Allowed Tools <span className="text-emerald-400">(allowlist, empty = all)</span>
+                                    </Label>
+                                    <Input
+                                        value={rule.toolScopeAllowed}
+                                        onChange={(e) => onUpdate({ toolScopeAllowed: e.target.value })}
+                                        className="h-7 text-[11px] font-mono"
+                                        placeholder="jira.*, github.read"
+                                    />
+                                </div>
+                            </div>
+                            <div className="space-y-0.5">
+                                <Label className="text-[10px] text-muted-foreground">Deny Message</Label>
+                                <Input
+                                    value={rule.toolScopeDenyMessage}
+                                    onChange={(e) => onUpdate({ toolScopeDenyMessage: e.target.value })}
+                                    className="h-7 text-[11px]"
+                                    placeholder="Tool not permitted by policy"
+                                />
+                            </div>
                         </div>
                     )}
                 </div>
