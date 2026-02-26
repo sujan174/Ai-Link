@@ -15,6 +15,39 @@ pip install ailink[openai]      # OpenAI compatibility
 pip install ailink[anthropic]   # Anthropic compatibility
 ```
 
+With framework integrations:
+
+```bash
+pip install ailink[langchain]    # LangChain support
+pip install ailink[crewai]       # CrewAI support
+pip install ailink[llamaindex]   # LlamaIndex support
+pip install ailink[frameworks]   # All frameworks
+```
+
+## Framework Integrations
+
+AILink integrates natively with LangChain, CrewAI, and LlamaIndex:
+
+```python
+from ailink import AIlinkClient
+from ailink.integrations import langchain_chat, crewai_llm, llamaindex_llm
+
+client = AIlinkClient()
+
+# LangChain
+llm = langchain_chat(client, model="gpt-4o")
+chain = prompt | llm
+
+# CrewAI
+llm = crewai_llm(client, model="gpt-4o")
+agent = Agent(role="Researcher", llm=llm, ...)
+
+# LlamaIndex
+Settings.llm = llamaindex_llm(client, model="gpt-4o")
+```
+
+See [Framework Integration Cookbook](../../docs/FRAMEWORK_INTEGRATIONS.md) for full examples.
+
 ## Quick Start
 
 ### Agent / Proxy Usage
