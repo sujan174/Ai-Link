@@ -1630,6 +1630,9 @@ pub async fn proxy_handler(
         upstream_url.clone()
     };
 
+    // Track in-flight requests for least-busy routing
+    state.lb.increment_in_flight(&final_upstream_url);
+
     // Zero the decrypted key from memory (if credential was injected)
     if let Some(mut cred) = injected_cred {
         use zeroize::Zeroize;
@@ -1673,11 +1676,13 @@ pub async fn proxy_handler(
         {
             Ok(Ok(res)) => {
                 state.lb.mark_healthy(&token.id, &final_upstream_url);
+                state.lb.decrement_in_flight(&final_upstream_url);
                 res
             }
             Ok(Err(e)) => {
                 tracing::error!("Upstream streaming request failed: {}", e);
                 state.lb.mark_failed(&token.id, &final_upstream_url, &cb_config);
+                state.lb.decrement_in_flight(&final_upstream_url);
                 let mut audit = base_audit(
                     request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
@@ -1694,6 +1699,7 @@ pub async fn proxy_handler(
             Err(_) => {
                 tracing::error!("Upstream streaming request timed out (safety net)");
                 state.lb.mark_failed(&token.id, &final_upstream_url, &cb_config);
+                state.lb.decrement_in_flight(&final_upstream_url);
                 let mut audit = base_audit(
                     request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
@@ -1724,12 +1730,14 @@ pub async fn proxy_handler(
             Ok(Ok(res)) => {
                 // Loadbalancer: mark upstream as healthy
                 state.lb.mark_healthy(&token.id, &final_upstream_url);
+                state.lb.decrement_in_flight(&final_upstream_url);
                 res
             }
             Ok(Err(e)) => {
                 tracing::error!("Upstream request failed: {}", e);
                 // Loadbalancer: mark upstream as failed
                 state.lb.mark_failed(&token.id, &final_upstream_url, &cb_config);
+                state.lb.decrement_in_flight(&final_upstream_url);
                 let mut audit = base_audit(
                     request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
@@ -1753,6 +1761,7 @@ pub async fn proxy_handler(
                 tracing::error!("Upstream request timed out (safety net)");
                 // Loadbalancer: mark upstream as failed
                 state.lb.mark_failed(&token.id, &final_upstream_url, &cb_config);
+                state.lb.decrement_in_flight(&final_upstream_url);
                 let mut audit = base_audit(
                     request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
                     &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,

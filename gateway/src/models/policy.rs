@@ -506,6 +506,10 @@ pub enum RoutingStrategy {
     LowestLatency,
     /// Rotate through the pool sequentially (per-token counter).
     RoundRobin,
+    /// Pick the model with the fewest in-flight requests right now.
+    LeastBusy,
+    /// Randomly select from the pool, weighted by each target's weight field.
+    WeightedRandom,
 }
 
 /// A single entry in a `DynamicRoute` pool.

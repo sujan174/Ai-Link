@@ -71,6 +71,8 @@ pub struct LoadBalancer {
     health: DashMap<String, Vec<UpstreamHealth>>,
     /// Per-token round-robin counter
     counters: DashMap<String, Arc<AtomicU64>>,
+    /// In-flight request count per upstream URL (for least-busy routing)
+    in_flight: DashMap<String, AtomicU64>,
 }
 
 impl LoadBalancer {
@@ -78,6 +80,7 @@ impl LoadBalancer {
         Self {
             health: DashMap::new(),
             counters: DashMap::new(),
+            in_flight: DashMap::new(),
         }
     }
 
@@ -286,6 +289,36 @@ impl LoadBalancer {
             }
         }
         "closed"
+    }
+
+    // ── In-Flight Request Tracking (for LeastBusy routing) ───────
+
+    /// Increment the in-flight counter for an upstream URL.
+    /// Call at the start of a proxy request.
+    pub fn increment_in_flight(&self, url: &str) {
+        self.in_flight
+            .entry(url.to_string())
+            .or_insert_with(|| AtomicU64::new(0))
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement the in-flight counter for an upstream URL.
+    /// Call when the proxy request completes (success or failure).
+    pub fn decrement_in_flight(&self, url: &str) {
+        if let Some(counter) = self.in_flight.get(url) {
+            // Avoid wrapping below zero
+            let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                if v > 0 { Some(v - 1) } else { Some(0) }
+            });
+        }
+    }
+
+    /// Get the current in-flight count for an upstream URL.
+    pub fn get_in_flight(&self, url: &str) -> u64 {
+        self.in_flight
+            .get(url)
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0)
     }
 }
 
@@ -829,6 +862,50 @@ mod tests {
             }
         }
         assert!(found_primary, "Primary should be retryable after cooldown=0");
+    }
+
+    // ── In-Flight Tracking (Least Busy) ────────────────────────
+
+    #[test]
+    fn test_in_flight_increment_and_decrement() {
+        let lb = LoadBalancer::new();
+        assert_eq!(lb.get_in_flight("https://api.openai.com"), 0);
+
+        lb.increment_in_flight("https://api.openai.com");
+        assert_eq!(lb.get_in_flight("https://api.openai.com"), 1);
+
+        lb.increment_in_flight("https://api.openai.com");
+        assert_eq!(lb.get_in_flight("https://api.openai.com"), 2);
+
+        lb.decrement_in_flight("https://api.openai.com");
+        assert_eq!(lb.get_in_flight("https://api.openai.com"), 1);
+
+        lb.decrement_in_flight("https://api.openai.com");
+        assert_eq!(lb.get_in_flight("https://api.openai.com"), 0);
+    }
+
+    #[test]
+    fn test_in_flight_decrement_does_not_go_negative() {
+        let lb = LoadBalancer::new();
+        lb.decrement_in_flight("https://api.openai.com");
+        assert_eq!(lb.get_in_flight("https://api.openai.com"), 0);
+
+        lb.increment_in_flight("https://api.openai.com");
+        lb.decrement_in_flight("https://api.openai.com");
+        lb.decrement_in_flight("https://api.openai.com");
+        assert_eq!(lb.get_in_flight("https://api.openai.com"), 0);
+    }
+
+    #[test]
+    fn test_in_flight_independent_per_url() {
+        let lb = LoadBalancer::new();
+        lb.increment_in_flight("https://api.openai.com");
+        lb.increment_in_flight("https://api.openai.com");
+        lb.increment_in_flight("https://api.anthropic.com");
+
+        assert_eq!(lb.get_in_flight("https://api.openai.com"), 2);
+        assert_eq!(lb.get_in_flight("https://api.anthropic.com"), 1);
+        assert_eq!(lb.get_in_flight("https://unknown.com"), 0);
     }
 }
 
