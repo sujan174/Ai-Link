@@ -2806,8 +2806,8 @@ pub async fn list_model_access_groups(
     let rows = sqlx::query_as::<_, crate::middleware::model_access::ModelAccessGroup>(
         "SELECT * FROM model_access_groups WHERE project_id = $1 ORDER BY name"
     )
-    .bind(auth.project_id)
-    .fetch_all(&*state.pg)
+    .bind(auth.default_project_id())
+    .fetch_all(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to list model access groups: {}", e);
@@ -2844,11 +2844,11 @@ pub async fn create_model_access_group(
            VALUES ($1, $2, $3, $4)
            RETURNING *"#
     )
-    .bind(auth.project_id)
+    .bind(auth.default_project_id())
     .bind(name)
     .bind(description)
     .bind(models)
-    .fetch_one(&*state.pg)
+    .fetch_one(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to create model access group: {}", e);
@@ -2885,11 +2885,11 @@ pub async fn update_model_access_group(
            RETURNING *"#
     )
     .bind(group_id)
-    .bind(auth.project_id)
+    .bind(auth.default_project_id())
     .bind(name)
     .bind(description)
     .bind(models)
-    .fetch_optional(&*state.pg)
+    .fetch_optional(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to update model access group: {}", e);
@@ -2914,8 +2914,8 @@ pub async fn delete_model_access_group(
         "DELETE FROM model_access_groups WHERE id = $1 AND project_id = $2"
     )
     .bind(group_id)
-    .bind(auth.project_id)
-    .execute(&*state.pg)
+    .bind(auth.default_project_id())
+    .execute(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to delete model access group: {}", e);
@@ -2941,7 +2941,7 @@ pub async fn list_teams(
         "SELECT * FROM teams WHERE org_id = $1 ORDER BY name"
     )
     .bind(auth.org_id)
-    .fetch_all(&*state.pg)
+    .fetch_all(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to list teams: {}", e);
@@ -2964,7 +2964,8 @@ pub async fn create_team(
         .map(|f| rust_decimal::Decimal::from_f64_retain(f).unwrap_or_default());
     let budget_duration = body.get("budget_duration").and_then(|v| v.as_str());
     let allowed_models = body.get("allowed_models");
-    let tags = body.get("tags").unwrap_or(&serde_json::json!({}));
+    let default_tags = serde_json::json!({});
+    let tags = body.get("tags").unwrap_or(&default_tags);
 
     let row = sqlx::query_as::<_, crate::middleware::teams::Team>(
         r#"INSERT INTO teams (org_id, name, description, max_budget_usd, budget_duration, allowed_models, tags)
@@ -2978,7 +2979,7 @@ pub async fn create_team(
     .bind(budget_duration)
     .bind(allowed_models)
     .bind(tags)
-    .fetch_one(&*state.pg)
+    .fetch_one(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to create team: {}", e);
@@ -3029,7 +3030,7 @@ pub async fn update_team(
     .bind(budget_duration)
     .bind(allowed_models)
     .bind(tags)
-    .fetch_optional(&*state.pg)
+    .fetch_optional(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to update team: {}", e);
@@ -3055,7 +3056,7 @@ pub async fn delete_team(
     )
     .bind(team_id)
     .bind(auth.org_id)
-    .execute(&*state.pg)
+    .execute(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to delete team: {}", e);
@@ -3082,7 +3083,7 @@ pub async fn list_team_members(
     )
     .bind(team_id)
     .bind(auth.org_id)
-    .fetch_all(&*state.pg)
+    .fetch_all(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to list team members: {}", e);
@@ -3123,7 +3124,7 @@ pub async fn add_team_member(
     )
     .bind(team_id)
     .bind(auth.org_id)
-    .fetch_one(&*state.pg)
+    .fetch_one(state.db.pool())
     .await
     .unwrap_or(false);
 
@@ -3139,7 +3140,7 @@ pub async fn add_team_member(
     .bind(team_id)
     .bind(user_id)
     .bind(role)
-    .fetch_one(&*state.pg)
+    .fetch_one(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to add team member: {}", e);
@@ -3169,7 +3170,7 @@ pub async fn remove_team_member(
     .bind(team_id)
     .bind(user_id)
     .bind(auth.org_id)
-    .execute(&*state.pg)
+    .execute(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to remove team member: {}", e);
@@ -3199,7 +3200,7 @@ pub async fn get_team_spend(
     )
     .bind(team_id)
     .bind(auth.org_id)
-    .fetch_all(&*state.pg)
+    .fetch_all(state.db.pool())
     .await
     .map_err(|e| {
         tracing::error!("Failed to get team spend: {}", e);

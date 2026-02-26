@@ -1419,7 +1419,7 @@ pub async fn proxy_handler(
     if !detected_model.is_empty() {
         let group_models = if let Some(ref group_ids) = token.allowed_model_group_ids {
             if !group_ids.is_empty() {
-                middleware::model_access::resolve_group_models(&state.pg, group_ids).await
+                middleware::model_access::resolve_group_models(state.db.pool(), group_ids).await
             } else {
                 Vec::new()
             }
@@ -1449,18 +1449,19 @@ pub async fn proxy_handler(
             audit.response_latency_ms = start.elapsed().as_millis() as u64;
             audit.emit(&state);
             return Err(AppError::Forbidden(reason));
+        }
     }
 
     // ── Team-Level Enforcement (Budget + Model Access + Tags) ──
     let resolved_team = if let Some(team_id) = token.team_id {
-        middleware::teams::get_team(&state.pg, team_id).await
+        middleware::teams::get_team(state.db.pool(), team_id).await
     } else {
         None
     };
 
     if let Some(ref team) = resolved_team {
         // Check team budget
-        if let Err(reason) = middleware::teams::check_team_budget(&state.pg, team).await {
+        if let Err(reason) = middleware::teams::check_team_budget(state.db.pool(), team).await {
             tracing::warn!(token_id = %token.id, team = %team.name, "Team budget exceeded: {}", reason);
             return Err(AppError::SpendCapReached { message: reason });
         }
