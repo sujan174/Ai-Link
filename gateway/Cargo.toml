@@ -93,6 +93,10 @@ opentelemetry-otlp = "0.14"
 tracing-opentelemetry = "0.22"
 bytes = "1.11.1"
 
+# observability export
+prometheus = "0.13"
+cadence = "1"
+
 [dev-dependencies]
 tokio-test = "0.4"
 wiremock = "0.6"

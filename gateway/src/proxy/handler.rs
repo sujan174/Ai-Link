@@ -2709,6 +2709,10 @@ impl AuditBuilder {
             custom_properties: self.custom_properties,
             payload_url: None, // set by audit middleware after potential offload
         };
+        // ── Observability Export ──────────────────────────────────────
+        // Fan out to Prometheus, Langfuse, and DataDog (non-blocking).
+        state.observer.record(&entry);
+
         middleware::audit::log_async(
             state.db.pool().clone(),
             state.payload_store.clone(),

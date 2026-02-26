@@ -42,6 +42,8 @@ pub struct AppState {
     pub latency: models::latency_cache::LatencyCache,
     /// Payload storage backend — Postgres (default) or S3/MinIO/local.
     pub payload_store: Arc<PayloadStore>,
+    /// Observability exporters: Prometheus, Langfuse, DataDog.
+    pub observer: Arc<middleware::observer::ObserverHub>,
 }
 
 #[tokio::main]
@@ -132,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
                 pricing: models::pricing_cache::PricingCache::new(),
                 latency: models::latency_cache::LatencyCache::new(),
                 payload_store: Arc::new(PayloadStore::from_env().unwrap_or(PayloadStore::Postgres)),
+                observer: Arc::new(middleware::observer::ObserverHub::from_env()),
             });
 
             handle_token_command(command, &state).await
@@ -165,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
                  pricing: models::pricing_cache::PricingCache::new(),
                  latency: models::latency_cache::LatencyCache::new(),
                  payload_store: Arc::new(PayloadStore::from_env().unwrap_or(PayloadStore::Postgres)),
+                 observer: Arc::new(middleware::observer::ObserverHub::from_env()),
              });
 
              handle_policy_command(command, &state).await
@@ -221,6 +225,7 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
         pricing: pricing.clone(),
         latency: latency.clone(),
         payload_store,
+        observer: Arc::new(middleware::observer::ObserverHub::from_env()),
     });
 
     // Load initial pricing from DB into the in-memory cache
@@ -275,6 +280,8 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
         // Health endpoints (no auth)
         .route("/healthz", axum::routing::get(|| async { "ok" }))
         .route("/readyz", axum::routing::get(readiness_check))
+        // Prometheus metrics (no auth — standard for /metrics)
+        .route("/metrics", axum::routing::get(prometheus_metrics_handler))
         // Realtime WebSocket proxy — must come before the catch-all fallback
         .route("/v1/realtime", axum::routing::get(proxy::realtime::realtime_handler))
         // Management API — nested under /api/v1 (preserves middleware + fallback)
@@ -404,6 +411,18 @@ async fn request_id_middleware(
 
 async fn readiness_check() -> &'static str {
     "ok"
+}
+
+/// GET /metrics — Prometheus text exposition format.
+/// Unauthenticated (standard for Prometheus scrape targets).
+async fn prometheus_metrics_handler() -> axum::response::Response<axum::body::Body> {
+    let body = middleware::metrics::encode_metrics();
+    axum::response::Response::builder()
+        .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| {
+            axum::response::Response::new(axum::body::Body::from("# error encoding metrics\n"))
+        })
 }
 
 /// Middleware: injects security headers into every response.
