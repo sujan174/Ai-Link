@@ -46,9 +46,9 @@ class TestFrameworkIntegrationImports:
         assert callable(llamaindex_llm)
 
     def test_all_exports_from_init(self):
-        """Verify the __init__.py exports all 4 public functions."""
+        """Verify the __init__.py exports all 5 public names."""
         from ailink.integrations import __all__
-        expected = {"langchain_chat", "langchain_embeddings", "crewai_llm", "llamaindex_llm"}
+        expected = {"langchain_chat", "langchain_embeddings", "AILinkCallbackHandler", "crewai_llm", "llamaindex_llm"}
         assert set(__all__) == expected, f"Missing exports: {expected - set(__all__)}"
 
 
