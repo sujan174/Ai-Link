@@ -34,7 +34,7 @@
 | # | Gap | Missing/Inferior | Why Critical | Effort |
 |---|---|---|---|---|
 | **5** | **~~Observability Export~~** — Prometheus `/metrics`, Langfuse, DataDog ✅ | 🟠 Inferior | ~~SREs can't plug us into Grafana/DataDog without custom work.~~ **DONE** | ~~1 day~~ |
-| **6** | **Weighted Load Balancing** — latency-based, cost-based, least-busy | 🔴 Missing | LiteLLM has 5 routing strategies. We only have A/B split. | ~1.5 days |
+| **6** | **~~Weighted Load Balancing~~** — latency-based, cost-based, least-busy ✅ | 🔴 Missing | ~~LiteLLM has 5 routing strategies. We only have A/B split.~~ **DONE — 5 strategies** | ~~1.5 days~~ |
 | **7** | **RBAC Depth** — model-level access groups per API key | 🟠 Inferior | "This key can only use GPT-4o-mini, not GPT-4o." Can't do that today. | ~0.5 day |
 | **8** | **SSO** — Okta, Google for dashboard login | 🔴 Missing | Enterprise procurement checklist item. No SSO = not enterprise-ready. | ~2 days |
 | **9** | **Team/Org Management** — multi-team hierarchy, tag attribution | 🔴 Missing | Teams are the basic unit of enterprise org structure. Needed for #3 too. | ~1.5 days |
