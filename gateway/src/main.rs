@@ -624,6 +624,9 @@ async fn handle_token_command(
                 policy_ids: p_ids,
                 log_level: Some(1), // Default to redacted logging for CLI
                 circuit_breaker: None, // Use gateway defaults
+                allowed_models: None,
+                team_id: None,
+                tags: None,
             };
 
             state.db.insert_token(&new_token).await?;

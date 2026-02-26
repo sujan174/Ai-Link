@@ -194,8 +194,8 @@ impl PgStore {
 
     pub async fn insert_token(&self, token: &NewToken) -> anyhow::Result<()> {
         sqlx::query(
-            r#"INSERT INTO tokens (id, project_id, name, credential_id, upstream_url, scopes, policy_ids, log_level, circuit_breaker)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 1::SMALLINT), $9)"#
+            r#"INSERT INTO tokens (id, project_id, name, credential_id, upstream_url, scopes, policy_ids, log_level, circuit_breaker, allowed_models, team_id, tags)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 1::SMALLINT), $9, $10, $11, COALESCE($12, '{}'::jsonb))"#
         )
         .bind(&token.id)
         .bind(token.project_id)
@@ -206,6 +206,9 @@ impl PgStore {
         .bind(&token.policy_ids)
         .bind(token.log_level)
         .bind(&token.circuit_breaker)
+        .bind(&token.allowed_models)
+        .bind(token.team_id)
+        .bind(&token.tags)
         .execute(&self.pool)
         .await?;
 
@@ -214,7 +217,7 @@ impl PgStore {
 
     pub async fn get_token(&self, token_id: &str) -> anyhow::Result<Option<TokenRow>> {
         let row = sqlx::query_as::<_, TokenRow>(
-            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams, circuit_breaker FROM tokens WHERE id = $1"
+            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams, circuit_breaker, allowed_models, allowed_model_group_ids, team_id, tags FROM tokens WHERE id = $1"
         )
         .bind(token_id)
         .fetch_optional(&self.pool)
@@ -225,7 +228,7 @@ impl PgStore {
 
     pub async fn list_tokens(&self, project_id: Uuid) -> anyhow::Result<Vec<TokenRow>> {
         let rows = sqlx::query_as::<_, TokenRow>(
-            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams, circuit_breaker FROM tokens WHERE project_id = $1 AND is_active = true ORDER BY created_at DESC"
+            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams, circuit_breaker, allowed_models, allowed_model_group_ids, team_id, tags FROM tokens WHERE project_id = $1 AND is_active = true ORDER BY created_at DESC"
         )
         .bind(project_id)
         .fetch_all(&self.pool)
@@ -321,6 +324,9 @@ impl PgStore {
             policy_ids,
             log_level: Some(log_level),
             circuit_breaker: None,
+            allowed_models: None,
+            team_id: None,
+            tags: None,
         };
         self.insert_token(&token).await?;
         Ok(id)
@@ -1310,6 +1316,12 @@ pub struct NewToken {
     pub log_level: Option<i16>,
     /// Optional circuit breaker config. `None` uses gateway defaults.
     pub circuit_breaker: Option<serde_json::Value>,
+    /// Model access control: list of allowed model patterns (globs).
+    pub allowed_models: Option<serde_json::Value>,
+    /// Team assignment for attribution and budget tracking.
+    pub team_id: Option<Uuid>,
+    /// Tags for cost attribution and tracking.
+    pub tags: Option<serde_json::Value>,
 }
 
 // -- Output structs --

@@ -51,6 +51,13 @@ pub struct CreateTokenRequest {
     /// If provided, `upstream_url` is used as a fallback only if this list is empty.
     /// Each entry: {"url": "...", "weight": 100, "priority": 1, "credential_id": null}
     pub upstreams: Option<Vec<crate::proxy::loadbalancer::UpstreamTarget>>,
+    /// Model access control: list of allowed model patterns (globs).
+    /// NULL = all models allowed (no restriction).
+    pub allowed_models: Option<serde_json::Value>,
+    /// Team this token belongs to (for attribution and budget tracking).
+    pub team_id: Option<Uuid>,
+    /// Tags for cost attribution and tracking.
+    pub tags: Option<serde_json::Value>,
 }
 
 impl CreateTokenRequest {
@@ -409,6 +416,9 @@ pub async fn create_token(
         policy_ids: payload.policy_ids.unwrap_or_default(),
         log_level: resolved_log_level,
         circuit_breaker: payload.circuit_breaker,
+        allowed_models: payload.allowed_models,
+        team_id: payload.team_id,
+        tags: payload.tags,
     };
 
     state.db.insert_token(&new_token).await.map_err(|e| {
