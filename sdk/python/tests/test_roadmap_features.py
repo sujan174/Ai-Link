@@ -180,7 +180,7 @@ class TestSpendBreakdownEndpoint:
 
     @pytest.fixture(autouse=True)
     def setup(self):
-        admin_key = os.environ.get("AILINK_ADMIN_KEY", "test-admin-key")
+        admin_key = os.environ.get("AILINK_ADMIN_KEY", "ailink-admin-test")
         gateway_url = os.environ.get("AILINK_GATEWAY_URL", "http://localhost:8443")
         self.admin = AIlinkClient.admin(admin_key=admin_key, gateway_url=gateway_url)
         if not self.admin.is_healthy(timeout=2.0):
@@ -220,7 +220,6 @@ class TestSpendBreakdownEndpoint:
 
     def test_spend_breakdown_invalid_group_by_returns_400(self):
         """Invalid group_by should return HTTP 400, not 500."""
-        import httpx
         resp = self.admin.get(
             "/api/v1/analytics/spend/breakdown",
             params={"group_by": "invalid_dimension", "hours": 720},
@@ -229,7 +228,6 @@ class TestSpendBreakdownEndpoint:
 
     def test_spend_breakdown_invalid_hours_returns_400(self):
         """Hours out of range should return 400."""
-        import httpx
         resp = self.admin.get(
             "/api/v1/analytics/spend/breakdown",
             params={"group_by": "model", "hours": -1},
