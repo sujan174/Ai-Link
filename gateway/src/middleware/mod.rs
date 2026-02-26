@@ -8,6 +8,7 @@ pub mod guardrail;
 pub mod hitl;
 pub mod langfuse;
 pub mod metrics;
+pub mod model_access;
 pub mod observer;
 pub mod oidc;
 pub mod policy;

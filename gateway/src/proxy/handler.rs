@@ -1413,6 +1413,45 @@ pub async fn proxy_handler(
         .and_then(|m| m.as_str())
         .unwrap_or("")
         .to_string();
+
+    // ── Model Access Control (RBAC Depth) ──
+    // Check if this token is allowed to use the requested model.
+    if !detected_model.is_empty() {
+        let group_models = if let Some(ref group_ids) = token.allowed_model_group_ids {
+            if !group_ids.is_empty() {
+                middleware::model_access::resolve_group_models(&state.pg, group_ids).await
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        if let Err(reason) = middleware::model_access::check_model_access(
+            &detected_model,
+            token.allowed_models.as_ref(),
+            &group_models,
+        ) {
+            tracing::warn!(
+                token_id = %token.id,
+                model = %detected_model,
+                "Model access denied: {}",
+                reason
+            );
+            let mut audit = base_audit(
+                request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                &upstream_url, &policies, hitl_required, hitl_decision, hitl_latency_ms,
+                user_id, tenant_id, external_request_id,
+                session_id, parent_span_id,
+                custom_properties,
+            );
+            audit.upstream_status = Some(403);
+            audit.response_latency_ms = start.elapsed().as_millis() as u64;
+            audit.emit(&state);
+            return Err(AppError::Forbidden(reason));
+        }
+    }
+
     let detected_provider = if !detected_model.is_empty() {
         proxy::model_router::detect_provider(&detected_model, &effective_upstream_url)
     } else {

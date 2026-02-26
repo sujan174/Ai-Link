@@ -32,6 +32,9 @@ pub enum AppError {
     #[error("policy denied: {reason}")]
     PolicyDenied { policy: String, reason: String },
 
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
     #[error("approval timeout")]
     ApprovalTimeout,
 
@@ -117,6 +120,13 @@ impl AppError {
                 "permission_error",
                 "policy_denied",
                 format!("Request blocked by policy '{}': {}", policy, reason),
+                None,
+            ),
+            AppError::Forbidden(reason) => (
+                StatusCode::FORBIDDEN,
+                "permission_error",
+                "model_access_denied",
+                reason.clone(),
                 None,
             ),
             AppError::ApprovalTimeout => (

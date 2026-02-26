@@ -210,6 +210,9 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/health/upstreams", get(handlers::get_upstream_health))
         // Anomaly Detection
         .route("/anomalies", get(handlers::get_anomaly_events))
+        // Model Access Groups (RBAC Depth)
+        .route("/model-access-groups", get(handlers::list_model_access_groups).post(handlers::create_model_access_group))
+        .route("/model-access-groups/:id", put(handlers::update_model_access_group).delete(handlers::delete_model_access_group))
         // Spend Caps
         .route("/tokens/:id/spend", get(handlers::get_spend_caps).put(handlers::upsert_spend_cap))
         .route("/tokens/:id/spend/:period", delete(handlers::delete_spend_cap))

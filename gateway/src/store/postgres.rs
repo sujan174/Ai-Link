@@ -1342,6 +1342,11 @@ pub struct TokenRow {
     pub upstreams: Option<serde_json::Value>,
     /// Optional per-token circuit breaker configuration
     pub circuit_breaker: Option<serde_json::Value>,
+    /// Model access control: list of allowed model patterns (globs).
+    /// NULL = all models allowed (backwards compatible).
+    pub allowed_models: Option<serde_json::Value>,
+    /// References to named model_access_groups for reusable model restrictions.
+    pub allowed_model_group_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
