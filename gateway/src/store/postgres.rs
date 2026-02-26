@@ -1347,6 +1347,10 @@ pub struct TokenRow {
     pub allowed_models: Option<serde_json::Value>,
     /// References to named model_access_groups for reusable model restrictions.
     pub allowed_model_group_ids: Option<Vec<Uuid>>,
+    /// Team this token belongs to (for attribution and budget tracking)
+    pub team_id: Option<Uuid>,
+    /// Tags for cost attribution and tracking
+    pub tags: Option<serde_json::Value>,
 }
 
 #[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]

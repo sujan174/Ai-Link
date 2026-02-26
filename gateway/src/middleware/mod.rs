@@ -17,3 +17,4 @@ pub mod rbac;
 pub mod redact;
 pub mod sanitize;
 pub mod spend;
+pub mod teams;

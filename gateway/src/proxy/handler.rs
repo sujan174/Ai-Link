@@ -1449,6 +1449,28 @@ pub async fn proxy_handler(
             audit.response_latency_ms = start.elapsed().as_millis() as u64;
             audit.emit(&state);
             return Err(AppError::Forbidden(reason));
+    }
+
+    // ── Team-Level Enforcement (Budget + Model Access + Tags) ──
+    let resolved_team = if let Some(team_id) = token.team_id {
+        middleware::teams::get_team(&state.pg, team_id).await
+    } else {
+        None
+    };
+
+    if let Some(ref team) = resolved_team {
+        // Check team budget
+        if let Err(reason) = middleware::teams::check_team_budget(&state.pg, team).await {
+            tracing::warn!(token_id = %token.id, team = %team.name, "Team budget exceeded: {}", reason);
+            return Err(AppError::SpendCapReached { message: reason });
+        }
+
+        // Check team-level model restrictions
+        if !detected_model.is_empty() {
+            if let Err(reason) = middleware::teams::check_team_model_access(&detected_model, team) {
+                tracing::warn!(token_id = %token.id, team = %team.name, model = %detected_model, "Team model access denied: {}", reason);
+                return Err(AppError::Forbidden(reason));
+            }
         }
     }
 

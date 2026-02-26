@@ -213,6 +213,12 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         // Model Access Groups (RBAC Depth)
         .route("/model-access-groups", get(handlers::list_model_access_groups).post(handlers::create_model_access_group))
         .route("/model-access-groups/:id", put(handlers::update_model_access_group).delete(handlers::delete_model_access_group))
+        // Teams (Org Hierarchy)
+        .route("/teams", get(handlers::list_teams).post(handlers::create_team))
+        .route("/teams/:id", put(handlers::update_team).delete(handlers::delete_team))
+        .route("/teams/:id/members", get(handlers::list_team_members).post(handlers::add_team_member))
+        .route("/teams/:id/members/:user_id", delete(handlers::remove_team_member))
+        .route("/teams/:id/spend", get(handlers::get_team_spend))
         // Spend Caps
         .route("/tokens/:id/spend", get(handlers::get_spend_caps).put(handlers::upsert_spend_cap))
         .route("/tokens/:id/spend/:period", delete(handlers::delete_spend_cap))
