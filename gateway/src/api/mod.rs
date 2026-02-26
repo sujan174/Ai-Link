@@ -199,6 +199,7 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/analytics/summary", get(handlers::get_analytics_summary))
         .route("/analytics/timeseries", get(handlers::get_analytics_timeseries))
         .route("/analytics/experiments", get(handlers::get_analytics_experiments))
+        .route("/analytics/spend/breakdown", get(handlers::get_spend_breakdown))
         // Settings & System
         .route("/settings", get(handlers::get_settings).put(handlers::update_settings))
         .route("/system/cache-stats", get(handlers::get_cache_stats))

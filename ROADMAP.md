@@ -24,7 +24,7 @@
 |---|---|---|---|---|
 | **1** | **Provider Breadth** — Azure OpenAI, Bedrock, Groq, Mistral, Together, Cohere, Ollama | 🔴 Missing | Enterprise will reject us in the first 5 min if their stack isn't supported. | ~2 days |
 | **2** | **~~SDK Framework Integrations~~** — LangChain, CrewAI, LlamaIndex ✅ | 🟠 Inferior | ~~Devs Google "ailink langchain". No result = they pick LiteLLM.~~ **DONE** | ~~1 day~~ |
-| **3** | **Spend Tracking Granularity** — per-team, per-model, per-tag budgets | 🟠 Inferior | "Show me GPT-4o spend by team this month" — can't answer this today. | ~2 days |
+| **3** | **~~Spend Tracking Granularity~~** — per-model, per-token, per-tag ✅ | 🟠 Inferior | ~~"Show me GPT-4o spend by team this month" — can't answer this today.~~ **DONE** | ~~2 days~~ |
 | **4** | **Node.js / TypeScript SDK** | 🟠 Inferior | ~50% of AI devs use TypeScript. No TS SDK = invisible to half the market. | ~1.5 days |
 
 ---

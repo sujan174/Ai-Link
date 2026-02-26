@@ -1060,6 +1060,108 @@ impl PgStore {
         .await?;
         Ok(rows)
     }
+
+    // ── Spend Breakdown Queries ──────────────────────────────────────────────
+
+    /// Spend breakdown grouped by model over a time window.
+    pub async fn get_spend_by_model(
+        &self,
+        project_id: Uuid,
+        hours: i32,
+    ) -> anyhow::Result<Vec<SpendByDimension>> {
+        let rows = sqlx::query_as::<_, SpendByDimension>(
+            r#"
+            SELECT
+                COALESCE(model, 'unknown')              AS dimension,
+                COALESCE(SUM(estimated_cost_usd), 0)::float8  AS total_cost_usd,
+                COUNT(*)::bigint                        AS request_count,
+                COALESCE(SUM(prompt_tokens), 0)::bigint AS total_prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0)::bigint AS total_completion_tokens
+            FROM audit_logs
+            WHERE project_id = $1
+              AND created_at > now() - ($2 || ' hours')::interval
+              AND estimated_cost_usd IS NOT NULL
+            GROUP BY model
+            ORDER BY total_cost_usd DESC
+            "#,
+        )
+        .bind(project_id)
+        .bind(hours.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Spend breakdown grouped by token_id over a time window.
+    pub async fn get_spend_by_token(
+        &self,
+        project_id: Uuid,
+        hours: i32,
+    ) -> anyhow::Result<Vec<SpendByDimension>> {
+        let rows = sqlx::query_as::<_, SpendByDimension>(
+            r#"
+            SELECT
+                token_id                                AS dimension,
+                COALESCE(SUM(estimated_cost_usd), 0)::float8  AS total_cost_usd,
+                COUNT(*)::bigint                        AS request_count,
+                COALESCE(SUM(prompt_tokens), 0)::bigint AS total_prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0)::bigint AS total_completion_tokens
+            FROM audit_logs
+            WHERE project_id = $1
+              AND created_at > now() - ($2 || ' hours')::interval
+              AND estimated_cost_usd IS NOT NULL
+            GROUP BY token_id
+            ORDER BY total_cost_usd DESC
+            "#,
+        )
+        .bind(project_id)
+        .bind(hours.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Spend breakdown grouped by a tag key extracted from custom_properties JSONB.
+    /// e.g. group_by_tag = "team" → groups by custom_properties->>'team'
+    pub async fn get_spend_by_tag(
+        &self,
+        project_id: Uuid,
+        hours: i32,
+        tag_key: &str,
+    ) -> anyhow::Result<Vec<SpendByDimension>> {
+        let rows = sqlx::query_as::<_, SpendByDimension>(
+            r#"
+            SELECT
+                COALESCE(custom_properties->>$3, 'untagged') AS dimension,
+                COALESCE(SUM(estimated_cost_usd), 0)::float8     AS total_cost_usd,
+                COUNT(*)::bigint                             AS request_count,
+                COALESCE(SUM(prompt_tokens), 0)::bigint      AS total_prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0)::bigint  AS total_completion_tokens
+            FROM audit_logs
+            WHERE project_id = $1
+              AND created_at > now() - ($2 || ' hours')::interval
+              AND estimated_cost_usd IS NOT NULL
+            GROUP BY custom_properties->>$3
+            ORDER BY total_cost_usd DESC
+            "#,
+        )
+        .bind(project_id)
+        .bind(hours.to_string())
+        .bind(tag_key)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
+/// Row type returned by spend breakdown queries.
+#[derive(Debug, sqlx::FromRow, serde::Serialize)]
+pub struct SpendByDimension {
+    pub dimension: String,
+    pub total_cost_usd: f64,
+    pub request_count: i64,
+    pub total_prompt_tokens: i64,
+    pub total_completion_tokens: i64,
 }
 
 // -- Input structs --

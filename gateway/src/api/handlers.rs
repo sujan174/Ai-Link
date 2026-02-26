@@ -95,6 +95,25 @@ pub struct PaginationParams {
 }
 
 #[derive(Deserialize)]
+pub struct SpendBreakdownParams {
+    pub project_id: Option<Uuid>,
+    /// Grouping dimension: "model", "token", or "tag:<key>" (e.g. "tag:team")
+    pub group_by: Option<String>,
+    /// Time window in hours (default: 720 = 30 days, max: 8760 = 1 year)
+    pub hours: Option<i32>,
+}
+
+#[derive(Serialize)]
+pub struct SpendBreakdownResponse {
+    pub group_by: String,
+    pub dimension_label: String,
+    pub hours: i32,
+    pub total_cost_usd: f64,
+    pub total_requests: i64,
+    pub breakdown: Vec<crate::store::postgres::SpendByDimension>,
+}
+
+#[derive(Deserialize)]
 pub struct CreateProjectRequest {
     pub name: String,
 }
@@ -2242,6 +2261,61 @@ pub async fn get_analytics_experiments(
     })?;
 
     Ok(Json(experiments))
+}
+
+/// GET /api/v1/analytics/spend/breakdown?group_by=model|token|tag:KEY&hours=720
+///
+/// Returns spend grouped by a chosen dimension over a time window.
+/// - `group_by=model`   → spend per LLM model (gpt-4o, claude-3, etc.)
+/// - `group_by=token`   → spend per virtual token (agent key)
+/// - `group_by=tag:team` → spend per custom tag value (from X-Properties header)
+///
+/// Default: group_by=model, hours=720 (30 days)
+pub async fn get_spend_breakdown(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<SpendBreakdownParams>,
+) -> Result<Json<SpendBreakdownResponse>, StatusCode> {
+    auth.require_scope("analytics:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    let hours = params.hours.unwrap_or(720); // default: 30 days
+    if hours <= 0 || hours > 8760 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let group_by = params.group_by.as_deref().unwrap_or("model");
+
+    let (dimension_label, rows) = if group_by == "model" {
+        ("model", state.db.get_spend_by_model(project_id, hours).await)
+    } else if group_by == "token" {
+        ("token", state.db.get_spend_by_token(project_id, hours).await)
+    } else if let Some(tag_key) = group_by.strip_prefix("tag:") {
+        if tag_key.is_empty() || tag_key.len() > 64 {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        (tag_key, state.db.get_spend_by_tag(project_id, hours, tag_key).await)
+    } else {
+        return Err(StatusCode::BAD_REQUEST);
+    };
+
+    let rows = rows.map_err(|e| {
+        tracing::error!("get_spend_breakdown failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let total_cost_usd: f64 = rows.iter().map(|r| r.total_cost_usd).sum();
+    let total_requests: i64 = rows.iter().map(|r| r.request_count).sum();
+
+    Ok(Json(SpendBreakdownResponse {
+        group_by: group_by.to_string(),
+        dimension_label: dimension_label.to_string(),
+        hours,
+        total_cost_usd,
+        total_requests,
+        breakdown: rows,
+    }))
 }
 
 /// PUT /api/v1/pricing — create or update a pricing entry
