@@ -5,15 +5,23 @@
 //! presets like `"pii_redaction"` or `"prompt_injection"` and this handler
 //! expands them into proper policy rules and attaches the policy to a token.
 //!
-//! # Available Presets
-//! | Preset             | What it does                                                    |
-//! |--------------------|-----------------------------------------------------------------|
-//! | `pii_redaction`    | Redact 8 PII types in both directions (silent scrub)            |
-//! | `pii_block`        | Block requests containing PII (reject with 400)                 |
-//! | `prompt_injection` | Block jailbreak + harmful content with a strict 0.3 threshold   |
-//! | `hipaa`            | PII redaction tailored for healthcare: SSN, phone, DOB, email   |
-//! | `pci`              | Redact credit card + API key patterns for payment compliance     |
-//! | `topic_fence`      | Allowlist-based topic restrictor (requires custom config)        |
+//! # Available Presets (22 total)
+//! | Preset               | What it does                                                    |
+//! |----------------------|-----------------------------------------------------------------|
+//! | `pii_redaction`      | Redact 8 PII types in both directions (silent scrub)            |
+//! | `pii_block`          | Block requests containing PII (reject with 400)                 |
+//! | `prompt_injection`   | Block jailbreak + harmful content with a strict 0.3 threshold   |
+//! | `hipaa`              | PII redaction tailored for healthcare: SSN, phone, DOB, email   |
+//! | `pci`                | Redact credit card + API key patterns for payment compliance     |
+//! | `topic_fence`        | Allowlist-based topic restrictor (requires custom config)        |
+//! | `toxicity`           | Block profanity + bias + hate speech (strict)                   |
+//! | `profanity_filter`   | Block profanity/slurs only (lighter)                            |
+//! | `competitor_block`   | Block competitor mentions (configurable names)                  |
+//! | `sensitive_topics`   | Block political/religious/medical/legal/financial advice        |
+//! | `gibberish_filter`   | Block encoding smuggling and random-char attacks                |
+//! | `contact_info_block` | Block phone/address/URL exposure                                |
+//! | `ip_protection`      | Block trade secret / confidentiality leaks                      |
+//! | `strict_enterprise`  | All-in-one: injection + toxicity + PII + IP protection          |
 
 use crate::api::AuthContext;
 use crate::AppState;
@@ -213,6 +221,159 @@ fn expand_preset(name: &str, topic_allowlist: &[String], topic_denylist: &[Strin
             }
         })],
 
+        // ── NEW: Toxicity & Profanity Presets ──
+
+        "toxicity" => vec![json!({
+            "when": {"always": true},
+            "then": {
+                "action": "content_filter",
+                "block_jailbreak": false,
+                "block_harmful": true,
+                "block_code_injection": false,
+                "block_profanity": true,
+                "block_bias": true,
+                "topic_allowlist": [],
+                "topic_denylist": [],
+                "custom_patterns": [],
+                "risk_threshold": 0.3,
+                "max_content_length": 0
+            }
+        })],
+
+        "profanity_filter" => vec![json!({
+            "when": {"always": true},
+            "then": {
+                "action": "content_filter",
+                "block_jailbreak": false,
+                "block_harmful": false,
+                "block_code_injection": false,
+                "block_profanity": true,
+                "topic_allowlist": [],
+                "topic_denylist": [],
+                "custom_patterns": [],
+                "risk_threshold": 0.3,
+                "max_content_length": 0
+            }
+        })],
+
+        // ── NEW: Business & Compliance Presets ──
+
+        "competitor_block" => vec![json!({
+            "when": {"always": true},
+            "then": {
+                "action": "content_filter",
+                "block_jailbreak": false,
+                "block_harmful": false,
+                "block_code_injection": false,
+                "block_competitor_mention": true,
+                "competitor_names": topic_denylist,
+                "topic_allowlist": [],
+                "topic_denylist": [],
+                "custom_patterns": [],
+                "risk_threshold": 0.3,
+                "max_content_length": 0
+            }
+        })],
+
+        "sensitive_topics" => vec![json!({
+            "when": {"always": true},
+            "then": {
+                "action": "content_filter",
+                "block_jailbreak": false,
+                "block_harmful": false,
+                "block_code_injection": false,
+                "block_sensitive_topics": true,
+                "topic_allowlist": [],
+                "topic_denylist": [],
+                "custom_patterns": [],
+                "risk_threshold": 0.3,
+                "max_content_length": 0
+            }
+        })],
+
+        "gibberish_filter" => vec![json!({
+            "when": {"always": true},
+            "then": {
+                "action": "content_filter",
+                "block_jailbreak": false,
+                "block_harmful": false,
+                "block_code_injection": false,
+                "block_gibberish": true,
+                "topic_allowlist": [],
+                "topic_denylist": [],
+                "custom_patterns": [],
+                "risk_threshold": 0.3,
+                "max_content_length": 0
+            }
+        })],
+
+        "contact_info_block" => vec![json!({
+            "when": {"always": true},
+            "then": {
+                "action": "content_filter",
+                "block_jailbreak": false,
+                "block_harmful": false,
+                "block_code_injection": false,
+                "block_contact_info": true,
+                "topic_allowlist": [],
+                "topic_denylist": [],
+                "custom_patterns": [],
+                "risk_threshold": 0.3,
+                "max_content_length": 0
+            }
+        })],
+
+        "ip_protection" => vec![json!({
+            "when": {"always": true},
+            "then": {
+                "action": "content_filter",
+                "block_jailbreak": false,
+                "block_harmful": false,
+                "block_code_injection": false,
+                "block_ip_leakage": true,
+                "topic_allowlist": [],
+                "topic_denylist": [],
+                "custom_patterns": [],
+                "risk_threshold": 0.3,
+                "max_content_length": 0
+            }
+        })],
+
+        "strict_enterprise" => {
+            // All-in-one enterprise preset: injection + toxicity + PII + IP
+            vec![
+                json!({
+                    "when": {"always": true},
+                    "then": {
+                        "action": "content_filter",
+                        "block_jailbreak": true,
+                        "block_harmful": true,
+                        "block_code_injection": true,
+                        "block_profanity": true,
+                        "block_bias": true,
+                        "block_sensitive_topics": true,
+                        "block_gibberish": true,
+                        "block_ip_leakage": true,
+                        "topic_allowlist": [],
+                        "topic_denylist": [],
+                        "custom_patterns": [],
+                        "risk_threshold": 0.3,
+                        "max_content_length": 100000
+                    }
+                }),
+                json!({
+                    "when": {"always": true},
+                    "then": {
+                        "action": "redact",
+                        "direction": "both",
+                        "patterns": ["ssn", "email", "credit_card", "phone", "api_key", "iban", "dob", "ipv4", "passport", "aws_key", "drivers_license", "mrn"],
+                        "fields": [],
+                        "on_match": "redact"
+                    }
+                })
+            ]
+        }
+
         // ── Output Guardrail Presets ── (these create response-phase policies)
 
         "output_content_filter" => vec![json!({
@@ -248,6 +409,22 @@ fn expand_preset(name: &str, topic_allowlist: &[String], topic_denylist: &[Strin
                 "block_jailbreak": false,
                 "block_harmful": false,
                 "block_code_injection": true,
+                "topic_allowlist": [],
+                "topic_denylist": [],
+                "custom_patterns": [],
+                "risk_threshold": 0.3,
+                "max_content_length": 0
+            }
+        })],
+
+        "output_toxicity" => vec![json!({
+            "when": {"always": true},
+            "then": {
+                "action": "content_filter",
+                "block_jailbreak": false,
+                "block_harmful": true,
+                "block_profanity": true,
+                "block_bias": true,
                 "topic_allowlist": [],
                 "topic_denylist": [],
                 "custom_patterns": [],
@@ -660,6 +837,7 @@ fn extract_preset_hints(rules: &serde_json::Value) -> Vec<String> {
 pub async fn list_presets() -> Json<serde_json::Value> {
     Json(json!({
         "presets": [
+            // ── Privacy ──
             {
                 "name": "pii_redaction",
                 "description": "Silently redact 8 PII types (SSN, email, credit card, phone, API key, IBAN, DOB, IP) from both requests and responses.",
@@ -678,27 +856,31 @@ pub async fn list_presets() -> Json<serde_json::Value> {
                 "category": "privacy",
                 "patterns": ["ssn", "email", "credit_card", "phone"]
             },
+            // ── Safety ──
             {
                 "name": "prompt_injection",
-                "description": "Block jailbreak attempts, harmful content, and code injection using 35+ regex patterns with a strict 0.3 risk threshold.",
+                "description": "Block jailbreak attempts, harmful content, and code injection using 100+ regex patterns with a strict 0.3 risk threshold.",
                 "category": "safety"
             },
             {
                 "name": "code_injection",
-                "description": "Block SQL injection, shell commands, Python exec, JS eval, and data exfiltration attempts.",
+                "description": "Block SQL injection, shell commands, Python exec, JS eval, XSS, and data exfiltration attempts.",
                 "category": "safety"
             },
             {
-                "name": "hipaa",
-                "description": "Healthcare-focused PII redaction: SSN, email, phone, date-of-birth, MRN.",
-                "category": "compliance",
-                "patterns": ["ssn", "email", "phone", "dob", "mrn"]
+                "name": "toxicity",
+                "description": "Block profanity, slurs, hate speech, and biased/discriminatory language. Combines profanity + bias detection.",
+                "category": "safety"
             },
             {
-                "name": "pci",
-                "description": "Payment Card Industry compliance: redact credit card numbers and API keys.",
-                "category": "compliance",
-                "patterns": ["credit_card", "api_key"]
+                "name": "profanity_filter",
+                "description": "Block profanity and slurs only (lighter than full toxicity). 17 patterns for offensive language.",
+                "category": "safety"
+            },
+            {
+                "name": "gibberish_filter",
+                "description": "Block encoding smuggling attacks (long base64 blocks, hex dumps, unicode escapes, repeated characters).",
+                "category": "safety"
             },
             {
                 "name": "topic_fence",
@@ -711,6 +893,48 @@ pub async fn list_presets() -> Json<serde_json::Value> {
                 "description": "Block requests with content exceeding 50,000 characters to prevent abuse.",
                 "category": "safety"
             },
+            // ── Business ──
+            {
+                "name": "competitor_block",
+                "description": "Block mentions of competitor products/services. Pass competitor names in `topic_denylist` array.",
+                "category": "business",
+                "required_fields": ["topic_denylist (competitor names)"]
+            },
+            {
+                "name": "sensitive_topics",
+                "description": "Block medical advice, legal advice, financial recommendations, political opinions, and religious prescriptions.",
+                "category": "compliance"
+            },
+            {
+                "name": "contact_info_block",
+                "description": "Block exposure of phone numbers, physical addresses, email addresses, auth-token URLs, and social handles.",
+                "category": "privacy"
+            },
+            // ── Compliance ──
+            {
+                "name": "hipaa",
+                "description": "Healthcare-focused PII redaction: SSN, email, phone, date-of-birth, MRN.",
+                "category": "compliance",
+                "patterns": ["ssn", "email", "phone", "dob", "mrn"]
+            },
+            {
+                "name": "pci",
+                "description": "Payment Card Industry compliance: redact credit card numbers and API keys.",
+                "category": "compliance",
+                "patterns": ["credit_card", "api_key"]
+            },
+            // ── Enterprise ──
+            {
+                "name": "ip_protection",
+                "description": "Block intellectual property leakage: trade secrets, NDA content, confidential markers, internal-only documents.",
+                "category": "enterprise"
+            },
+            {
+                "name": "strict_enterprise",
+                "description": "All-in-one enterprise bundle: prompt injection + toxicity + PII redaction + IP protection + content length limit. Creates 2 rules.",
+                "category": "enterprise"
+            },
+            // ── Output (Response-Phase) ──
             {
                 "name": "output_content_filter",
                 "description": "Scan LLM responses for jailbreak, harmful content, and code injection. Blocks unsafe output before it reaches the client.",
@@ -727,6 +951,12 @@ pub async fn list_presets() -> Json<serde_json::Value> {
             {
                 "name": "output_code_filter",
                 "description": "Block responses containing executable code injection patterns (SQL, shell, eval) from the LLM.",
+                "category": "output_safety",
+                "phase": "response"
+            },
+            {
+                "name": "output_toxicity",
+                "description": "Block LLM responses containing profanity, bias, or harmful content before returning to the client.",
                 "category": "output_safety",
                 "phase": "response"
             }
@@ -792,5 +1022,92 @@ mod tests {
     fn test_expand_unknown_preset() {
         let result = expand_preset("does_not_exist", &[], &[]);
         assert!(result.is_none());
+    }
+
+    // ── NEW: Tests for expanded presets ──
+
+    #[test]
+    fn test_expand_toxicity() {
+        let rules = expand_preset("toxicity", &[], &[]).unwrap();
+        assert_eq!(rules[0]["then"]["action"], "content_filter");
+        assert_eq!(rules[0]["then"]["block_profanity"], true);
+        assert_eq!(rules[0]["then"]["block_bias"], true);
+        assert_eq!(rules[0]["then"]["block_harmful"], true);
+    }
+
+    #[test]
+    fn test_expand_profanity_filter() {
+        let rules = expand_preset("profanity_filter", &[], &[]).unwrap();
+        assert_eq!(rules[0]["then"]["action"], "content_filter");
+        assert_eq!(rules[0]["then"]["block_profanity"], true);
+        // Should not enable bias (lighter filter)
+        assert!(rules[0]["then"]["block_bias"].is_null() || rules[0]["then"]["block_bias"] == false);
+    }
+
+    #[test]
+    fn test_expand_competitor_block() {
+        let competitors = vec!["Portkey".to_string(), "LiteLLM".to_string()];
+        let rules = expand_preset("competitor_block", &[], &competitors).unwrap();
+        assert_eq!(rules[0]["then"]["action"], "content_filter");
+        assert_eq!(rules[0]["then"]["block_competitor_mention"], true);
+        let names = rules[0]["then"]["competitor_names"].as_array().unwrap();
+        assert_eq!(names.len(), 2);
+    }
+
+    #[test]
+    fn test_expand_sensitive_topics() {
+        let rules = expand_preset("sensitive_topics", &[], &[]).unwrap();
+        assert_eq!(rules[0]["then"]["action"], "content_filter");
+        assert_eq!(rules[0]["then"]["block_sensitive_topics"], true);
+    }
+
+    #[test]
+    fn test_expand_gibberish_filter() {
+        let rules = expand_preset("gibberish_filter", &[], &[]).unwrap();
+        assert_eq!(rules[0]["then"]["action"], "content_filter");
+        assert_eq!(rules[0]["then"]["block_gibberish"], true);
+    }
+
+    #[test]
+    fn test_expand_contact_info_block() {
+        let rules = expand_preset("contact_info_block", &[], &[]).unwrap();
+        assert_eq!(rules[0]["then"]["action"], "content_filter");
+        assert_eq!(rules[0]["then"]["block_contact_info"], true);
+    }
+
+    #[test]
+    fn test_expand_ip_protection() {
+        let rules = expand_preset("ip_protection", &[], &[]).unwrap();
+        assert_eq!(rules[0]["then"]["action"], "content_filter");
+        assert_eq!(rules[0]["then"]["block_ip_leakage"], true);
+    }
+
+    #[test]
+    fn test_expand_strict_enterprise() {
+        let rules = expand_preset("strict_enterprise", &[], &[]).unwrap();
+        // Should produce 2 rules: content filter + PII redaction
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0]["then"]["action"], "content_filter");
+        assert_eq!(rules[0]["then"]["block_jailbreak"], true);
+        assert_eq!(rules[0]["then"]["block_profanity"], true);
+        assert_eq!(rules[0]["then"]["block_ip_leakage"], true);
+        assert_eq!(rules[1]["then"]["action"], "redact");
+        let patterns = rules[1]["then"]["patterns"].as_array().unwrap();
+        assert!(patterns.len() >= 12);
+    }
+
+    #[test]
+    fn test_expand_output_toxicity() {
+        let rules = expand_preset("output_toxicity", &[], &[]).unwrap();
+        assert_eq!(rules[0]["then"]["action"], "content_filter");
+        assert_eq!(rules[0]["then"]["block_profanity"], true);
+        assert_eq!(rules[0]["then"]["block_bias"], true);
+    }
+
+    #[test]
+    fn test_is_output_preset_new_presets() {
+        assert!(is_output_preset("output_toxicity"));
+        assert!(!is_output_preset("toxicity"));
+        assert!(!is_output_preset("strict_enterprise"));
     }
 }

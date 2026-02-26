@@ -117,6 +117,12 @@ pub async fn check(
         ExternalVendor::LlamaGuard => {
             check_llama_guard(endpoint, threshold, text).await
         }
+        ExternalVendor::PaloAltoAirs => {
+            check_palo_alto_airs(endpoint, &api_key, threshold, text).await
+        }
+        ExternalVendor::PromptSecurity => {
+            check_prompt_security(endpoint, &api_key, threshold, text).await
+        }
     }
 }
 
@@ -338,5 +344,201 @@ async fn check_llama_guard(
         label,
         score: if blocked { 1.0 } else { 0.0 },
         raw_response: Some(raw),
+    })
+}
+
+// ── Palo Alto AIRS ───────────────────────────────────────────────────────────
+
+/// POST `{endpoint}/v1/scan`
+///
+/// Palo Alto AIRS (AI Runtime Security) scans prompts for injection attacks,
+/// data leakage, and policy violations. The API returns a structured response
+/// with category-level scores and a blocked/allowed decision.
+///
+/// Request:
+/// ```json
+/// {
+///   "content": "...",
+///   "scan_type": "prompt",
+///   "profile": "default"
+/// }
+/// ```
+///
+/// Response:
+/// ```json
+/// {
+///   "action": "block" | "allow",
+///   "risk_score": 0.0–1.0,
+///   "categories": [{"name": "prompt_injection", "score": 0.95}]
+/// }
+/// ```
+async fn check_palo_alto_airs(
+    endpoint: &str,
+    api_key: &str,
+    threshold: f32,
+    text: &str,
+) -> Result<ExternalGuardrailResult, String> {
+    let url = format!("{}/v1/scan", endpoint.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "content": text,
+        "scan_type": "prompt",
+        "profile": "default"
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("x-api-key", api_key)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Palo Alto AIRS request failed: {e}"))?;
+
+    let status = resp.status();
+    let raw = resp
+        .text()
+        .await
+        .map_err(|e| format!("Palo Alto AIRS body read failed: {e}"))?;
+
+    if !status.is_success() {
+        return Err(format!(
+            "Palo Alto AIRS returned HTTP {}: {}",
+            status, raw
+        ));
+    }
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("Palo Alto AIRS parse failed: {e}"))?;
+
+    let action = parsed
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("allow");
+    let risk_score = parsed
+        .get("risk_score")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as f32;
+
+    // Block if the vendor says "block" OR if risk score exceeds our threshold
+    let blocked = action == "block" || risk_score >= threshold;
+
+    let label = if blocked {
+        // Try to get the top category name
+        parsed
+            .get("categories")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|cat| cat.get("name"))
+            .and_then(|n| n.as_str())
+            .map(|s| format!("palo_alto_airs:{}", s))
+            .unwrap_or_else(|| "palo_alto_airs:blocked".to_string())
+    } else {
+        String::new()
+    };
+
+    Ok(ExternalGuardrailResult {
+        blocked,
+        label,
+        score: risk_score,
+        raw_response: Some(serde_json::Value::String(raw)),
+    })
+}
+
+// ── Prompt Security ──────────────────────────────────────────────────────────
+
+/// POST `{endpoint}/api/v1/analyze`
+///
+/// Prompt Security detects prompt injection, jailbreaking, and data leakage.
+/// Uses Bearer token authentication.
+///
+/// Request:
+/// ```json
+/// {
+///   "prompt": "...",
+///   "options": { "detect_injection": true, "detect_leakage": true }
+/// }
+/// ```
+///
+/// Response:
+/// ```json
+/// {
+///   "safe": true|false,
+///   "confidence": 0.0–1.0,
+///   "threats": [{"type": "injection", "confidence": 0.98, "description": "..."}]
+/// }
+/// ```
+async fn check_prompt_security(
+    endpoint: &str,
+    api_key: &str,
+    threshold: f32,
+    text: &str,
+) -> Result<ExternalGuardrailResult, String> {
+    let url = format!("{}/api/v1/analyze", endpoint.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "prompt": text,
+        "options": {
+            "detect_injection": true,
+            "detect_leakage": true
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Prompt Security request failed: {e}"))?;
+
+    let status = resp.status();
+    let raw = resp
+        .text()
+        .await
+        .map_err(|e| format!("Prompt Security body read failed: {e}"))?;
+
+    if !status.is_success() {
+        return Err(format!(
+            "Prompt Security returned HTTP {}: {}",
+            status, raw
+        ));
+    }
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("Prompt Security parse failed: {e}"))?;
+
+    let safe = parsed
+        .get("safe")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let confidence = parsed
+        .get("confidence")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as f32;
+
+    // Block if vendor says unsafe AND confidence exceeds threshold
+    let blocked = !safe && confidence >= threshold;
+
+    let label = if blocked {
+        // Get top threat type
+        parsed
+            .get("threats")
+            .and_then(|t| t.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|threat| threat.get("type"))
+            .and_then(|t| t.as_str())
+            .map(|s| format!("prompt_security:{}", s))
+            .unwrap_or_else(|| "prompt_security:blocked".to_string())
+    } else {
+        String::new()
+    };
+
+    Ok(ExternalGuardrailResult {
+        blocked,
+        label,
+        score: confidence,
+        raw_response: Some(serde_json::Value::String(raw)),
     })
 }

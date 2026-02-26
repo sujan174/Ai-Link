@@ -252,6 +252,30 @@ pub enum Action {
         /// Block code injection attempts (SQL, shell, JS eval, etc.).
         #[serde(default = "default_true")]
         block_code_injection: bool,
+        /// Block profanity, slurs, and toxic language.
+        #[serde(default)]
+        block_profanity: bool,
+        /// Block biased, discriminatory, or stereotyping language.
+        #[serde(default)]
+        block_bias: bool,
+        /// Block mentions of competitor products/services.
+        #[serde(default)]
+        block_competitor_mention: bool,
+        /// Block sensitive topics (political opinions, medical/legal advice, religious content).
+        #[serde(default)]
+        block_sensitive_topics: bool,
+        /// Block gibberish, encoding smuggling (base64 blocks, hex dumps, repeated chars).
+        #[serde(default)]
+        block_gibberish: bool,
+        /// Block contact information exposure (addresses, phone formats, auth URLs).
+        #[serde(default)]
+        block_contact_info: bool,
+        /// Block intellectual property leakage (trade secrets, NDA content, confidential markers).
+        #[serde(default)]
+        block_ip_leakage: bool,
+        /// Custom competitor names to block (used with block_competitor_mention).
+        #[serde(default)]
+        competitor_names: Vec<String>,
         /// If set, only allow prompts that mention at least one of these topics.
         #[serde(default)]
         topic_allowlist: Vec<String>,
@@ -450,6 +474,10 @@ pub enum ExternalVendor {
     AwsComprehend,
     /// Self-hosted LlamaGuard via Ollama or vLLM (OpenAI-compatible chat endpoint)
     LlamaGuard,
+    /// Palo Alto AIRS (AI Runtime Security) — enterprise prompt scanning
+    PaloAltoAirs,
+    /// Prompt Security — prompt injection & data leakage detection
+    PromptSecurity,
 }
 
 // ── ConditionalRoute Sub-types ────────────────────────────────
