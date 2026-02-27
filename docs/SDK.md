@@ -503,14 +503,14 @@ async with client.with_upstream_key("sk-my-key") as byok:
 
 ### Session Tracing
 
-Use `trace()` to correlate all requests in a multi-step agent workflow. Every request inside the block is tagged with the same `x-session-id`, which appears in audit logs so you can filter and replay entire conversations.
+Use `trace()` to correlate all requests in a multi-step agent workflow. Every request inside the block is tagged with the same `x-session-id`, which appears in audit logs so you can filter and replay entire conversations. You can also pass custom `properties` to tag the session with metadata like environment or customer ID.
 
 ```python
 # session_id is auto-generated if omitted
-with client.trace(session_id="conv-abc123") as t:
+with client.trace(session_id="conv-abc123", properties={"env": "prod", "tenant": "acme"}) as t:
     t.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "Step 1"}]})
     t.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "Step 2"}]})
-    # Both requests share session_id="conv-abc123" in audit logs
+    # Both requests share session_id="conv-abc123" and the custom properties in audit logs
 ```
 
 For nested traces (e.g. a sub-agent spawned by a parent), pass `parent_span_id`:

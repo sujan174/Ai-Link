@@ -4,18 +4,19 @@
 //! Metrics are updated on every proxied request via `record()`.
 
 use crate::models::audit::AuditEntry;
+use dashmap::DashSet;
+use once_cell::sync::Lazy;
 use prometheus::{
     opts, register_counter_vec, register_histogram_vec,
     CounterVec, Encoder, HistogramVec, TextEncoder,
 };
 use rust_decimal::prelude::ToPrimitive;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// Maximum unique label combinations before bucketing to "other".
+/// Maximum unique model names before bucketing to "other".
 const MAX_CARDINALITY: usize = 10_000;
 
-/// Global cardinality tracker.
-static LABEL_COMBOS: AtomicUsize = AtomicUsize::new(0);
+/// Tracks unique model names seen so far (cardinality guard).
+static SEEN_MODELS: Lazy<DashSet<String>> = Lazy::new(DashSet::new);
 
 /// Prometheus metrics recorder.
 /// All metrics are registered in the global default registry.
@@ -102,13 +103,15 @@ impl PrometheusRecorder {
     /// Record metrics for a completed request.
     /// Called from `ObserverHub::record()` on every proxy request.
     pub fn record(&self, entry: &AuditEntry) {
-        // Cardinality guard: if we've seen too many unique combos, bucket to "other"
-        let current = LABEL_COMBOS.load(Ordering::Relaxed);
-        let model = if current > MAX_CARDINALITY {
+        // Cardinality guard: if we've seen too many unique models, bucket new ones to "other"
+        let raw_model = entry.model.as_deref().unwrap_or("unknown");
+        let model = if SEEN_MODELS.contains(raw_model) {
+            raw_model
+        } else if SEEN_MODELS.len() >= MAX_CARDINALITY {
             "other"
         } else {
-            LABEL_COMBOS.fetch_add(1, Ordering::Relaxed);
-            entry.model.as_deref().unwrap_or("unknown")
+            SEEN_MODELS.insert(raw_model.to_string());
+            raw_model
         };
 
         let status = entry

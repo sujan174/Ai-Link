@@ -17,7 +17,7 @@ import json
 import pytest
 
 # Add the SDK to the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python"))
 
 from ailink import AIlinkClient
 from ailink.integrations import langchain_chat, crewai_llm, llamaindex_llm

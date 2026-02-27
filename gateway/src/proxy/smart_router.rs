@@ -304,10 +304,11 @@ fn evaluate_route_condition(
         "regex" => {
             let Some(val) = actual else { return false };
             let pattern = cond.value.as_str().unwrap_or("");
-            if let Ok(re) = regex::Regex::new(pattern) {
-                re.is_match(val.as_str().unwrap_or(""))
-            } else {
-                false
+            // B12-2 FIX: compile with size limit to prevent ReDoS
+            // (matches the 1MB limit used in engine.rs check_regex)
+            match regex::RegexBuilder::new(pattern).size_limit(1 << 20).build() {
+                Ok(re) => re.is_match(val.as_str().unwrap_or("")),
+                Err(_) => false,
             }
         }
         _ => {

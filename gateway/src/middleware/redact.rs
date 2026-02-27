@@ -398,10 +398,14 @@ pub fn apply_transform(body: &mut Value, header_mutations: &mut HeaderMutations,
         }
         TransformOp::RegexReplace { pattern, replacement, global } => {
             tracing::info!(pattern = %pattern, "transform: regex replace");
-            if let Ok(re) = Regex::new(pattern) {
+            // B-REDACT-1 FIX: Use size_limit to prevent ReDoS attacks
+            if let Ok(re) = regex::RegexBuilder::new(pattern)
+                .size_limit(1_000_000)
+                .build()
+            {
                 apply_regex_replace_to_value(body, &re, replacement, *global);
             } else {
-                tracing::warn!(pattern = %pattern, "transform: invalid regex pattern, skipping");
+                tracing::warn!(pattern = %pattern, "transform: invalid or too-complex regex pattern, skipping");
             }
         }
         TransformOp::SetBodyField { path, value } => {

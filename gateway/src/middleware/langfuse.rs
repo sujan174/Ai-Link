@@ -36,6 +36,22 @@ struct LangfuseGeneration {
     level: String,
 }
 
+/// Langfuse trace event — parent container for generations.
+/// Required so Langfuse UI can group generations by session/agent.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LangfuseTrace {
+    id: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
+    timestamp: String,
+}
+
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct LangfuseUsage {
@@ -55,7 +71,7 @@ struct LangfuseIngestionEvent {
     #[serde(rename = "type")]
     event_type: String,
     timestamp: String,
-    body: LangfuseGeneration,
+    body: serde_json::Value,
 }
 
 pub struct LangfuseExporter {
@@ -63,7 +79,7 @@ pub struct LangfuseExporter {
     public_key: String,
     secret_key: String,
     client: reqwest::Client,
-    buffer: Arc<Mutex<Vec<LangfuseGeneration>>>,
+    buffer: Arc<Mutex<Vec<LangfuseIngestionEvent>>>,
     max_batch_size: usize,
 }
 
@@ -102,7 +118,7 @@ impl LangfuseExporter {
                 tokio::time::interval(std::time::Duration::from_millis(flush_interval_ms));
             loop {
                 interval.tick().await;
-                let events: Vec<LangfuseGeneration> = {
+                let events: Vec<LangfuseIngestionEvent> = {
                     let mut buf = buffer.lock().await;
                     if buf.is_empty() {
                         continue;
@@ -126,7 +142,8 @@ impl LangfuseExporter {
         Ok(exporter)
     }
 
-    /// Queue a generation event for async batched export.
+    /// Queue a trace + generation event pair for async batched export.
+    /// The trace groups generations by session/agent in the Langfuse UI.
     pub fn export_async(&self, entry: &AuditEntry) {
         let prompt_tokens = entry.prompt_tokens.unwrap_or(0);
         let completion_tokens = entry.completion_tokens.unwrap_or(0);
@@ -134,9 +151,16 @@ impl LangfuseExporter {
         let start_time =
             end_time - chrono::Duration::milliseconds(entry.response_latency_ms as i64);
 
+        // Use session_id as trace grouping key when available,
+        // otherwise each request gets its own trace.
+        let trace_id = entry
+            .session_id
+            .clone()
+            .unwrap_or_else(|| entry.request_id.to_string());
+
         let generation = LangfuseGeneration {
             id: format!("gen-{}", entry.request_id),
-            trace_id: entry.request_id.to_string(),
+            trace_id: trace_id.clone(),
             name: entry
                 .model
                 .clone()
@@ -160,6 +184,33 @@ impl LangfuseExporter {
             },
         };
 
+        // Build parent trace so Langfuse groups generations by session/agent
+        let trace = LangfuseTrace {
+            id: trace_id,
+            name: entry
+                .agent_name
+                .clone()
+                .unwrap_or_else(|| "ailink-proxy".to_string()),
+            session_id: entry.session_id.clone(),
+            user_id: entry.user_id.clone(),
+            metadata: entry.custom_properties.clone(),
+            timestamp: start_time.to_rfc3339(),
+        };
+
+        let ts = end_time.to_rfc3339();
+        let trace_event = LangfuseIngestionEvent {
+            id: format!("trace-{}", entry.request_id),
+            event_type: "trace-create".to_string(),
+            timestamp: ts.clone(),
+            body: serde_json::to_value(&trace).unwrap_or_default(),
+        };
+        let gen_event = LangfuseIngestionEvent {
+            id: generation.id.clone(),
+            event_type: "generation-create".to_string(),
+            timestamp: ts,
+            body: serde_json::to_value(&generation).unwrap_or_default(),
+        };
+
         let buffer = self.buffer.clone();
         let max_batch = self.max_batch_size;
         let host = self.host.clone();
@@ -170,13 +221,14 @@ impl LangfuseExporter {
         tokio::spawn(async move {
             let should_flush = {
                 let mut buf = buffer.lock().await;
-                buf.push(generation);
+                buf.push(trace_event);
+                buf.push(gen_event);
                 buf.len() >= max_batch
             };
 
             // Flush immediately if buffer is full
             if should_flush {
-                let events: Vec<LangfuseGeneration> = {
+                let events: Vec<LangfuseIngestionEvent> = {
                     let mut buf = buffer.lock().await;
                     buf.drain(..).collect()
                 };
@@ -192,21 +244,11 @@ impl LangfuseExporter {
         host: &str,
         public_key: &str,
         secret_key: &str,
-        events: Vec<LangfuseGeneration>,
+        batch: Vec<LangfuseIngestionEvent>,
     ) -> anyhow::Result<()> {
-        if events.is_empty() {
+        if batch.is_empty() {
             return Ok(());
         }
-
-        let batch: Vec<LangfuseIngestionEvent> = events
-            .into_iter()
-            .map(|gen| LangfuseIngestionEvent {
-                id: gen.id.clone(),
-                event_type: "generation-create".to_string(),
-                timestamp: gen.end_time.clone(),
-                body: gen,
-            })
-            .collect();
 
         let count = batch.len();
         let payload = LangfuseIngestion { batch };
@@ -265,31 +307,60 @@ mod tests {
 
     #[test]
     fn test_ingestion_event_type() {
+        let gen = LangfuseGeneration {
+            id: "gen-1".into(),
+            trace_id: "t1".into(),
+            name: "test".into(),
+            model: None,
+            start_time: "2026-01-01T00:00:00Z".into(),
+            end_time: "2026-01-01T00:00:01Z".into(),
+            input: None,
+            output: None,
+            usage: LangfuseUsage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+            },
+            metadata: None,
+            status_message: None,
+            level: "DEFAULT".into(),
+        };
+
         let event = LangfuseIngestionEvent {
             id: "gen-1".into(),
             event_type: "generation-create".into(),
             timestamp: "2026-01-01T00:00:00Z".into(),
-            body: LangfuseGeneration {
-                id: "gen-1".into(),
-                trace_id: "t1".into(),
-                name: "test".into(),
-                model: None,
-                start_time: "2026-01-01T00:00:00Z".into(),
-                end_time: "2026-01-01T00:00:01Z".into(),
-                input: None,
-                output: None,
-                usage: LangfuseUsage {
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    total_tokens: 0,
-                },
-                metadata: None,
-                status_message: None,
-                level: "DEFAULT".into(),
-            },
+            body: serde_json::to_value(&gen).unwrap(),
         };
 
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "generation-create");
+        // Verify nested generation body is present
+        assert_eq!(json["body"]["traceId"], "t1");
+    }
+
+    #[test]
+    fn test_trace_create_event() {
+        let trace = LangfuseTrace {
+            id: "session-abc".into(),
+            name: "my-agent".into(),
+            session_id: Some("session-abc".into()),
+            user_id: Some("user-1".into()),
+            metadata: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+
+        let event = LangfuseIngestionEvent {
+            id: "trace-req-1".into(),
+            event_type: "trace-create".into(),
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            body: serde_json::to_value(&trace).unwrap(),
+        };
+
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "trace-create");
+        assert_eq!(json["body"]["sessionId"], "session-abc");
+        assert_eq!(json["body"]["name"], "my-agent");
+        assert_eq!(json["body"]["userId"], "user-1");
     }
 }

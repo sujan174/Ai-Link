@@ -14,6 +14,7 @@
 //!   6. Logs the session summary on close
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
@@ -32,6 +33,7 @@ use tokio_tungstenite::{
 
 use crate::vault::SecretStore;
 use crate::AppState;
+use crate::middleware;
 
 // ── Query params ──────────────────────────────────────────────
 
@@ -117,12 +119,35 @@ pub async fn realtime_handler(
         StatusCode::UNAUTHORIZED
     })?;
 
+    // ── B6-3 FIX: Pre-flight policy enforcement ───────────────
+    // Rate limit check (same mechanism as REST proxy)
+    if state.config.default_rate_limit > 0 {
+        let rl_key = format!("rl:realtime:tok:{}", token_id);
+        let count = state
+            .cache
+            .increment(&rl_key, state.config.default_rate_limit_window)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if count > state.config.default_rate_limit as u64 {
+            tracing::warn!(token_id = %token_id, "realtime: rate limit exceeded");
+            return Err(StatusCode::TOO_MANY_REQUESTS);
+        }
+    }
+
+    // Spend cap check
+    if let Err(e) = middleware::spend::check_spend_cap(&state.cache, state.db.pool(), &token_id).await {
+        tracing::warn!(token_id = %token_id, error = %e, "realtime: spend cap exceeded");
+        return Err(StatusCode::PAYMENT_REQUIRED);
+    }
+
     // ── 3. Upgrade client connection and start relay ───────────
     let upstream_ws_url2 = upstream_ws_url.clone();
     let token_id2 = token_id.clone();
+    let project_id = token.project_id;
+    let state_clone = state.clone();
 
     Ok(ws.on_upgrade(move |client_ws| async move {
-        if let Err(e) = relay(client_ws, &upstream_ws_url2, &api_key, &token_id2).await {
+        if let Err(e) = relay(client_ws, &upstream_ws_url2, &api_key, &token_id2, &model, project_id, &state_clone).await {
             tracing::warn!(token_id = %token_id2, url = %upstream_ws_url2, "realtime relay ended: {}", e);
         }
     }))
@@ -135,7 +160,12 @@ async fn relay(
     upstream_url: &str,
     api_key: &str,
     token_id: &str,
+    model: &str,
+    project_id: uuid::Uuid,
+    state: &Arc<AppState>,
 ) -> anyhow::Result<()> {
+    let session_start = Instant::now();
+
     // ── Connect to upstream with credential injection ──────────
     let request = Request::builder()
         .uri(upstream_url)
@@ -192,11 +222,28 @@ async fn relay(
         _ = upstream_to_client => {},
     }
 
+    let session_duration_ms = session_start.elapsed().as_millis() as u64;
+
     tracing::info!(
         token_id = %token_id,
         client_msgs = msg_count_client,
         upstream_msgs = msg_count_upstream,
+        duration_ms = session_duration_ms,
         "realtime: session ended"
+    );
+
+    // ── B6-2 FIX: Emit audit log entry for the realtime session ──
+    // Structured log captured by observability pipeline (Langfuse, Datadog, Prometheus)
+    tracing::info!(
+        audit_type = "realtime_session",
+        token_id = %token_id,
+        project_id = %project_id,
+        model = %model,
+        upstream_url = %upstream_url,
+        client_msgs = msg_count_client,
+        upstream_msgs = msg_count_upstream,
+        duration_ms = session_duration_ms,
+        "realtime: session audit"
     );
 
     Ok(())

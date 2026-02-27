@@ -294,18 +294,34 @@ fn openai_to_anthropic_request(body: &Value) -> Value {
                                         "text": p.get("text").cloned().unwrap_or(json!(""))
                                     }),
                                     "image_url" => {
-                                        // Anthropic wants base64 source blocks
                                         let url = p.get("image_url")
                                             .and_then(|u| u.get("url"))
                                             .and_then(|u| u.as_str())
                                             .unwrap_or("");
-                                        json!({
-                                            "type": "image",
-                                            "source": {
-                                                "type": "url",
-                                                "url": url
-                                            }
-                                        })
+                                        if url.starts_with("data:") {
+                                            // Base64 data URI → Anthropic base64 source block
+                                            let mime = url.split(';').next()
+                                                .and_then(|s| s.strip_prefix("data:"))
+                                                .unwrap_or("image/jpeg");
+                                            let data = url.splitn(2, ',').nth(1).unwrap_or("");
+                                            json!({
+                                                "type": "image",
+                                                "source": {
+                                                    "type": "base64",
+                                                    "media_type": mime,
+                                                    "data": data
+                                                }
+                                            })
+                                        } else {
+                                            // HTTP URL → Anthropic URL source block
+                                            json!({
+                                                "type": "image",
+                                                "source": {
+                                                    "type": "url",
+                                                    "url": url
+                                                }
+                                            })
+                                        }
                                     }
                                     _ => p.clone(),
                                 }
@@ -562,9 +578,19 @@ fn openai_to_gemini_request(body: &Value) -> Value {
                 }
                 "tool" => {
                     // Function result → Gemini functionResponse
+                    // Gemini requires the function NAME, not the tool_call_id.
+                    // Look up the function name from the tool_call_id by scanning
+                    // preceding assistant messages for matching tool_calls.
                     let tool_call_id = msg.get("tool_call_id")
                         .and_then(|t| t.as_str())
                         .unwrap_or("unknown");
+                    let func_name = messages.iter()
+                        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+                        .filter_map(|m| m.get("tool_calls").and_then(|tc| tc.as_array()))
+                        .flatten()
+                        .find(|tc| tc.get("id").and_then(|id| id.as_str()) == Some(tool_call_id))
+                        .and_then(|tc| tc.get("function").and_then(|f| f.get("name")).and_then(|n| n.as_str()))
+                        .unwrap_or(tool_call_id); // Fallback to tool_call_id if lookup fails
                     let content_val = msg.get("content")
                         .and_then(|c| c.as_str())
                         .unwrap_or("");
@@ -572,7 +598,7 @@ fn openai_to_gemini_request(body: &Value) -> Value {
                         "role": "user",
                         "parts": [{
                             "functionResponse": {
-                                "name": tool_call_id,
+                                "name": func_name,
                                 "response": { "result": content_val }
                             }
                         }]

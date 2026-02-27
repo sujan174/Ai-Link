@@ -18,7 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/rust-1.75+-orange?logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">
-  <img src="https://img.shields.io/badge/tests-1%2C162%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-1%2C170%20passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/latency-%3C1ms%20overhead-purple" alt="Latency">
   <img src="https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white" alt="Docker">
 </p>
@@ -228,12 +228,17 @@ ailink/
 │   │   ├── vault/            # AES-256-GCM credential storage
 │   │   ├── api/              # Management REST API
 │   │   └── mcp/              # MCP client, registry, types
-│   ├── tests/                # Integration tests (98 tests)
 │   └── migrations/           # SQL migrations (001–036)
 ├── dashboard/                # Next.js admin UI
 ├── sdk/python/               # Python SDK (pip install ailink)
-├── scripts/                  # E2E test suites (108 tests)
-├── tests/mock-upstream/      # Mock provider server for testing
+├── tests/                    # All tests in one place
+│   ├── unit/                 # Pure unit tests — no gateway needed
+│   ├── integration/          # Live gateway + docker tests
+│   ├── e2e/                  # Full-stack mock E2E (116 tests, 22 phases)
+│   ├── realworld/            # Real provider API tests
+│   ├── mock-upstream/        # FastAPI mock server (Dockerfile + server.py)
+│   ├── conftest.py           # Shared pytest fixtures
+│   └── ci_security_check.sh # CI security gate
 ├── docs/                     # Documentation
 └── docker-compose.yml
 ```
@@ -257,20 +262,26 @@ ailink/
 
 ## 🧪 Test Suite
 
-AILink has **1,162 tests** across three layers — no false positives, no mocks where real assertions belong.
+AILink has **1,170 tests** across three layers — no false positives, no mocks where real assertions belong.
 
 | Layer | Tests | What's Covered |
 |---|---|---|
 | **Rust Unit** | 956 | Policy engine operators, PII regex, cache keys, guardrail patterns, spend caps |
 | **Rust Integration** | 98 | Webhooks via wiremock, adversarial PII, RBAC, teams, load balancer routing |
-| **Python E2E** | 108 | 21 phases against live Docker stack — providers, streaming, guardrails, OIDC, teams, sessions |
+| **Python E2E** | 116 | 22 phases against live Docker stack — providers, streaming, guardrails, OIDC, teams, sessions, MCP, anomaly detection |
 
 ```bash
-# Run all Rust tests
+# Run all Rust tests (unit + integration)
 cargo test
 
-# Run E2E suite (requires docker compose up)
-python3 scripts/test_mock_suite.py
+# Run Python unit tests (no gateway needed)
+python3 -m pytest tests/unit/ -v
+
+# Run integration tests (requires docker compose up)
+python3 -m pytest tests/integration/ -v
+
+# Run full E2E mock suite (requires docker compose up)
+python3 tests/e2e/test_mock_suite.py
 ```
 
 ---

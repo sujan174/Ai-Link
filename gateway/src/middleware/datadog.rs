@@ -60,80 +60,122 @@ impl DataDogExporter {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "0".to_string());
 
+        // Extract custom tag values from entry.custom_properties for DD_CUSTOM_TAGS keys
+        let custom_tags: Vec<(String, String)> = self
+            .custom_tag_keys
+            .iter()
+            .filter_map(|key| {
+                entry
+                    .custom_properties
+                    .as_ref()
+                    .and_then(|p| p.get(key))
+                    .and_then(|v| v.as_str())
+                    .map(|val| (key.clone(), val.to_string()))
+            })
+            .collect();
+
         // Request counter
-        let _ = self
-            .client
-            .count_with_tags("request.count", 1)
-            .with_tag("model", model)
-            .with_tag("status", &status)
-            .with_tag("cache_hit", if entry.cache_hit { "true" } else { "false" })
-            .try_send();
+        {
+            let mut builder = self
+                .client
+                .count_with_tags("request.count", 1)
+                .with_tag("model", model)
+                .with_tag("status", &status)
+                .with_tag("cache_hit", if entry.cache_hit { "true" } else { "false" });
+            for (k, v) in &custom_tags {
+                builder = builder.with_tag(k, v);
+            }
+            let _ = builder.try_send();
+        }
 
         // Request duration (histogram via timer)
-        let duration_ms = entry.response_latency_ms;
-        let _ = self
-            .client
-            .time_with_tags("request.duration", duration_ms)
-            .with_tag("model", model)
-            .with_tag("status", &status)
-            .try_send();
+        {
+            let duration_ms = entry.response_latency_ms;
+            let mut builder = self
+                .client
+                .time_with_tags("request.duration", duration_ms)
+                .with_tag("model", model)
+                .with_tag("status", &status);
+            for (k, v) in &custom_tags {
+                builder = builder.with_tag(k, v);
+            }
+            let _ = builder.try_send();
+        }
 
         // Token counters
         if let Some(prompt) = entry.prompt_tokens {
-            let _ = self
+            let mut builder = self
                 .client
                 .count_with_tags("tokens", prompt as i64)
                 .with_tag("model", model)
-                .with_tag("type", "prompt")
-                .try_send();
+                .with_tag("type", "prompt");
+            for (k, v) in &custom_tags {
+                builder = builder.with_tag(k, v);
+            }
+            let _ = builder.try_send();
         }
         if let Some(completion) = entry.completion_tokens {
-            let _ = self
+            let mut builder = self
                 .client
                 .count_with_tags("tokens", completion as i64)
                 .with_tag("model", model)
-                .with_tag("type", "completion")
-                .try_send();
+                .with_tag("type", "completion");
+            for (k, v) in &custom_tags {
+                builder = builder.with_tag(k, v);
+            }
+            let _ = builder.try_send();
         }
 
         // Cost counter (in millicents to avoid float precision issues)
         if let Some(cost) = entry.estimated_cost_usd {
             if let Some(cost_f64) = cost.to_f64() {
                 let millicents = (cost_f64 * 100_000.0).round() as i64;
-                let _ = self
+                let mut builder = self
                     .client
                     .count_with_tags("cost.millicents", millicents)
-                    .with_tag("model", model)
-                    .try_send();
+                    .with_tag("model", model);
+                for (k, v) in &custom_tags {
+                    builder = builder.with_tag(k, v);
+                }
+                let _ = builder.try_send();
             }
         }
 
         // Error counter
         if let Some(error_type) = &entry.error_type {
-            let _ = self
+            let mut builder = self
                 .client
                 .count_with_tags("errors", 1)
                 .with_tag("model", model)
-                .with_tag("error_type", error_type)
-                .try_send();
+                .with_tag("error_type", error_type);
+            for (k, v) in &custom_tags {
+                builder = builder.with_tag(k, v);
+            }
+            let _ = builder.try_send();
         }
 
         // TTFT (streaming)
         if let Some(ttft_ms) = entry.ttft_ms {
-            let _ = self
+            let mut builder = self
                 .client
                 .time_with_tags("ttft", ttft_ms)
-                .with_tag("model", model)
-                .try_send();
+                .with_tag("model", model);
+            for (k, v) in &custom_tags {
+                builder = builder.with_tag(k, v);
+            }
+            let _ = builder.try_send();
         }
 
         // Cache hit counter
         if entry.cache_hit {
-            let _ = self
+            let mut builder = self
                 .client
                 .count_with_tags("cache.hits", 1)
-                .with_tag("model", model)
-                .try_send();
+                .with_tag("model", model);
+            for (k, v) in &custom_tags {
+                builder = builder.with_tag(k, v);
+            }
+            let _ = builder.try_send();
         }
     }
 }

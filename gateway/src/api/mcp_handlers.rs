@@ -5,11 +5,12 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
+use axum::{Extension, Json};
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::api::AuthContext;
 use crate::mcp::registry::{McpServerConfig, McpServerInfo};
 use crate::mcp::types::McpToolDef;
 use crate::AppState;
@@ -46,8 +47,12 @@ pub struct TestMcpServerResponse {
 /// POST /api/v1/mcp/servers — Register a new MCP server.
 pub async fn register_mcp_server(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Json(req): Json<RegisterMcpServerRequest>,
 ) -> Result<(StatusCode, Json<RegisterMcpServerResponse>), (StatusCode, String)> {
+    // SEC: admin + mcp:write required to register MCP servers
+    auth.require_role("admin").map_err(|s| (s, "Forbidden".to_string()))?;
+    auth.require_scope("mcp:write").map_err(|s| (s, "Forbidden".to_string()))?;
     // Validate name (alphanumeric + hyphens only, for safe namespacing)
     if req.name.is_empty() || !req.name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
         return Err((StatusCode::BAD_REQUEST, "Name must be alphanumeric (hyphens/underscores allowed)".into()));
@@ -86,27 +91,38 @@ pub async fn register_mcp_server(
 /// GET /api/v1/mcp/servers — List all registered MCP servers.
 pub async fn list_mcp_servers(
     State(state): State<Arc<AppState>>,
-) -> Json<Vec<McpServerInfo>> {
-    Json(state.mcp_registry.list_servers().await)
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Vec<McpServerInfo>>, StatusCode> {
+    // SEC: mcp:read scope required
+    auth.require_scope("mcp:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    Ok(Json(state.mcp_registry.list_servers().await))
 }
 
 /// DELETE /api/v1/mcp/servers/:id — Remove an MCP server.
 pub async fn delete_mcp_server(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> StatusCode {
+) -> Result<StatusCode, StatusCode> {
+    // SEC: admin + mcp:write required to delete MCP servers
+    auth.require_role("admin").map_err(|_| StatusCode::FORBIDDEN)?;
+    auth.require_scope("mcp:write").map_err(|_| StatusCode::FORBIDDEN)?;
     if state.mcp_registry.unregister(&id).await {
-        StatusCode::NO_CONTENT
+        Ok(StatusCode::NO_CONTENT)
     } else {
-        StatusCode::NOT_FOUND
+        Err(StatusCode::NOT_FOUND)
     }
 }
 
 /// POST /api/v1/mcp/servers/:id/refresh — Force-refresh tool cache.
 pub async fn refresh_mcp_server(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<McpToolDef>>, (StatusCode, String)> {
+    // SEC: admin + mcp:write required to refresh MCP server caches
+    auth.require_role("admin").map_err(|s| (s, "Forbidden".to_string()))?;
+    auth.require_scope("mcp:write").map_err(|s| (s, "Forbidden".to_string()))?;
     match state.mcp_registry.refresh(&id).await {
         Ok(tools) => Ok(Json(tools)),
         Err(e) => Err((StatusCode::BAD_GATEWAY, e)),
@@ -116,8 +132,11 @@ pub async fn refresh_mcp_server(
 /// GET /api/v1/mcp/servers/:id/tools — List cached tools for a server.
 pub async fn list_mcp_server_tools(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<McpToolDef>>, StatusCode> {
+    // SEC: mcp:read scope required
+    auth.require_scope("mcp:read").map_err(|_| StatusCode::FORBIDDEN)?;
     match state.mcp_registry.get_server_tools(&id).await {
         Some(tools) => Ok(Json(tools)),
         None => Err(StatusCode::NOT_FOUND),
@@ -126,32 +145,36 @@ pub async fn list_mcp_server_tools(
 
 /// POST /api/v1/mcp/servers/test — Test connection to an MCP server without registering.
 pub async fn test_mcp_server(
+    Extension(auth): Extension<AuthContext>,
     Json(req): Json<RegisterMcpServerRequest>,
-) -> Json<TestMcpServerResponse> {
+) -> Result<Json<TestMcpServerResponse>, StatusCode> {
+    // SEC: admin + mcp:write required to test MCP server connections
+    auth.require_role("admin").map_err(|_| StatusCode::FORBIDDEN)?;
+    auth.require_scope("mcp:write").map_err(|_| StatusCode::FORBIDDEN)?;
     use crate::mcp::client::McpClient;
 
     let client = McpClient::new(&req.endpoint, req.api_key);
 
     match client.initialize().await {
         Ok(_) => match client.list_tools().await {
-            Ok(tools) => Json(TestMcpServerResponse {
+            Ok(tools) => Ok(Json(TestMcpServerResponse {
                 connected: true,
                 tool_count: tools.len(),
                 tools,
                 error: None,
-            }),
-            Err(e) => Json(TestMcpServerResponse {
+            })),
+            Err(e) => Ok(Json(TestMcpServerResponse {
                 connected: true,
                 tool_count: 0,
                 tools: vec![],
                 error: Some(format!("Connected but failed to list tools: {}", e)),
-            }),
+            })),
         },
-        Err(e) => Json(TestMcpServerResponse {
+        Err(e) => Ok(Json(TestMcpServerResponse {
             connected: false,
             tool_count: 0,
             tools: vec![],
             error: Some(e),
-        }),
+        })),
     }
 }

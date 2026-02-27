@@ -145,9 +145,8 @@ fn bucket_velocities(
         }
     }
 
-    // Only return non-zero buckets (avoid inflating mean with empty periods)
-    // But keep at least the full set to detect true low-activity baselines
-    buckets
+    // Only return non-zero buckets (avoid inflating mean with empty/idle periods)
+    buckets.into_iter().filter(|&count| count > 0.0).collect()
 }
 
 /// Calculate mean and standard deviation of a sample.
@@ -205,11 +204,10 @@ mod tests {
             990.0, 989.0,          // age 10,11 → bucket 2
         ];
         let buckets = bucket_velocities(&timestamps, 5, now, 20);
-        assert_eq!(buckets.len(), 4); // 20/5 = 4 buckets
+        assert_eq!(buckets.len(), 3); // 3 non-zero buckets (empty bucket filtered out)
         assert_eq!(buckets[0], 3.0);  // 999, 998, 997
         assert_eq!(buckets[1], 2.0);  // 995, 994
         assert_eq!(buckets[2], 2.0);  // 990, 989
-        assert_eq!(buckets[3], 0.0);  // empty
     }
 
     #[test]

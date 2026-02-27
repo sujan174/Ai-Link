@@ -45,6 +45,10 @@ pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body
 
     tokio::spawn(async move {
         let mut first = true;
+        // B3-2 FIX: Buffer for incomplete UTF-8 sequences split across TCP chunks.
+        // SSE is text-based, so a multi-byte char can be sliced at a chunk boundary.
+        // We hold trailing incomplete bytes and prepend them to the next chunk.
+        let mut utf8_residual: Vec<u8> = Vec::new();
 
         while let Some(chunk_result) = byte_stream.next().await {
             match chunk_result {
@@ -57,10 +61,31 @@ pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body
                         acc_guard.set_ttft_ms(start.elapsed().as_millis() as u64);
                     }
 
+                    // Combine residual bytes from previous chunk with current chunk
+                    let combined = if utf8_residual.is_empty() {
+                        bytes.to_vec()
+                    } else {
+                        let mut buf = std::mem::take(&mut utf8_residual);
+                        buf.extend_from_slice(&bytes);
+                        buf
+                    };
+
+                    // Find the longest valid UTF-8 prefix; keep any trailing
+                    // incomplete sequence for the next iteration.
+                    let (valid, leftover) = match std::str::from_utf8(&combined) {
+                        Ok(s) => (s.to_string(), &[][..]),
+                        Err(e) => {
+                            let valid_up_to = e.valid_up_to();
+                            // SAFETY: we just validated up to this index
+                            let s = unsafe { std::str::from_utf8_unchecked(&combined[..valid_up_to]) };
+                            (s.to_string(), &combined[valid_up_to..])
+                        }
+                    };
+                    utf8_residual = leftover.to_vec();
+
                     // Feed each SSE line to the accumulator
-                    let text = String::from_utf8_lossy(&bytes);
                     let mut done = false;
-                    for line in text.lines() {
+                    for line in valid.lines() {
                         if acc_guard.push_sse_line(line) {
                             done = true;
                         }

@@ -28,7 +28,7 @@ import os, sys, uuid, time, json, base64
 from typing import Optional
 import httpx
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "sdk", "python"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sdk", "python"))
 from ailink import AIlinkClient
 
 # ── Config ────────────────────────────────────────────────────

@@ -62,6 +62,9 @@ struct UpstreamHealth {
     is_healthy: bool,
     failure_count: u32,
     last_failure: Option<Instant>,
+    /// Number of requests allowed through in the current half-open window.
+    /// Reset when the circuit closes (mark_healthy) or re-opens (mark_failed).
+    half_open_attempts: u32,
 }
 
 /// In-memory loadbalancer with circuit-breaker health tracking.
@@ -129,7 +132,7 @@ impl LoadBalancer {
                 .iter()
                 .enumerate()
                 .filter(|(i, u)| {
-                    u.priority == priority && self.is_healthy_at(health_vec, *i, &u.url, cooldown)
+                    u.priority == priority && self.is_healthy_at(health_vec, *i, &u.url, cooldown, config.half_open_max_requests)
                 })
                 .collect();
 
@@ -186,6 +189,7 @@ impl LoadBalancer {
                 h.last_failure = Some(Instant::now());
                 if h.failure_count >= config.failure_threshold {
                     h.is_healthy = false;
+                    h.half_open_attempts = 0; // Reset for next half-open window
                     tracing::warn!(
                         token_id = token_id,
                         url = url,
@@ -212,6 +216,7 @@ impl LoadBalancer {
                 h.is_healthy = true;
                 h.failure_count = 0;
                 h.last_failure = None;
+                h.half_open_attempts = 0;
             }
         }
     }
@@ -227,18 +232,22 @@ impl LoadBalancer {
                     is_healthy: true,
                     failure_count: 0,
                     last_failure: None,
+                    half_open_attempts: 0,
                 })
                 .collect()
         });
     }
 
     /// Check if an upstream at a given index is considered healthy.
+    /// `half_open_max` limits the number of probe requests allowed through
+    /// during the half-open recovery window.
     fn is_healthy_at(
         &self,
         health_vec: Option<&Vec<UpstreamHealth>>,
         idx: usize,
         url: &str,
         cooldown_secs: u64,
+        half_open_max: u32,
     ) -> bool {
         if let Some(healths) = health_vec {
             if let Some(h) = healths.iter().find(|h| h.url == url) {
@@ -248,7 +257,11 @@ impl LoadBalancer {
                 // Check if cooldown has passed (half-open state)
                 if let Some(last) = h.last_failure {
                     if last.elapsed().as_secs() >= cooldown_secs {
-                        return true; // allow retry (half-open)
+                        // B9-1 FIX: enforce half_open_max_requests limit
+                        if h.half_open_attempts < half_open_max {
+                            return true; // allow probe (half-open, under limit)
+                        }
+                        return false; // half-open limit reached
                     }
                 }
                 return false;
@@ -292,6 +305,18 @@ impl LoadBalancer {
     }
 
     // ── In-Flight Request Tracking (for LeastBusy routing) ───────
+
+    /// Increment the half-open attempt counter for an upstream.
+    /// Called by the handler when a request is routed to a half-open upstream.
+    pub fn increment_half_open(&self, token_id: &str, url: &str) {
+        if let Some(mut healths) = self.health.get_mut(token_id) {
+            if let Some(h) = healths.iter_mut().find(|h| h.url == url) {
+                if !h.is_healthy {
+                    h.half_open_attempts += 1;
+                }
+            }
+        }
+    }
 
     /// Increment the in-flight counter for an upstream URL.
     /// Call at the start of a proxy request.

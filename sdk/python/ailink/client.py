@@ -620,19 +620,26 @@ class AsyncClient:
         self,
         session_id: Optional[str] = None,
         parent_span_id: Optional[str] = None,
+        properties: Optional[dict] = None,
     ):
         """
         Async context manager that injects distributed-tracing headers.
 
         Example::
 
-            async with client.trace(session_id="conv-abc123") as t:
+            async with client.trace(
+                session_id="conv-abc123",
+                properties={"env": "prod", "customer": "acme"}
+            ) as t:
                 await t.post("/v1/chat/completions", json={...})
         """
+        import json as _json
         sid = session_id or str(uuid.uuid4())
         extra: dict = {"x-session-id": sid}
         if parent_span_id:
             extra["x-parent-span-id"] = parent_span_id
+        if properties:
+            extra["x-properties"] = _json.dumps(properties)
         scoped = _AsyncScopedClient(self._http, extra_headers=extra)
         try:
             yield scoped
