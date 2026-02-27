@@ -1553,6 +1553,36 @@ pub async fn proxy_handler(
         final_body
     };
 
+    // ── BUG-1 FIX: Inject stream_options.include_usage for streaming requests ──
+    // OpenAI only returns token counts in the final SSE chunk when the client
+    // explicitly requests it via stream_options.include_usage = true.
+    // Without this, all streaming responses have zero tokens and zero cost.
+    // This is the industry-standard approach (Portkey, Helicone, LangSmith all do this).
+    let final_body = if is_streaming_req {
+        if let Ok(mut body_json) = serde_json::from_slice::<serde_json::Value>(&final_body) {
+            // Only inject for OpenAI-compatible endpoints (not Anthropic, which uses its own protocol)
+            let is_anthropic = upstream_url.contains("anthropic");
+            if !is_anthropic {
+                // Set stream_options.include_usage = true (preserve any existing stream_options)
+                let stream_opts = body_json
+                    .as_object_mut()
+                    .and_then(|obj| {
+                        obj.entry("stream_options")
+                            .or_insert_with(|| serde_json::json!({}));
+                        obj.get_mut("stream_options")
+                    });
+                if let Some(opts) = stream_opts {
+                    opts["include_usage"] = serde_json::json!(true);
+                }
+            }
+            serde_json::to_vec(&body_json).unwrap_or(final_body)
+        } else {
+            final_body
+        }
+    } else {
+        final_body
+    };
+
     // Build upstream headers
     let mut upstream_headers = reqwest::header::HeaderMap::new();
 
@@ -1935,18 +1965,23 @@ pub async fn proxy_handler(
                     (None, None, None, None, vec![], None)
                 };
 
-            // Cost tracking
+            // Cost tracking — BUG-2 FIX: use DB-backed pricing cache (with hardcoded fallback)
             let mut estimated_cost_usd: Option<rust_decimal::Decimal> = None;
             if let (Some(inp), Some(out)) = (prompt_tokens, completion_tokens) {
+                // GAP-1 FIX: detect all supported providers, not just openai/anthropic
                 let provider = if token_bg_upstream_url.contains("anthropic") {
                     "anthropic"
-                } else if token_bg_upstream_url.contains("generativelanguage") {
+                } else if token_bg_upstream_url.contains("generativelanguage") || token_bg_upstream_url.contains("googleapis") {
                     "google"
+                } else if token_bg_upstream_url.contains("mistral") {
+                    "mistral"
                 } else {
                     "openai"
                 };
                 let model = model_name.as_deref().unwrap_or("unknown");
-                let final_cost = cost::calculate_cost(provider, model, inp, out);
+                let final_cost = cost::calculate_cost_with_cache(
+                    &state_bg.pricing, provider, model, inp, out,
+                ).await;
                 if !final_cost.is_zero() {
                     estimated_cost_usd = Some(final_cost);
                     let cost_f64 = final_cost.to_f64().unwrap_or(0.0);
@@ -2369,12 +2404,20 @@ pub async fn proxy_handler(
                 audit_completion_tokens = Some(output);
                 let model = extract_model(&sanitized_body).unwrap_or("unknown".to_string());
                 audit_model = Some(model.clone());
+                // GAP-1 FIX: detect all supported providers (was missing Gemini/Mistral)
                 let provider = if token.upstream_url.contains("anthropic") {
                     "anthropic"
+                } else if token.upstream_url.contains("generativelanguage") || token.upstream_url.contains("googleapis") {
+                    "google"
+                } else if token.upstream_url.contains("mistral") {
+                    "mistral"
                 } else {
                     "openai"
                 };
-                let final_cost = cost::calculate_cost(provider, &model, input, output);
+                // BUG-2 FIX: use DB-backed pricing cache (with hardcoded fallback)
+                let final_cost = cost::calculate_cost_with_cache(
+                    &state.pricing, provider, &model, input, output,
+                ).await;
 
                 if !final_cost.is_zero() {
                     estimated_cost_usd = Some(final_cost);

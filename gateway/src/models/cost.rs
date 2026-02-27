@@ -53,17 +53,42 @@ pub struct ModelPricing {
     pub output_cost_per_m: Decimal,
 }
 
-/// Hardcoded fallback pricing table.
+/// Hardcoded fallback pricing table (USD per 1M tokens).
 /// Used when the DB-backed cache is empty (e.g., before first load or on DB error).
+///
+/// IMPORTANT: More-specific patterns must come before less-specific ones.
+/// E.g. "gpt-4o-mini" must precede "gpt-4o" because `contains` matches both.
+/// Prices sourced from provider pricing pages as of 2025-02.
 pub fn get_model_pricing_fallback(provider: &str, model: &str) -> ModelPricing {
     let zero = Decimal::ZERO;
     let d = |s: &str| Decimal::from_str(s).unwrap();
 
     match (provider, model) {
-        // OpenAI
+        // ── OpenAI ────────────────────────────────────────────────
+        // BUG-3 FIX: gpt-4o-mini MUST come before gpt-4o (contains match)
+        ("openai", m) if m.contains("gpt-4o-mini") => ModelPricing {
+            input_cost_per_m: d("0.15"),
+            output_cost_per_m: d("0.60"),
+        },
         ("openai", m) if m.contains("gpt-4o") => ModelPricing {
-            input_cost_per_m: d("5.00"),
-            output_cost_per_m: d("15.00"),
+            input_cost_per_m: d("2.50"),
+            output_cost_per_m: d("10.00"),
+        },
+        ("openai", m) if m.contains("o3-mini") => ModelPricing {
+            input_cost_per_m: d("1.10"),
+            output_cost_per_m: d("4.40"),
+        },
+        ("openai", m) if m.contains("o3") => ModelPricing {
+            input_cost_per_m: d("10.00"),
+            output_cost_per_m: d("40.00"),
+        },
+        ("openai", m) if m.contains("o1-mini") => ModelPricing {
+            input_cost_per_m: d("3.00"),
+            output_cost_per_m: d("12.00"),
+        },
+        ("openai", m) if m.contains("o1") => ModelPricing {
+            input_cost_per_m: d("15.00"),
+            output_cost_per_m: d("60.00"),
         },
         ("openai", m) if m.contains("gpt-4-turbo") => ModelPricing {
             input_cost_per_m: d("10.00"),
@@ -77,9 +102,30 @@ pub fn get_model_pricing_fallback(provider: &str, model: &str) -> ModelPricing {
             input_cost_per_m: d("0.50"),
             output_cost_per_m: d("1.50"),
         },
+        // Embeddings (output cost is zero by convention)
+        ("openai", m) if m.contains("text-embedding-3-small") => ModelPricing {
+            input_cost_per_m: d("0.02"),
+            output_cost_per_m: zero,
+        },
+        ("openai", m) if m.contains("text-embedding-3-large") => ModelPricing {
+            input_cost_per_m: d("0.13"),
+            output_cost_per_m: zero,
+        },
+        ("openai", m) if m.contains("text-embedding") => ModelPricing {
+            input_cost_per_m: d("0.10"),
+            output_cost_per_m: zero,
+        },
 
-        // Anthropic
+        // ── Anthropic ─────────────────────────────────────────────
+        ("anthropic", m) if m.contains("claude-3-5-haiku") => ModelPricing {
+            input_cost_per_m: d("0.80"),
+            output_cost_per_m: d("4.00"),
+        },
         ("anthropic", m) if m.contains("claude-3-5-sonnet") => ModelPricing {
+            input_cost_per_m: d("3.00"),
+            output_cost_per_m: d("15.00"),
+        },
+        ("anthropic", m) if m.contains("claude-3-7-sonnet") => ModelPricing {
             input_cost_per_m: d("3.00"),
             output_cost_per_m: d("15.00"),
         },
@@ -90,6 +136,66 @@ pub fn get_model_pricing_fallback(provider: &str, model: &str) -> ModelPricing {
         ("anthropic", m) if m.contains("claude-3-haiku") => ModelPricing {
             input_cost_per_m: d("0.25"),
             output_cost_per_m: d("1.25"),
+        },
+
+        // ── Google / Gemini ───────────────────────────────────────
+        ("google", m) if m.contains("gemini-2.0-flash") => ModelPricing {
+            input_cost_per_m: d("0.10"),
+            output_cost_per_m: d("0.40"),
+        },
+        ("google", m) if m.contains("gemini-1.5-flash") => ModelPricing {
+            input_cost_per_m: d("0.075"),
+            output_cost_per_m: d("0.30"),
+        },
+        ("google", m) if m.contains("gemini-1.5-pro") => ModelPricing {
+            input_cost_per_m: d("1.25"),
+            output_cost_per_m: d("5.00"),
+        },
+        ("google", m) if m.contains("gemini-2.5-pro") => ModelPricing {
+            input_cost_per_m: d("1.25"),
+            output_cost_per_m: d("10.00"),
+        },
+        ("google", m) if m.contains("gemini") => ModelPricing {
+            input_cost_per_m: d("0.50"),
+            output_cost_per_m: d("1.50"),
+        },
+
+        // ── Mistral ───────────────────────────────────────────────
+        ("mistral", m) if m.contains("mistral-large") => ModelPricing {
+            input_cost_per_m: d("2.00"),
+            output_cost_per_m: d("6.00"),
+        },
+        ("mistral", m) if m.contains("mistral-small") => ModelPricing {
+            input_cost_per_m: d("0.20"),
+            output_cost_per_m: d("0.60"),
+        },
+        ("mistral", m) if m.contains("codestral") => ModelPricing {
+            input_cost_per_m: d("0.30"),
+            output_cost_per_m: d("0.90"),
+        },
+
+        // ── Meta / Llama (via any provider) ───────────────────────
+        (_, m) if m.contains("llama-3.1-405b") => ModelPricing {
+            input_cost_per_m: d("3.00"),
+            output_cost_per_m: d("3.00"),
+        },
+        (_, m) if m.contains("llama-3.1-70b") => ModelPricing {
+            input_cost_per_m: d("0.88"),
+            output_cost_per_m: d("0.88"),
+        },
+        (_, m) if m.contains("llama-3.1-8b") => ModelPricing {
+            input_cost_per_m: d("0.05"),
+            output_cost_per_m: d("0.08"),
+        },
+
+        // ── DeepSeek ──────────────────────────────────────────────
+        (_, m) if m.contains("deepseek-chat") || m.contains("deepseek-v3") => ModelPricing {
+            input_cost_per_m: d("0.27"),
+            output_cost_per_m: d("1.10"),
+        },
+        (_, m) if m.contains("deepseek-reasoner") || m.contains("deepseek-r1") => ModelPricing {
+            input_cost_per_m: d("0.55"),
+            output_cost_per_m: d("2.19"),
         },
 
         _ => ModelPricing {
@@ -103,7 +209,6 @@ pub fn get_model_pricing_fallback(provider: &str, model: &str) -> ModelPricing {
 /// Falls back to hardcoded table if the cache is empty.
 ///
 /// This is the async version used by the proxy handler.
-#[allow(dead_code)]
 pub async fn calculate_cost_with_cache(
     pricing: &crate::models::pricing_cache::PricingCache,
     provider: &str,
@@ -147,22 +252,132 @@ pub fn calculate_cost(
 mod tests {
     use super::*;
 
+    // ── Pricing match-order tests (BUG-3 regression) ──────────
+
     #[test]
-    fn test_gpt4o_cost() {
-        // 1M input ($5) + 1M output ($15) = $20
-        let cost = calculate_cost("openai", "gpt-4o", 1_000_000, 1_000_000);
-        assert_eq!(cost, Decimal::from_str("20.00").unwrap());
+    fn test_gpt4o_mini_not_overcharged() {
+        // BUG-3: gpt-4o-mini must match its own rule, not gpt-4o's
+        let pricing = get_model_pricing_fallback("openai", "gpt-4o-mini-2024-07-18");
+        assert_eq!(pricing.input_cost_per_m, Decimal::from_str("0.15").unwrap());
+        assert_eq!(pricing.output_cost_per_m, Decimal::from_str("0.60").unwrap());
     }
 
     #[test]
+    fn test_gpt4o_cost() {
+        // gpt-4o: $2.50/$10.00 per 1M
+        let cost = calculate_cost("openai", "gpt-4o-2024-08-06", 1_000_000, 1_000_000);
+        assert_eq!(cost, Decimal::from_str("12.50").unwrap());
+    }
+
+    #[test]
+    fn test_o1_mini_before_o1() {
+        // Same pattern-ordering issue: o1-mini must match before o1
+        let p = get_model_pricing_fallback("openai", "o1-mini-2024-09-12");
+        assert_eq!(p.input_cost_per_m, Decimal::from_str("3.00").unwrap());
+    }
+
+    #[test]
+    fn test_o3_mini_before_o3() {
+        let p = get_model_pricing_fallback("openai", "o3-mini-2025-01-31");
+        assert_eq!(p.input_cost_per_m, Decimal::from_str("1.10").unwrap());
+    }
+
+    // ── Anthropic ────────────────────────────────────────────
+
+    #[test]
     fn test_sonnet_cost() {
-        // 1M input ($3) + 1M output ($15) = $18
-        let cost = calculate_cost(
-            "anthropic",
-            "claude-3-5-sonnet-20240620",
-            1_000_000,
-            1_000_000,
-        );
+        // claude-3-5-sonnet: $3/$15 per 1M → 1M each = $18
+        let cost = calculate_cost("anthropic", "claude-3-5-sonnet-20240620", 1_000_000, 1_000_000);
         assert_eq!(cost, Decimal::from_str("18.00").unwrap());
+    }
+
+    #[test]
+    fn test_claude_3_5_haiku_cost() {
+        let p = get_model_pricing_fallback("anthropic", "claude-3-5-haiku-20241022");
+        assert_eq!(p.input_cost_per_m, Decimal::from_str("0.80").unwrap());
+    }
+
+    // ── Gemini ───────────────────────────────────────────────
+
+    #[test]
+    fn test_gemini_flash_cost() {
+        let p = get_model_pricing_fallback("google", "gemini-2.0-flash");
+        assert_eq!(p.input_cost_per_m, Decimal::from_str("0.10").unwrap());
+        assert_eq!(p.output_cost_per_m, Decimal::from_str("0.40").unwrap());
+    }
+
+    #[test]
+    fn test_gemini_pro_cost() {
+        let p = get_model_pricing_fallback("google", "gemini-1.5-pro");
+        assert_eq!(p.input_cost_per_m, Decimal::from_str("1.25").unwrap());
+    }
+
+    // ── Cross-provider (Llama, DeepSeek) ─────────────────────
+
+    #[test]
+    fn test_llama_any_provider() {
+        // Llama matches regardless of provider
+        let p = get_model_pricing_fallback("together", "llama-3.1-70b-instruct");
+        assert_eq!(p.input_cost_per_m, Decimal::from_str("0.88").unwrap());
+    }
+
+    #[test]
+    fn test_deepseek_v3() {
+        let p = get_model_pricing_fallback("deepseek", "deepseek-chat");
+        assert_eq!(p.input_cost_per_m, Decimal::from_str("0.27").unwrap());
+    }
+
+    // ── Embeddings ───────────────────────────────────────────
+
+    #[test]
+    fn test_embeddings_zero_output_cost() {
+        let p = get_model_pricing_fallback("openai", "text-embedding-3-small");
+        assert_eq!(p.output_cost_per_m, Decimal::ZERO);
+        assert!(p.input_cost_per_m > Decimal::ZERO);
+    }
+
+    // ── Unknown model → zero ─────────────────────────────────
+
+    #[test]
+    fn test_unknown_model_zero() {
+        let p = get_model_pricing_fallback("custom", "my-fine-tune");
+        assert_eq!(p.input_cost_per_m, Decimal::ZERO);
+        assert_eq!(p.output_cost_per_m, Decimal::ZERO);
+    }
+
+    // ── extract_usage ────────────────────────────────────────
+
+    #[test]
+    fn test_extract_usage_openai() {
+        let body = r#"{"usage":{"prompt_tokens":100,"completion_tokens":50}}"#;
+        let result = extract_usage("https://api.openai.com", body.as_bytes()).unwrap();
+        assert_eq!(result, Some((100, 50)));
+    }
+
+    #[test]
+    fn test_extract_usage_anthropic() {
+        let body = r#"{"usage":{"input_tokens":200,"output_tokens":80}}"#;
+        let result = extract_usage("https://api.anthropic.com", body.as_bytes()).unwrap();
+        assert_eq!(result, Some((200, 80)));
+    }
+
+    #[test]
+    fn test_extract_usage_gemini() {
+        let body = r#"{"usageMetadata":{"promptTokenCount":300,"candidatesTokenCount":120}}"#;
+        let result = extract_usage("https://generativelanguage.googleapis.com", body.as_bytes()).unwrap();
+        assert_eq!(result, Some((300, 120)));
+    }
+
+    #[test]
+    fn test_extract_usage_no_usage() {
+        let body = r#"{"choices":[{"message":{"content":"hello"}}]}"#;
+        let result = extract_usage("https://api.openai.com", body.as_bytes()).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_usage_not_json() {
+        let result = extract_usage("https://api.openai.com", b"not json").unwrap();
+        assert_eq!(result, None);
     }
 }
