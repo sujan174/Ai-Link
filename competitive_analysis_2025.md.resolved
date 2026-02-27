@@ -1,0 +1,322 @@
+# AILink — Competitive Intelligence Report
+**Product:** AILink — Enterprise AI Agent Gateway  
+**Date:** February 2026  
+**Analyst:** Senior Competitive Intelligence (live search-backed)  
+**Research Method:** Live web search across competitor sites, GitHub, G2, Hacker News, YC batches, dev blogs (Feb 2025–Feb 2026)
+
+---
+
+## Section 1 — Competitor Landscape Map
+
+### Direct Competitors
+
+| # | Competitor | One-line description | Category |
+|---|-----------|---------------------|----------|
+| 1 | **Portkey** | Full-stack LLM gateway + observability, TypeScript/Python proxy | Direct |
+| 2 | **LiteLLM** | Open-source Python gateway; 100+ LLMs via unified API. YC W23 | Direct / Open-Source |
+| 3 | **Helicone** | Rust-based observability-forward gateway | Direct / Open-Source |
+| 4 | **TensorZero** | Rust gateway for experiment-driven LLM apps; ClickHouse-backed | Direct / Open-Source |
+| 5 | **Bifrost (Maxim AI)** | Go-based performance leader; MCP-native | Direct |
+| 6 | **Kong AI Gateway** | Mature API platform extended to LLM traffic; plugin-based | Direct / Enterprise |
+| 7 | **OpenRouter** | Managed routing service to 300+ models, unified billing | Direct (SaaS) |
+| 8 | **Cloudflare AI Gateway** | Edge-native caching and observability for LLM traffic | Direct (SaaS) |
+| 9 | **Vercel AI Gateway** | Developer-focused edge gateway for frontend/Next.js teams | Direct (SaaS) |
+| 10 | **TrueFoundry LLM Gateway** | Enterprise K8s-native LLM proxy | Direct / Enterprise |
+
+### Indirect / Emerging
+
+| # | Competitor | One-line description | Category |
+|---|-----------|---------------------|----------|
+| 11 | **Envoy AI Gateway** | Community-driven AI extension on Envoy proxy; 16 providers | Indirect / OSS |
+| 12 | **Azure API Management** | Azure APIM extended with AI routing and cost controls | Indirect / Enterprise |
+| 13 | **NeuralTrust** | Zero-trust security gateway for LLM agents | Indirect / OSS |
+| 14 | **agentgateway (Solo.io)** | Cloud-native MCP gateway for agentic systems | Indirect / OSS |
+| 15 | **Itzam** | Simple multi-model AI integration with prompt hot-swap | Indirect |
+
+> **Excluded:** Hugging Face, SiliconFlow, Mistral AI (LLM providers, not gateways). LangServe (framework wrapper). IBM API Connect (legacy, different ICP).
+
+---
+
+## Section 2 — Feature Comparison Matrix
+
+**Legend:** 🏆 AILink leads · ✅ Better than AILink · ⚖️ Comparable · ❌ Inferior · ⬜ Absent · ❓ Unconfirmed
+
+### 2A — Core Proxy & Routing
+
+| Feature | AILink | Portkey | LiteLLM | Helicone | TensorZero | Bifrost | Kong AI GW |
+|---------|--------|---------|---------|---------|------------|---------|-----------|
+| Multi-provider translation | ✅ OAI↔Anthropic↔Gemini | ⚖️ 1,600+ models | ⚖️ 100+ models | ⚖️ 100+ models | ⚖️ Major providers | ⚖️ 11,000+ models | ⚖️ Plugin-based |
+| SSE streaming | ✅ Word-by-word delta | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes |
+| Cross-provider tool call translation | ✅ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes |
+| Load balancing strategies | ⚖️ 5 strategies | ⚖️ Multiple | ⚖️ 5 strategies | ⚖️ Latency-P2C+PeakEWMA | ⚖️ Yes | ✅ Adaptive+semantic | ⚖️ Yes |
+| Circuit breaker (per-token) | 🏆 Per-token, runtime config | ❓ | ⚖️ Provider-level | ⚖️ Provider health | ❓ | ⚖️ Per-provider | ⚖️ Plugin |
+| Response caching | ✅ Deterministic keys | ⚖️ Semantic cache | ⚖️ Cache | ⚖️ Redis exact+bucketed | ⚖️ Yes | ✅ Semantic caching | ⚖️ Yes |
+| Model aliases | ✅ Swap provider without code change | ⚖️ Virtual keys | ⚖️ Model alias | ❌ | ❓ | ❓ | ⚖️ Plugin |
+
+### 2B — Security & Access Control
+
+| Feature | AILink | Portkey | LiteLLM | Helicone | TensorZero | Bifrost | Kong AI GW |
+|---------|--------|---------|---------|---------|------------|---------|-----------|
+| Virtual key vault (AES-256-GCM) | 🏆 Keys never leave vault | ⚖️ Virtual keys | ⚖️ Key mgmt | ❌ No vault | ⬜ | ⚖️ Virtual keys | ⚖️ Key plugin |
+| OIDC / JWT native auth (JWKS) | 🏆 OAI, Auth0, Entra built-in | ⚖️ SSO via IdP (enterprise) | ⚖️ OIDC (enterprise) | ❌ SAML only (enterprise) | ⬜ | ❌ SSO enterprise only | ⚖️ OIDC plugin |
+| RBAC (teams + model access groups) | 🏆 Teams + groups + scopes | ⚖️ RBAC (enterprise) | ⚖️ RBAC (enterprise) | ❌ Limited | ⬜ | ⚖️ Virtual keys per team | ✅ Mature RBAC |
+| SSRF protection | ✅ Built-in URL validation | ❓ | ❓ | ❓ | ⬜ | ❓ | ⚖️ Network policies |
+| **Human-in-the-Loop (HITL)** | 🏆 **Native 202→approval gateway primitive** | ⬜ None | ⬜ None | ⬜ None | ⬜ | ❌ App-side only | ⬜ None |
+| KMS integration (Vault/AWS KMS) | ❌ Own vault only | ❓ | ⚖️ Partial | ❓ | ⬜ | ❓ | ✅ HashiCorp+AWS KMS |
+| SOC-2 / ISO 27001 / HIPAA | ❌ **Not certified** | ✅ SOC2 T2, ISO 27001, GDPR, HIPAA | ✅ Enterprise | ⚖️ SOC-2, HIPAA (Team) | ⬜ | ❓ | ✅ Certified |
+
+> ⚠️ **Critical weakness: No SOC-2** — Every enterprise deal above ~$50K/yr has this on their security checklist.
+
+### 2C — Guardrails & Safety
+
+| Feature | AILink | Portkey | LiteLLM | Helicone | TensorZero | Bifrost | Kong AI GW |
+|---------|--------|---------|---------|---------|------------|---------|-----------|
+| Content filter (built-in patterns) | 🏆 100+ patterns, 22 presets | ⚖️ Guardrails | ⚖️ Guardrails | ⚖️ Content filter | ⬜ | ❓ | ✅ NLP plugin (20+ categories, 12 langs) |
+| PII redaction | 🏆 SSN, email, CC, phone (regex) | ⚖️ PII guardrail | ❓ | ⚖️ PII detection | ⬜ | ❓ | ✅ NLP-based, synthetic replacement |
+| **PII tokenization vault** | 🏆 **Deterministic, reversible** | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| External guardrails (5 vendors) | 🏆 Azure, AWS, LlamaGuard, Palo Alto, Prompt Security | ⚖️ Multiple | ⚖️ Some | ❓ | ⬜ | ❓ | ⚖️ Plugin |
+| **Shadow mode** | 🏆 **Test policies without blocking** | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+
+> ⚠️ **Kong's April 2025 PII plugin** uses NLP (not regex) across 12 languages with synthetic replacement — more sophisticated than AILink's regex approach.
+
+### 2D — Policy Engine
+
+| Feature | AILink | Portkey | LiteLLM | Helicone | TensorZero | Bifrost | Kong AI GW |
+|---------|--------|---------|---------|---------|------------|---------|-----------|
+| Deep policy engine (15+ actions) | 🏆 Deny/throttle/transform/A-B/shadow/webhook/HITL | ⚖️ Basic routing | ⚖️ Rate limit+routing | ❌ Limited | ⬜ | ❌ Tool-level only | ⚖️ Plugin-based |
+| Config-as-Code (YAML/JSON) | ✅ Export/import | ⚖️ Yes | ⚖️ Yes | ⬜ | ✅ GitOps-native | ❓ | ✅ Declarative |
+| Async policy evaluation | 🏆 Non-blocking background rules | ❓ | ❓ | ❓ | ⬜ | ❓ | ⚖️ Async plugins |
+| Webhook policy actions | 🏆 Fires on policy match | ⬜ | ⚖️ Budget-only | ⬜ | ⬜ | ⬜ | ⚖️ After-request |
+
+### 2E — Observability & Analytics
+
+| Feature | AILink | Portkey | LiteLLM | Helicone | TensorZero | Bifrost | Kong AI GW |
+|---------|--------|---------|---------|---------|------------|---------|-----------|
+| Full audit log | ✅ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes |
+| Prometheus / OTel | ✅ Native | ❓ | ⚖️ Yes | ⚖️ OTel | ⚖️ Yes | ⚖️ Yes | ✅ Mature |
+| Langfuse (native) | 🏆 Native integration | ⚖️ Third-party | ⚖️ Third-party | ⚖️ Third-party | ⬜ | ❓ | ❓ |
+| Datadog (native custom tags) | ✅ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ⬜ | ⚖️ Yes | ✅ Mature |
+| **Anomaly detection** | 🏆 **Sigma-based velocity spikes** | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Spend caps (daily/monthly/lifetime) | 🏆 Per-token enforcement | ⚖️ Budgets | ⚖️ Limits | ⚖️ Rate limit | ⬜ | ⚖️ Budget | ⚖️ Plugin |
+| **Structured A/B experimentation** | ❌ Not available | ⚖️ Prompt A/B | ❌ | ❌ | ✅ **TensorZero's core differentiator** (ClickHouse+DICL) | ❌ | ❌ |
+
+> ⚠️ **TensorZero's experiment tracking is significantly ahead.** For LLMOps teams, this is a compelling reason to choose TensorZero.
+
+### 2F — MCP & Agentic Features
+
+| Feature | AILink | Portkey | LiteLLM | Helicone | TensorZero | Bifrost | Kong AI GW |
+|---------|--------|---------|---------|---------|------------|---------|-----------|
+| MCP server registry | ✅ 6 endpoints, dashboard UI | ⬜ | ✅ Native (v1.80.18, Nov 2025) | ❓ | ⬜ | ✅ OAuth 2.0, auto-discovery | ✅ MCP Proxy plugin (v3.12, Oct 2025) |
+| MCP tool injection | ✅ Yes | ⬜ | ⚖️ Yes | ❓ | ⬜ | ✅ Runtime schema | ✅ AI MCP Proxy plugin |
+| MCP authentication | ✅ Token-scoped | ⬜ | ⚖️ Yes | ❓ | ⬜ | ✅ OAuth 2.0 + auto-refresh | ✅ MCP OAuth2 plugin |
+| MCP auto-discovery | ❌ Manual registration | ⬜ | ❓ | ❓ | ⬜ | ✅ Auto-discovers at runtime | ⚖️ Plugin-based |
+| **HITL tool approval gate** | 🏆 **Native 202→poll pattern** | ⬜ | ⬜ | ⬜ | ⬜ | ⚖️ App-side explicit approval | ⬜ |
+
+### 2G — Developer Experience
+
+| Feature | AILink | Portkey | LiteLLM | Helicone | TensorZero | Bifrost | Kong AI GW |
+|---------|--------|---------|---------|---------|------------|---------|-----------|
+| Language / perf | 🏆 Rust (<1ms) | ❌ TypeScript | ❌ Python (degrades 300-500 RPS) | ⚖️ Rust | ✅ Rust (<1ms P99) | ✅ Go (11µs at 5K RPS) | ⚖️ Go+Lua |
+| Python SDK | ✅ Full (HITL, trace, fallback) | ✅ Mature | ⚖️ Mature | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ❌ REST-first |
+| **TypeScript SDK** | ❌ **None** | ✅ Mature | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ⚖️ Yes | ❌ REST-first |
+| Framework integrations | ✅ LangChain, CrewAI, LlamaIndex | ✅ Yes | ✅ Yes | ✅ Yes | ⚖️ Via API | ⚖️ Via API | ❌ |
+| Dashboard UX | ⚖️ Functional | ✅ Most polished in category | ⚖️ Admin UI | ⚖️ Observability dashboard | ⬜ None | ⚖️ Maxim platform | ✅ Kong Manager |
+| **Free tier** | ❌ **None** | ⚖️ 10K logs/mo | ⚖️ OSS free | ⚖️ 10K req/mo | ✅ Fully free OSS | ✅ Free self-hosted | ⚖️ OSS |
+
+> ⚠️ **No TypeScript SDK** = AILink is invisible to ~50% of AI developers. **No free tier** = zero bottom-up developer adoption pipeline.
+
+### 2H — Pricing Summary
+
+| Product | Free Tier | Paid Start | Enterprise |
+|---------|-----------|------------|-----------|
+| **AILink** | ❌ None | None public | — |
+| Portkey | 10K logs/mo | Usage-based | $2K–$10K+/mo |
+| LiteLLM | OSS free | ~$250/mo (Basic) | ~$30K/yr |
+| Helicone | 10K req/mo | $79/mo | Custom |
+| TensorZero | ✅ Fully free OSS | Autopilot (undisclosed) | — |
+| Bifrost | 3 seats, 10K logs | $29/seat/mo | Custom |
+| Kong AI GW | OSS free | Konnect from ~$250/mo | Enterprise contract |
+
+---
+
+## Section 3 — Competitor Deep-Dives (Top 5)
+
+### 3.1 Portkey
+
+**Positioning:** "The production control plane for GenAI." Targets ML engineers and platform teams needing enterprise governance. Polished managed alternative to LiteLLM.
+
+**Strengths:** Most polished dashboard in the category (widely cited as the UX reference). 1,600+ model support. SOC-2 Type II + ISO 27001 + HIPAA + GDPR — full enterprise compliance stack. SSO via OIDC/SAML (Okta, Auth0, Azure AD, Cognito) in Enterprise tier. Strong observability with real-time traces and cost attribution per team. Frequent product updates with active community.
+
+**Weaknesses:** No native HITL approval gateway primitive. No shadow mode. TypeScript gateway = higher latency than Rust/Go alternatives. Vendor lock-in concerns from managed hosting model.
+
+**Momentum:** High. The competitor AILink is most benchmarked against. Actively shipping.
+
+**Pricing:** Free (10K logs/mo), enterprise $2K–$10K+/mo.
+
+---
+
+### 3.2 LiteLLM (YC W23)
+
+**Positioning:** "The universal LLM API." Maximum flexibility, minimum setup. Winner in prototyping and small-scale production.
+
+**Strengths:** Broadest model coverage (100+ LLMs). OIDC + JWT in Enterprise (since 2025). Native MCP support since v1.80.18 (Nov 2025 protocol). Massive community (>10K GitHub stars). SCIM, audit logs, Prometheus in Enterprise.
+
+**Weaknesses:** Python bottleneck — documented degradation beyond 300-500 RPS, memory issues at scale. No HITL. No shadow mode. No policy engine. Enterprise features require ~$30K/yr. Rapid releases introduce regressions.
+
+**Momentum:** High on community, losing ground at scale to Rust/Go. MCP addition in 2025 narrows AILink's differentiation.
+
+**Pricing:** OSS free; Enterprise ~$250/mo–$30K/yr.
+
+---
+
+### 3.3 TensorZero
+
+**Positioning:** "Industrial-grade LLM gateway built to learn." Targets data-driven ML teams running structured experiments. Rust-based, self-hosted, fully free.
+
+**Strengths:** **Best experiment tracking in the category** — structured A/B testing, episode tracking (multi-step workflow correlation), ClickHouse analytics, Dynamic In-Context Learning (DICL). Rust performance (<1ms P99 = matches AILink). GitOps-native. Structured output enforcement (JSON schemas). Fully free and open-source.
+
+**Weaknesses:** **No security layer at all** — no RBAC, OIDC, spend caps, policy engine, guardrails, or PII handling. No HITL. No admin UI. Not fit for regulated industries or enterprise procurement.
+
+**Momentum:** Growing rapidly in LLMOps niche. If TensorZero adds RBAC + a lightweight UI, it becomes a serious full-stack competitor.
+
+**Pricing:** Fully free OSS. Autopilot (paid optimization layer), pricing undisclosed.
+
+---
+
+### 3.4 Bifrost (Maxim AI)
+
+**Positioning:** "The fastest open-source AI gateway." Production engineering teams wanting maximum performance and MCP-native tooling. Go-based.
+
+**Strengths:** **Fastest measured benchmark** — 11µs overhead at 5K RPS. Native MCP Gateway with OAuth 2.0 + auto-discovery + per-key tool filtering + global tool blacklisting. "Explicit tool execution" — tool calls require separate API call from app before execution (lightweight HITL analogue). Adaptive load balancing + semantic caching. 11,000+ model/provider coverage. Zero markup, free to self-host.
+
+**Weaknesses:** No gateway-level HITL (explicit execution is app-side, not a 202/approval primitive). No policy engine (no deny/transform/shadow/webhook). PII redaction absent at gateway level. Enterprise observability requires Maxim platform subscription.
+
+**Momentum:** Very high. The fastest-growing new entrant in the space. **Direct threat to AILink's MCP and performance positioning.**
+
+**Pricing:** Free OSS. Maxim platform: Developer (free, 3 seats), Pro ($29/seat/mo), Business ($49/seat/mo), Enterprise (custom).
+
+---
+
+### 3.5 Kong AI Gateway
+
+**Positioning:** "Enterprise control plane for AI." Leverages established API management reputation to target enterprise IT and security teams. Most mature feature set overall.
+
+**Strengths:** Most mature enterprise features (HashiCorp Vault/AWS KMS, OIDC, SAML SSO, granular RBAC). **PII sanitization (Apr 2025, AI GW 3.10):** NLP-based across 20+ categories and 12 languages with synthetic replacement — more sophisticated than AILink's regex. **Full MCP support (Oct 2025, v3.12):** dedicated MCP Proxy + MCP OAuth2 plugin + MCP traffic observability. SOC-2, ISO 27001, GDPR, HIPAA certified. Mature Prometheus, Datadog, OTel integrations. Massive plugin ecosystem fills any gap.
+
+**Weaknesses:** No native HITL approval gate (no competitor has this). High operational complexity for AI workloads. Not designed for developer self-serve. Slower AI-specific feature velocity than pure-play gateways.
+
+**Momentum:** High — Kong is retrofitting AI capabilities onto a proven platform with serious commitment (MCP + PII in 2025).
+
+**Pricing:** OSS free; Konnect from ~$250/mo; Enterprise custom.
+
+---
+
+## Section 4 — Honest SWOT for AILink
+
+### 🏆 Strengths (Where AILink Genuinely Leads)
+
+1. **Native HITL approval gateway** — The only gateway where HITL is a first-class primitive (202 response, `wait_for_approval()`, SDK polling). Every competitor has nothing or relies on app-side workarounds.
+2. **Shadow mode** — No competitor offers this. Test policies against live traffic without risk.
+3. **Deep policy engine (15+ action types)** — Deny, throttle, transform, A/B, shadow, webhook, HITL, validate schema, async guardrail — composable on condition trees. Unmatched except partially by Kong plugins.
+4. **PII tokenization vault** — Deterministic replacement with reversible vault tokens. No competitor has this. Critical for healthcare/finance agents passing data across system boundaries.
+5. **Rust performance (<1ms)** — On par with TensorZero; ahead of Portkey (TypeScript) and LiteLLM (Python).
+6. **OIDC/JWT with JWKS** — Built into core auth layer (not an enterprise add-on).
+7. **Anomaly detection** — Sigma-based velocity spike detection. Unique in the category.
+8. **All-in-one** — Key vault + policy + guardrails + HITL + observability + teams in one binary.
+
+### ⚠️ Weaknesses (Objectively Behind)
+
+1. **❌ No SOC-2 / ISO 27001 / HIPAA / GDPR certification** — Hard procurement blocker for any regulated enterprise. This is the single most critical gap.
+2. **❌ No TypeScript SDK** — ~50% of AI developers use TypeScript. AILink is invisible to this audience.
+3. **❌ No free tier or self-serve entry** — Zero developer evangelism pipeline. All acquisition must be top-down enterprise sales.
+4. **❌ No structured experiment tracking** — TensorZero's ClickHouse + A/B + DICL is significantly ahead for LLMOps teams.
+5. **❌ Regex-based PII vs. NLP-based** — Kong's NLP PII detection covers 12 languages and edge cases AILink's regex misses.
+6. **❌ No MCP auto-discovery** — Bifrost, LiteLLM, and Kong all have auto-discovery. AILink requires manual server registration.
+7. **❌ Dashboard UX** — Portkey's dashboard is the category reference. AILink's is functional but not a differentiator.
+8. **❌ No KMS integration** — Enterprises expect to use their own HashiCorp Vault or AWS KMS.
+
+### 🔭 Opportunities (Gaps No One Solves Well)
+
+1. **HITL as a platform** — Extend HITL with Slack/Teams notifications for approvers, mobile approval UI, approval audit trail, time-expiring gates. No competitor is building this.
+2. **"Enterprise-safe AI agent runtime"** — Healthcare/finance AI agent procurement is blocked everywhere. HITL + vault + audit + spend caps = unique compliance story. No competitor owns this positioning.
+3. **PII tokenization as a product** — The deterministic vault token capability solves a real enterprise problem. Market it explicitly.
+4. **MCP governance layer** — "Which tools can which agents call, with what audit trail, with what approval" — this gap exists. AILink can own it before Kong and Bifrost finish their MCP stories.
+5. **Shadow mode → policy simulation** — Replay historical traffic against new policies before going live. No one offers this.
+
+### 🚨 Threats (Competitors Gaining Momentum)
+
+1. **Kong MCP (Oct 2025)** — Enterprise sales force + existing customer base + full MCP. Large enterprises will extend existing Kong contracts to AI traffic.
+2. **LiteLLM MCP (v1.80.18, 2025)** — 10K+ GitHub stars; native MCP narrows AILink's differentiation among developers.
+3. **Bifrost performance + MCP** — Fastest benchmark + MCP OAuth 2.0 + auto-discovery is gaining developer mindshare fast. **Biggest near-term threat.**
+4. **TensorZero → governance** — If they add lightweight RBAC + UI, they become a full-stack competitor in LLMOps.
+5. **Portkey compliance moat** — SOC-2 Type II + ISO 27001 + HIPAA already certified. Every quarter that passes widens the enterprise procurement gap.
+
+---
+
+## Section 5 — Priority Recommendations
+
+### REC-1 — SOC-2 Certification
+- **GAP:** No compliance certifications
+- **EVIDENCE:** Portkey and Kong: SOC-2 Type II + ISO 27001 + HIPAA. Helicone: SOC-2 (Team tier). Hard blocker for any enterprise deal >$50K/yr
+- **RECOMMENDATION:** Start SOC-2 Type I audit immediately using Drata or Vanta. Target Type II in 6 months. This single action unblocks the enterprise deal pipeline.
+- **PRIORITY:** 🔴 Critical
+
+### REC-2 — TypeScript SDK
+- **GAP:** No TS SDK; ~50% of AI dev market inaccessible
+- **EVIDENCE:** Portkey, LiteLLM, Helicone, TensorZero, Bifrost all have TypeScript SDKs. Vercel AI SDK, LangChain.js, Next.js users cannot use AILink.
+- **RECOMMENDATION:** Ship `@ailink/sdk` npm package with parity to Python SDK (HITL, trace, fallback, [openai()](file:///Users/sujan/Developer/AILink/sdk/python/ailink/client.py#759-771) wrapper). Estimated 1 week of focused work.
+- **PRIORITY:** 🔴 Critical
+
+### REC-3 — Free Tier / Self-Serve Entry Point
+- **GAP:** No self-serve path; zero developer evangelism pipeline
+- **EVIDENCE:** Portkey, Helicone, Bifrost, TensorZero — all have free tiers. LiteLLM is fully open-source. Bottom-up adoption is the dominant GTM for this category.
+- **RECOMMENDATION:** Launch a hosted free tier (10K requests/mo, 7-day retention, 1 project). Add "Start for free" CTA on homepage. Consider open-sourcing the gateway binary on GitHub.
+- **PRIORITY:** 🔴 Critical
+
+### REC-4 — MCP Auto-Discovery + Full OAuth 2.0
+- **GAP:** AILink MCP requires explicit server registration; no auto-discovery; no OAuth 2.0 token refresh
+- **EVIDENCE:** Bifrost: auto-discovery + OAuth 2.0 + per-client tool filtering. LiteLLM native MCP since late 2025. Kong: dedicated MCP OAuth2 plugin. AILink's MVP MCP is being outpaced.
+- **RECOMMENDATION:** Add MCP server auto-discovery (connect URL → fetch schema), OAuth 2.0 client credentials, and per-token MCP tool allow/deny lists in the policy engine.
+- **PRIORITY:** 🔴 High
+
+### REC-5 — NLP-Based PII Redaction
+- **GAP:** Regex-only PII matching misses edge cases and non-English content
+- **EVIDENCE:** Kong's April 2025 PII plugin: real NLP models, 20+ categories, 12 languages, synthetic replacement, private self-hosted. AILink's 22 regex presets are visibly inferior for multilingual enterprises.
+- **RECOMMENDATION:** Integrate NLP-based NER (spaCy/Presidio or self-hosted Comprehend-compatible endpoint) as optional backend. Keep regex as fast default; NLP as accuracy-premium tier.
+- **PRIORITY:** 🟡 Medium
+
+---
+
+## Section 6 — Confidence & Source Log
+
+| Claim | Source | Confidence |
+|-------|--------|-----------|
+| Portkey SOC-2 Type II, ISO 27001, HIPAA | portkey.ai pricing + TrueFoundry comparison | ✅ High |
+| Portkey OIDC via Okta/Auth0/Azure AD/Cognito | portkey.ai docs | ✅ High |
+| Portkey no native HITL | portkey.ai features; no approval workflow documented | ✅ High |
+| Portkey no shadow mode | portkey.ai; not mentioned anywhere | ✅ High |
+| LiteLLM OIDC enterprise | infralovers.com LiteLLM docs; litellm.ai | ✅ High |
+| LiteLLM MCP v1.80.18 (protocol 2025-11-25) | litellm.ai changelog | ✅ High |
+| LiteLLM 300–500 RPS Python bottleneck | Reddit r/ML, multiple comparison posts | ✅ High (community) |
+| TensorZero <1ms P99 Rust | tensorzero.com, GitHub README | ✅ High |
+| TensorZero ClickHouse + A/B + DICL | tensorzero.com | ✅ High |
+| TensorZero no security/RBAC | tensorzero.com; not in any docs | ✅ High |
+| Bifrost Go, 11µs at 5K RPS | getmaxim.ai, dev.to benchmarks | ✅ High |
+| Bifrost MCP OAuth 2.0 + auto-discovery | getmaxim.ai MCP docs | ✅ High |
+| Bifrost no gateway-level HITL | getmaxim.ai; "explicit execution" is app-side | ✅ High |
+| Kong PII NLP plugin (Apr 2025, 20+ categories) | konghq.com press release + infoworld + techzine | ✅ High |
+| Kong MCP Proxy + OAuth2 (Oct 2025, v3.12) | konghq.com blog | ✅ High |
+| Kong no HITL | konghq.com; not in any docs | ✅ High |
+| Helicone SAML SSO enterprise (not OIDC) | helicone.ai pricing + aiagentslist.com | ✅ High |
+| Portkey enterprise $2K–$10K+/mo | truefoundry comparison + oreateai.com | ⚖️ Medium (extrapolated) |
+| ~50% AI devs use TypeScript | GitHub survey / Statista | ⚖️ Medium (industry estimate) |
+
+**Low-confidence / unverified:**
+- TrueFoundry specific pricing — contact-sales only; not independently verified
+- Bifrost PII redaction — not documented; marked ❓ in matrix
+- NeuralTrust, agentgateway — limited public info; excluded from matrix
+- Vercel AI Gateway feature depth — primarily edge caching and dev UX; not deeply researched
+
+---
+
+*Based on publicly available information from competitor sites, docs, GitHub, and developer communities as of February 2026. All unverified claims marked explicitly. Treat as directional intelligence, not legal or financial representation.*

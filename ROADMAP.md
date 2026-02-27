@@ -1,74 +1,62 @@
-# AILink — Competitive Gap & Engineering Roadmap
+# AILink — Remaining Engineering Roadmap
 
-> All 16 gaps vs. Portkey and LiteLLM, ranked by impact. Effort = estimated time with Claude as pair programmer.  
-> Last updated: Feb 2026
-
----
-
-## 🟢 Our Unique Advantages (Competitors Don't Have These)
-
-| Feature | Why It Matters |
-|---|---|
-| **Human-in-the-Loop (HITL)** | Approval gates for autonomous agents. Neither competitor has this. |
-| **Shadow Mode** | Test policies without blocking traffic. |
-| **OIDC/JWT Auth** | Native JWKS validation. Competitors use API keys only. |
-| **Rust Performance** | Sub-ms proxy overhead vs. Python (LiteLLM) / Node.js (Portkey). |
-| **Deep Policy Engine** | 15+ action types, nested AND/OR, async eval, time-based rules. |
-| **Webhook Policy Actions** | Fire webhooks *as a policy action*, not just budget alerts. |
+> Ranked by competitive urgency based on live market analysis (Feb 2026).  
+> **Completed items removed.** See git history for full feature history.
 
 ---
 
-## Priority Tier 1 — Ship Before Launch *(~6.5 days total)*
+## 🔴 Priority 1 — Ship Now *(highest competitive impact)*
 
-| # | Gap | Missing/Inferior | Why Critical | Effort |
-|---|---|---|---|---|
-| **1** | **Provider Breadth** — Azure OpenAI, Bedrock, Groq, Mistral, Together, Cohere, Ollama | 🔴 Missing | Enterprise will reject us in the first 5 min if their stack isn't supported. | ~2 days |
-| **2** | **~~SDK Framework Integrations~~** — LangChain, CrewAI, LlamaIndex ✅ | 🟠 Inferior | ~~Devs Google "ailink langchain". No result = they pick LiteLLM.~~ **DONE** | ~~1 day~~ |
-| **3** | **~~Spend Tracking Granularity~~** — per-model, per-token, per-tag ✅ | 🟠 Inferior | ~~"Show me GPT-4o spend by team this month" — can't answer this today.~~ **DONE** | ~~2 days~~ |
-| **4** | **Node.js / TypeScript SDK** | 🟠 Inferior | ~50% of AI devs use TypeScript. No TS SDK = invisible to half the market. | ~1.5 days |
-
----
-
-## Priority Tier 2 — Ship Within 2 Weeks *(~6.5 days total)*
-
-| # | Gap | Missing/Inferior | Why Critical | Effort |
-|---|---|---|---|---|
-| **5** | **~~Observability Export~~** — Prometheus `/metrics`, Langfuse, DataDog ✅ | 🟠 Inferior | ~~SREs can't plug us into Grafana/DataDog without custom work.~~ **DONE** | ~~1 day~~ |
-| **6** | **~~Weighted Load Balancing~~** — latency-based, cost-based, least-busy ✅ | 🔴 Missing | ~~LiteLLM has 5 routing strategies. We only have A/B split.~~ **DONE — 5 strategies** | ~~1.5 days~~ |
-| **7** | **~~RBAC Depth~~** — model-level access groups per API key ✅ | 🟠 Inferior | ~~"This key can only use GPT-4o-mini, not GPT-4o." Can't do that today.~~ **DONE** | ~~0.5 day~~ |
-| **8** | **SSO** — Okta, Google for dashboard login | 🔴 Missing | Enterprise procurement checklist item. No SSO = not enterprise-ready. | ~2 days |
-| **9** | **~~Team/Org Management~~** — multi-team hierarchy, tag attribution ✅ | 🔴 Missing | ~~Teams are the basic unit of enterprise org structure. Needed for #3 too.~~ **DONE** | ~~1.5 days~~ |
+| # | Gap | Why Critical | Effort |
+|---|-----|-------------|--------|
+| **1** | **TypeScript SDK** (`@ailink/sdk`) — parity with Python SDK (HITL, trace, fallback, `openai()` wrapper) | ~50% of AI devs use TypeScript. Portkey, LiteLLM, Helicone, TensorZero, Bifrost all have TS SDKs. AILink is invisible to this audience. | ~1 week |
+| **2** | **MCP Auto-Discovery + OAuth 2.0 token refresh** — when a URL is provided, auto-`initialize` + `list_tools`; store `client_id/secret/token_endpoint`, refresh token when expired | Bifrost has auto-discovery + OAuth 2.0. LiteLLM added native MCP (Nov 2025). Kong ships MCP OAuth2 plugin. Our manual-registration-only approach is falling behind fast. Architecture is ready (`client.rs` + `registry.rs` + `SecretStore` trait). | ~1 week |
+| **3** | **Provider Breadth** — Azure OpenAI, Bedrock, Groq, Mistral, Together, Cohere, Ollama | Enterprise will reject in the first 5 min if their provider isn't supported. | ~2 days/provider |
+| **4** | **Free Tier + Self-Serve Onboarding** — hosted free tier (10K req/mo, 7-day logs) + "Start for free" CTA | Every competitor has a free tier. Without one, zero developer evangelism or bottom-up adoption pipeline. | ~3 days |
 
 ---
 
-## Priority Tier 3 — Ship Within Month 1 *(~10.5 days total)*
+## 🟠 Priority 2 — Ship Within 2 Weeks
 
-| # | Gap | Missing/Inferior | Why Critical | Effort |
-|---|---|---|---|---|
-| **10** | ~~**Guardrails Breadth** — 60+ built-in rules, Palo Alto AIRS, Prompt Security~~ | ✅ Done | Expanded to 100+ patterns, 22 presets, 5 vendors (Azure, AWS, LlamaGuard, Palo Alto AIRS, Prompt Security). 862 tests pass. | ✅ |
-| **11** | **KMS Integration** — HashiCorp Vault, AWS KMS | 🟠 Inferior | "Can I use my existing KMS?" is a standard enterprise security question. | ~1.5 days |
-| **12** | ~~**MCP Server Integration**~~ | ✅ Done | MCP client (Streamable HTTP), registry, 6 API endpoints, proxy tool injection, dashboard UI. 25 tests pass. | ✅ |
-| **13** | **Dashboard Polish & UX** — onboarding, empty states, animations | 🟠 Inferior | Portkey's UI is a selling point. Buyer demos are won on UX. | ~3-5 days |
-
----
-
-## Priority Tier 4 — Ship Within Quarter 1 *(~5 days + $ total)*
-
-| # | Gap | Missing/Inferior | Why Critical | Effort |
-|---|---|---|---|---|
-| **14** | **Prompt Management** — versioning, playground, A/B testing | 🔴 Missing | Portkey's prompt playground is a user magnet. Major surface area. | ~4 days |
-| **15** | **Cache Streaming** — stream cached responses chunk-by-chunk | 🟠 Inferior | Portkey streams cached responses so UX is identical to live. We return full blob. | ~0.5 day |
-| **16** | **Compliance Certifications** — SOC-2 Type II, ISO 27001 | 🔴 Missing | LiteLLM already has both. Enterprise procurement requires SOC-2. | Process, ~$15-30K, 3-6 months |
+| # | Gap | Why Critical | Effort |
+|---|-----|-------------|--------|
+| **5** | **Dashboard SSO** — Okta / Google / GitHub OIDC login for dashboard | Enterprise procurement checklist item. OIDC auth is already in the gateway; apply it to the dashboard. | ~2 days |
+| **6** | **MCP Per-Token Tool Allow/Deny Lists** — policy-engine field restricting which MCP tools a token can invoke | Bifrost has per-key tool filtering + global tool blacklisting. Needed for security-conscious enterprise MCP usage. | ~1 day |
+| **7** | **Open-Source the Gateway Binary** — publish `gateway/` on GitHub under Apache 2.0 | Bottom-up developer trust and adoption. LiteLLM's entire community moat comes from being OSS. | ~2 days (legal review + README) |
 
 ---
 
-## Summary
+## 🟡 Priority 3 — Ship Within Month 1
 
-| Tier | Total Effort | Impact |
-|---|---|---|
-| Tier 1 | **~6.5 days** | Unblocks 90% of enterprise evaluations |
-| Tier 2 | **~6.5 days** | Full competitive parity with Portkey/LiteLLM |
-| Tier 3 | **~10.5 days** | Differentiation + forward positioning |
-| Tier 4 | **~5 days + $** | Market leadership |
+| # | Gap | Why Critical | Effort |
+|---|-----|-------------|--------|
+| **8** | **KMS Integration** — AWS KMS + HashiCorp Vault backends for `SecretStore` trait | Enterprise: "Can I use my own KMS?" `vault/mod.rs` trait is already defined — just implement new backends. Won't close sales before SOC-2, but needed for the pipeline after SOC-2. | ~1.5 weeks |
+| **9** | **NLP-Backed PII Redaction** — optional Presidio/spaCy sidecar as `PiiDetector` backend | Kong's Apr 2025 plugin covers 20+ categories in 12 languages via NLP. Our regex covers English-primary well enough for now. Revisit when a multilingual customer asks for it. | ~2–3 weeks |
+| **10** | **Dashboard Polish** — onboarding flow, empty states, animations | Portkey's UI is cited as the category reference. Buyer demos are won on UX. | ~3–5 days |
+| **11** | **Cache Streaming** — stream cached responses chunk-by-chunk instead of returning full blob | Portkey does this; small UX improvement for cached responses. | ~0.5 day |
+| **12** | **Prompt Management** — versioning, playground, A/B testing UI | Portkey's prompt playground is a user magnet. Large surface area. | ~4 days |
 
-**Total to full competitive parity: ~29 days of focused pair programming.**
+---
+
+## ⚪ Priority 4 — Ship Within Quarter 1 *(requires external process/spend)*
+
+| # | Gap | Why Critical | Effort |
+|---|-----|-------------|--------|
+| **13** | **SOC-2 Type I → Type II** — start with Drata/Vanta to automate controls | Hard procurement blocker for any regulated enterprise deal above ~$50K/yr. Portkey + Kong already certified. | Process: ~3–6 months, ~$15–30K |
+| **14** | **Compliance Certifications** — ISO 27001, HIPAA, GDPR readiness | Downstream from SOC-2. LiteLLM + Kong have both. | After SOC-2 |
+
+---
+
+## 🏆 Unique Advantages to Protect & Extend
+
+These are areas where AILink leads every competitor. Keep shipping on them:
+
+- **HITL approval gateway** — native 202/poll pattern; no one else has this as a gateway primitive
+- **Shadow mode** — unique in the category; extend it into "policy simulation" (replay historical traffic)
+- **PII tokenization vault** — deterministic reversible tokens; no competitor has this
+- **Deep policy engine** — 15+ action types; extend with more condition operators
+- **Anomaly detection** — extend with configurable thresholds per-token
+
+---
+
+*Last updated: Feb 2026*
