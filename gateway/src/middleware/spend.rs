@@ -47,7 +47,7 @@ pub async fn check_spend_cap(
     let caps = load_spend_caps(db, token_id).await?;
 
     // Nothing to enforce if no caps are configured
-    if caps.daily_limit_usd.is_none() && caps.monthly_limit_usd.is_none() {
+    if caps.daily_limit_usd.is_none() && caps.monthly_limit_usd.is_none() && caps.lifetime_limit_usd.is_none() {
         return Ok(());
     }
 

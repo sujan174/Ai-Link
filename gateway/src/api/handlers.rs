@@ -1952,7 +1952,7 @@ pub async fn upsert_spend_cap(
     // SEC-05: ownership check
     verify_token_ownership(&state, &token_id, &auth).await?;
 
-    if payload.period != "daily" && payload.period != "monthly" {
+    if payload.period != "daily" && payload.period != "monthly" && payload.period != "lifetime" {
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
     let limit = rust_decimal::Decimal::try_from(payload.limit_usd)

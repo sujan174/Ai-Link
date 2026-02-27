@@ -2533,6 +2533,235 @@ test("OIDC: no JWT header → API key fallback works",
      t21_no_jwt_falls_back_to_apikey)
 
 # ═══════════════════════════════════════════════════════════════
+#  Phase 22 — Cost & Token Tracking Verification
+# ═══════════════════════════════════════════════════════════════
+section("Phase 22 — Cost & Token Tracking Verification")
+
+# Create a dedicated token for cost/token tests
+_cost_tok = None
+_cost_tok_id = None
+
+
+def _setup_cost_token():
+    global _cost_tok, _cost_tok_id
+    t = admin.tokens.create(
+        name=f"mock-cost-test-{RUN_ID}",
+        upstream_url=MOCK_GATEWAY,
+        credential_id=_mock_cred_id,
+    )
+    _cleanup_tokens.append(t.token_id)
+    _cost_tok = t.token_id
+    _cost_tok_id = t.token_id
+
+
+_setup_cost_token()
+
+
+def t22_nonstream_tokens_in_response():
+    """Non-streaming: response contains correct usage fields."""
+    r = chat(_cost_tok, "Hello world", model="gpt-4o")
+    assert r.status_code == 200, f"HTTP {r.status_code}"
+    body = r.json()
+    usage = body.get("usage")
+    assert usage is not None, "Response missing usage object"
+    assert usage.get("prompt_tokens", 0) > 0, f"prompt_tokens should be > 0, got {usage}"
+    assert usage.get("completion_tokens", 0) > 0, f"completion_tokens should be > 0, got {usage}"
+    assert usage.get("total_tokens", 0) > 0, f"total_tokens should be > 0, got {usage}"
+    return f"prompt={usage['prompt_tokens']}, completion={usage['completion_tokens']}, total={usage['total_tokens']}"
+
+
+def t22_streaming_tokens_tracked():
+    """Streaming: verify that tokens are tracked (non-zero) via spend status after request."""
+    # First, get current spend baseline
+    r0 = httpx.get(
+        f"{GATEWAY_URL}/api/v1/tokens/{_cost_tok_id}/spend",
+        headers={"x-admin-key": ADMIN_KEY}, timeout=10
+    )
+    baseline_lifetime = 0.0
+    if r0.status_code == 200:
+        baseline_lifetime = r0.json().get("current_lifetime_usd", 0.0)
+
+    # Make a streaming request (model gpt-4o so it has pricing)
+    r = chat(_cost_tok, "Explain quantum computing briefly", model="gpt-4o", stream=True)
+    assert r.status_code == 200, f"HTTP {r.status_code}"
+    # Consume the stream fully
+    chunks = []
+    for line in r.text.splitlines():
+        if line.startswith("data: ") and line != "data: [DONE]":
+            chunks.append(line[6:])
+    assert len(chunks) > 0, "No SSE chunks received"
+
+    # Wait for background cost tracking to complete
+    time.sleep(1.5)
+
+    # Check spend status — should have increased
+    r2 = httpx.get(
+        f"{GATEWAY_URL}/api/v1/tokens/{_cost_tok_id}/spend",
+        headers={"x-admin-key": ADMIN_KEY}, timeout=10
+    )
+    assert r2.status_code == 200, f"Spend status HTTP {r2.status_code}"
+    spend = r2.json()
+    new_lifetime = spend.get("current_lifetime_usd", 0.0)
+    assert new_lifetime > baseline_lifetime, \
+        f"Streaming cost not tracked: lifetime spend unchanged ({baseline_lifetime} → {new_lifetime})"
+    return f"Lifetime spend increased: ${baseline_lifetime:.6f} → ${new_lifetime:.6f} ({len(chunks)} chunks)"
+
+
+def t22_stream_options_injected():
+    """Verify gateway injects stream_options.include_usage in streaming request body."""
+    r = chat(_cost_tok, "test stream options", model="gpt-4o", stream=True)
+    assert r.status_code == 200, f"HTTP {r.status_code}"
+    # Parse the SSE chunks to find the final one with usage
+    last_chunk = None
+    for line in r.text.splitlines():
+        if line.startswith("data: ") and line != "data: [DONE]":
+            last_chunk = json.loads(line[6:])
+    assert last_chunk is not None, "No chunks received"
+    # The mock returns usage in final chunk — this proves the request made it through
+    usage = last_chunk.get("usage")
+    assert usage is not None, "Final streaming chunk missing usage (stream_options.include_usage not effective)"
+    assert usage.get("prompt_tokens", 0) > 0 or usage.get("completion_tokens", 0) > 0, \
+        f"Final chunk usage has zero tokens: {usage}"
+    return f"Final chunk has usage: prompt={usage.get('prompt_tokens')}, completion={usage.get('completion_tokens')} ✓"
+
+
+def t22_nonstream_cost_tracked():
+    """Non-streaming: cost is tracked and non-zero for known model."""
+    # Get baseline spend
+    r0 = httpx.get(
+        f"{GATEWAY_URL}/api/v1/tokens/{_cost_tok_id}/spend",
+        headers={"x-admin-key": ADMIN_KEY}, timeout=10
+    )
+    baseline = r0.json().get("current_daily_usd", 0.0) if r0.status_code == 200 else 0.0
+
+    r = chat(_cost_tok, "What is AI?", model="gpt-4o")
+    assert r.status_code == 200
+    time.sleep(1.0)
+
+    r2 = httpx.get(
+        f"{GATEWAY_URL}/api/v1/tokens/{_cost_tok_id}/spend",
+        headers={"x-admin-key": ADMIN_KEY}, timeout=10
+    )
+    assert r2.status_code == 200
+    new_daily = r2.json().get("current_daily_usd", 0.0)
+    assert new_daily > baseline, \
+        f"Non-streaming cost not tracked: daily unchanged ({baseline} → {new_daily})"
+    return f"Daily spend increased: ${baseline:.6f} → ${new_daily:.6f}"
+
+
+def t22_spend_cap_preflight_blocks():
+    """Pre-flight budget check: set tiny cap, verify next request is rejected."""
+    # Create a token with a tiny daily cap
+    t = admin.tokens.create(
+        name=f"mock-cap-test-{RUN_ID}",
+        upstream_url=MOCK_GATEWAY,
+        credential_id=_mock_cred_id,
+    )
+    _cleanup_tokens.append(t.token_id)
+    cap_tok = t.token_id
+
+    # Set daily cap to $0.000001 (essentially zero — any single request will exceed)
+    cap_r = httpx.put(
+        f"{GATEWAY_URL}/api/v1/tokens/{t.token_id}/spend",
+        headers={"x-admin-key": ADMIN_KEY, "Content-Type": "application/json"},
+        json={"period": "daily", "limit_usd": 0.000001},
+        timeout=10
+    )
+    assert cap_r.status_code in (200, 204), f"Set spend cap: HTTP {cap_r.status_code}: {cap_r.text}"
+
+    # Make requests to burn through the tiny cap
+    r1 = chat(cap_tok, "Hello", model="gpt-4o")
+    # First request may succeed (pre-flight passes since spend starts at 0)
+    time.sleep(2.0)  # Wait for background cost tracking to flush
+
+    # Send a few more to be sure the cap is exceeded
+    for _ in range(3):
+        chat(cap_tok, "more", model="gpt-4o")
+        time.sleep(0.5)
+    time.sleep(1.5)
+
+    # Next request should be BLOCKED by pre-flight check
+    r2 = chat(cap_tok, "Should be blocked", model="gpt-4o")
+    assert r2.status_code == 402, \
+        f"Expected 402 SpendCapReached, got HTTP {r2.status_code}: {r2.text[:200]}"
+    return f"Pre-flight cap enforcement: 1st request={r1.status_code}, final=402 (blocked) ✓"
+
+
+def t22_spend_cap_lifetime_blocks():
+    """Lifetime cap: set tiny lifetime cap, verify request is rejected after exceeding."""
+    t = admin.tokens.create(
+        name=f"mock-lifetime-cap-{RUN_ID}",
+        upstream_url=MOCK_GATEWAY,
+        credential_id=_mock_cred_id,
+    )
+    _cleanup_tokens.append(t.token_id)
+    cap_tok = t.token_id
+
+    # Set lifetime cap to $0.000001 (essentially zero)
+    cap_r = httpx.put(
+        f"{GATEWAY_URL}/api/v1/tokens/{t.token_id}/spend",
+        headers={"x-admin-key": ADMIN_KEY, "Content-Type": "application/json"},
+        json={"period": "lifetime", "limit_usd": 0.000001},
+        timeout=10
+    )
+    assert cap_r.status_code in (200, 204), f"Set lifetime cap: HTTP {cap_r.status_code}: {cap_r.text}"
+
+    # Burn through the cap
+    r1 = chat(cap_tok, "Hello", model="gpt-4o")
+    time.sleep(2.0)
+    for _ in range(3):
+        chat(cap_tok, "more", model="gpt-4o")
+        time.sleep(0.5)
+    time.sleep(1.5)
+
+    # Should be blocked
+    r2 = chat(cap_tok, "Should be blocked", model="gpt-4o")
+    assert r2.status_code == 402, \
+        f"Expected 402 for lifetime cap, got HTTP {r2.status_code}: {r2.text[:200]}"
+    return f"Lifetime cap enforcement: 1st={r1.status_code}, final=402 ✓"
+
+
+def t22_spend_status_api():
+    """GET /api/v1/tokens/:id/spend returns all cap fields."""
+    r = httpx.get(
+        f"{GATEWAY_URL}/api/v1/tokens/{_cost_tok_id}/spend",
+        headers={"x-admin-key": ADMIN_KEY}, timeout=10
+    )
+    assert r.status_code == 200, f"HTTP {r.status_code}"
+    body = r.json()
+    required = ["current_daily_usd", "current_monthly_usd", "current_lifetime_usd"]
+    for field in required:
+        assert field in body, f"Missing field: {field}"
+    return f"daily=${body['current_daily_usd']:.6f}, monthly=${body['current_monthly_usd']:.6f}, lifetime=${body['current_lifetime_usd']:.6f}"
+
+
+def t22_no_cap_no_rejection():
+    """Token without any spend cap should never be rejected for budget reasons."""
+    # _cost_tok has no caps set → should work fine
+    for i in range(3):
+        r = chat(_cost_tok, f"Request {i}", model="gpt-4o")
+        assert r.status_code == 200, f"Request {i} failed: HTTP {r.status_code}"
+    return "3 requests without caps → all HTTP 200 ✓"
+
+
+test("Non-streaming: response has usage (prompt/completion/total tokens)",
+     t22_nonstream_tokens_in_response)
+test("Streaming: tokens tracked (spend increases after stream)",
+     t22_streaming_tokens_tracked)
+test("Streaming: stream_options.include_usage in final chunk",
+     t22_stream_options_injected)
+test("Non-streaming: cost tracked (daily spend increases)",
+     t22_nonstream_cost_tracked)
+test("Pre-flight: daily spend cap blocks over-budget request",
+     t22_spend_cap_preflight_blocks)
+test("Pre-flight: lifetime cap blocks over-budget request",
+     t22_spend_cap_lifetime_blocks)
+test("Spend status API: returns all required fields",
+     t22_spend_status_api)
+test("No cap: requests pass without budget rejection",
+     t22_no_cap_no_rejection)
+
+# ═══════════════════════════════════════════════════════════════
 #  Cleanup
 # ═══════════════════════════════════════════════════════════════
 section("Cleanup")
