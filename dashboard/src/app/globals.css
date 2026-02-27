@@ -44,31 +44,29 @@
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
 
   /* Animations */
-  --animate-fade-in: fade-in 0.4s ease-out forwards;
+  --animate-fade-in: fade-in 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
   --animate-slide-up: slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  --animate-slide-down: slide-down 0.3s ease-out forwards;
+  --animate-slide-down: slide-down 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
   --animate-scale-in: scale-in 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  --animate-glow: glow-pulse 3s ease-in-out infinite;
   --animate-shimmer: shimmer 2s linear infinite;
-  --animate-count-up: count-up 0.6s ease-out forwards;
-  --animate-float: float 3s ease-in-out infinite;
+  --animate-count-up: count-up 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
 }
 
 /* 
   ┌─────────────────────────────────────────────────────────────┐
-  │  OBSIDIAN UI — Redesigned AILink Dashboard Color System      │
+  │  WARM SLATE — AILink Dashboard Design System                 │
   │                                                             │
-  │  Philosophy: Premium developer tooling — like Linear or     │
-  │  Vercel. Deep charcoal neutrals, one rich accent (violet),  │
-  │  no harsh neons, no distracting blue-on-black clashes.      │
+  │  Philosophy: Professional infrastructure tooling.            │
+  │  Inspired by Linear's restraint, Vercel's density,          │
+  │  Stripe's typographic precision.                            │
   │                                                             │
-  │  Base:    #0F0F12  — Near-black charcoal (warmth, no blue)  │
-  │  Surface: #1A1A1F  — Elevated card surface                  │
-  │  Raise:   #222228  — Popover / dropdown                     │
-  │  Border:  #2C2C35  — Subtle borders (warm neutral)          │
-  │  Primary: #7C3AED  — Violet 600 — anchored, not garish     │
-  │  Text:    #F0F0F4  — Warm white (not cold #fff)            │
-  │  Muted:   #8A8A96  — Balanced gray                          │
+  │  Base:    #0C0E14  — Warm dark navy-slate                   │
+  │  Surface: #151821  — Lifted card surface                    │
+  │  Raise:   #1C1F2E  — Popover / dropdown                    │
+  │  Border:  #252A3A  — Warm slate border                      │
+  │  Primary: #14B8A6  — Teal-500 — professional, distinctive  │
+  │  Text:    #E8ECF4  — Slightly blue-white                    │
+  │  Muted:   #64748B  — Slate-500                              │
   └─────────────────────────────────────────────────────────────┘
 */
 
@@ -77,61 +75,55 @@
   :root,
   .dark {
     /* ── Surfaces ── */
-    --background: #0F0F12;
-    --foreground: #F0F0F4;
+    --background: #0C0E14;
+    --foreground: #E8ECF4;
 
-    --card: #1A1A1F;
-    --card-foreground: #F0F0F4;
+    --card: #151821;
+    --card-foreground: #E8ECF4;
 
-    --popover: #222228;
-    --popover-foreground: #F0F0F4;
+    --popover: #1C1F2E;
+    --popover-foreground: #E8ECF4;
 
     /* ── Brand ── */
-    --primary: #7C3AED;
-    /* violet-600 */
+    --primary: #14B8A6;
     --primary-foreground: #FFFFFF;
 
     /* ── Neutrals ── */
-    --secondary: #2C2C35;
-    --secondary-foreground: #C8C8D4;
+    --secondary: #252A3A;
+    --secondary-foreground: #CBD5E1;
 
-    --muted: #1A1A1F;
-    --muted-foreground: #8A8A96;
+    --muted: #151821;
+    --muted-foreground: #64748B;
 
-    --accent: #2C2C35;
-    --accent-foreground: #C8C8D4;
+    --accent: #1C1F2E;
+    --accent-foreground: #CBD5E1;
 
     /* ── Semantic ── */
-    --destructive: #C0283C;
+    --destructive: #E11D48;
     --destructive-foreground: #FAFAFA;
 
-    --success: #16A34A;
+    --success: #10B981;
     --success-foreground: #FFFFFF;
 
-    --warning: #D97706;
+    --warning: #F59E0B;
     --warning-foreground: #FFFBEB;
 
     /* ── Input primitives ── */
-    --border: #2C2C35;
-    --input: #222228;
-    --ring: #7C3AED;
+    --border: #252A3A;
+    --input: #1C1F2E;
+    --ring: #14B8A6;
 
     /* ── Shape ── */
     --radius: 0.5rem;
 
-    /* ── Glass tokens ── */
-    --glass-bg: rgba(26, 26, 31, 0.72);
-    --glass-border: rgba(44, 44, 53, 0.6);
-    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-
     /* ── Sidebar ── */
-    --sidebar-bg: #0F0F12;
-    --sidebar-border: #222228;
+    --sidebar-bg: #0C0E14;
+    --sidebar-border: #1C1F2E;
 
     /* ── Derived convenience ── */
-    --surface-raised: #222228;
-    --violet-glow: rgba(124, 58, 237, 0.18);
-    --violet-glow-sm: rgba(124, 58, 237, 0.08);
+    --surface-raised: #1C1F2E;
+    --accent-glow: rgba(20, 184, 166, 0.15);
+    --accent-glow-sm: rgba(20, 184, 166, 0.06);
   }
 }
 
@@ -143,9 +135,10 @@
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-feature-settings: "rlig" 1, "calt" 1;
+    letter-spacing: -0.011em;
   }
 
-  /* Thin scrollbars throughout */
+  /* Thin scrollbars */
   ::-webkit-scrollbar {
     width: 4px;
     height: 4px;
@@ -156,12 +149,12 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #2C2C35;
+    background: #252A3A;
     border-radius: 99px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: #3C3C48;
+    background: #334155;
   }
 
   code,
@@ -170,159 +163,52 @@
     @apply font-mono;
   }
 
-  /* Selection */
   ::selection {
-    background: rgba(124, 58, 237, 0.3);
-    color: #F0F0F4;
+    background: rgba(20, 184, 166, 0.25);
+    color: #E8ECF4;
   }
 }
 
 /* ═══ Keyframes ═══ */
 
 @keyframes fade-in {
-  from {
-    opacity: 0;
-  }
-
-  to {
-    opacity: 1;
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @keyframes slide-up {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes slide-down {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes scale-in {
-  from {
-    opacity: 0;
-    transform: scale(0.97);
-  }
-
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@keyframes glow-pulse {
-
-  0%,
-  100% {
-    box-shadow: 0 0 12px rgba(124, 58, 237, 0.12);
-  }
-
-  50% {
-    box-shadow: 0 0 28px rgba(124, 58, 237, 0.28);
-  }
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 @keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-
-  100% {
-    background-position: 200% 0;
-  }
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }
 
 @keyframes count-up {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes float {
-
-  0%,
-  100% {
-    transform: translateY(0px);
-  }
-
-  50% {
-    transform: translateY(-3px);
-  }
-}
-
-@keyframes sparkline-draw {
-  from {
-    stroke-dashoffset: 100;
-  }
-
-  to {
-    stroke-dashoffset: 0;
-  }
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes slide-in-right {
-  from {
-    opacity: 0;
-    transform: translateX(100%);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes pulse-dot {
-
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.4;
-  }
+  from { opacity: 0; transform: translateX(100%); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 /* ═══ Utilities ═══ */
 
 @layer utilities {
-
-  /* ── Glass morphism ── */
-  .glass-card {
-    background: var(--glass-bg);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid var(--glass-border);
-    box-shadow: var(--glass-shadow);
-  }
-
-  .glass-surface {
-    background: var(--glass-bg);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-  }
 
   /* ── Scrollbar Hide ── */
   .scrollbar-none {
@@ -334,26 +220,29 @@
     display: none;
   }
 
-  /* ── Hover Lift ── */
+  /* ── Hover Lift (subtle) ── */
   .hover-lift {
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition: transform 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94), 
+                box-shadow 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+                border-color 0.2s ease;
   }
 
   .hover-lift:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+    transform: translateY(-1px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    border-color: #334155;
   }
 
-  /* ── Gradient Text (violet → indigo) ── */
+  /* ── Gradient Text (teal) ── */
   .gradient-text {
-    background: linear-gradient(135deg, #A78BFA, #818CF8);
+    background: linear-gradient(135deg, #2DD4BF, #14B8A6);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
   }
 
   .gradient-text-emerald {
-    background: linear-gradient(135deg, #34D399, #22D3EE);
+    background: linear-gradient(135deg, #34D399, #10B981);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -363,37 +252,34 @@
   .shimmer {
     background: linear-gradient(90deg,
         transparent 25%,
-        rgba(255, 255, 255, 0.05) 50%,
+        rgba(255, 255, 255, 0.04) 50%,
         transparent 75%);
     background-size: 200% 100%;
     animation: shimmer 2s linear infinite;
   }
 
-  /* ── Violet glow (primary accent glow on interactive elements) ── */
-  .violet-glow {
-    box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.4), 0 4px 20px rgba(124, 58, 237, 0.2);
+  /* ── Accent glow ── */
+  .accent-glow {
+    box-shadow: 0 0 0 1px rgba(20, 184, 166, 0.3), 0 4px 16px rgba(20, 184, 166, 0.12);
+  }
+
+  /* ── Glass card (reserved for modals/dropdowns only) ── */
+  .glass-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+  }
+
+  .glass-surface {
+    background: var(--card);
+    border: 1px solid var(--border);
   }
 
   /* ── Staggered animations ── */
-  .stagger-1 {
-    animation-delay: 0.04s;
-  }
-
-  .stagger-2 {
-    animation-delay: 0.08s;
-  }
-
-  .stagger-3 {
-    animation-delay: 0.12s;
-  }
-
-  .stagger-4 {
-    animation-delay: 0.16s;
-  }
-
-  .stagger-5 {
-    animation-delay: 0.20s;
-  }
+  .stagger-1 { animation-delay: 0.04s; }
+  .stagger-2 { animation-delay: 0.08s; }
+  .stagger-3 { animation-delay: 0.12s; }
+  .stagger-4 { animation-delay: 0.16s; }
+  .stagger-5 { animation-delay: 0.20s; }
 
   /* ── High-density table ── */
   .table-dense th,
@@ -403,71 +289,66 @@
     line-height: 1rem;
   }
 
-  /* ── Status Dot Indicators ── */
+  /* ── Status Dots ── */
   .dot {
     height: 0.5rem;
     width: 0.5rem;
     border-radius: 9999px;
   }
 
-  .dot-success {
-    background-color: #22C55E;
-    animation: pulse-dot 2s ease-in-out infinite;
-  }
-
-  .dot-warning {
-    background-color: #F59E0B;
-  }
-
-  .dot-danger {
-    background-color: #EF4444;
-  }
-
-  .dot-neutral {
-    background-color: #6B7280;
-  }
+  .dot-success { background-color: #10B981; }
+  .dot-warning { background-color: #F59E0B; }
+  .dot-danger { background-color: #E11D48; }
+  .dot-neutral { background-color: #64748B; }
 
   /* ── KPI Icon Circles ── */
   .icon-circle-blue,
   .icon-circle-emerald,
   .icon-circle-amber,
   .icon-circle-violet,
+  .icon-circle-teal,
   .icon-circle-rose {
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 0.625rem;
-    padding: 0.625rem;
+    border-radius: 0.5rem;
+    padding: 0.5rem;
   }
 
   .icon-circle-blue {
-    background-color: rgba(99, 102, 241, 0.12);
+    background-color: rgba(99, 102, 241, 0.10);
     color: #818CF8;
   }
 
   .icon-circle-emerald {
-    background-color: rgba(34, 197, 94, 0.1);
-    color: #4ADE80;
+    background-color: rgba(16, 185, 129, 0.10);
+    color: #34D399;
   }
 
   .icon-circle-amber {
-    background-color: rgba(245, 158, 11, 0.1);
-    color: #FCD34D;
+    background-color: rgba(245, 158, 11, 0.10);
+    color: #FBBF24;
   }
 
   .icon-circle-violet {
-    background-color: rgba(124, 58, 237, 0.12);
+    background-color: rgba(124, 58, 237, 0.10);
     color: #A78BFA;
   }
 
+  .icon-circle-teal {
+    background-color: rgba(20, 184, 166, 0.10);
+    color: #2DD4BF;
+  }
+
   .icon-circle-rose {
-    background-color: rgba(244, 63, 94, 0.1);
+    background-color: rgba(225, 29, 72, 0.10);
     color: #FB7185;
   }
 
   /* ── Page Transition ── */
   .page-enter {
-    animation: fade-in 0.35s ease-out, slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    animation: fade-in 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94), 
+               slide-up 0.35s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   /* ── Slide-in from right ── */
@@ -491,6 +372,11 @@
     width: 2px;
     border-radius: 0 2px 2px 0;
     background: var(--primary);
-    box-shadow: 0 0 8px rgba(124, 58, 237, 0.6);
+    box-shadow: 0 0 8px rgba(20, 184, 166, 0.5);
+  }
+
+  /* ── Violet glow kept for backward compat ── */
+  .violet-glow {
+    box-shadow: 0 0 0 1px rgba(20, 184, 166, 0.3), 0 4px 16px rgba(20, 184, 166, 0.12);
   }
 }

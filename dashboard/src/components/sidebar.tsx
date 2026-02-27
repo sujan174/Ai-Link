@@ -21,11 +21,13 @@ import {
     Settings,
     ChevronLeft,
     ChevronRight,
-    DollarSign,
+    ChevronDown,
     Layers,
     Database,
+    ShieldCheck,
+    FileCode,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 
 type SidebarProps = React.HTMLAttributes<HTMLDivElement>;
 
@@ -37,8 +39,10 @@ interface Route {
 }
 
 interface Group {
+    id: string;
     label: string;
     routes: Route[];
+    defaultOpen?: boolean;
 }
 
 export function Sidebar({ className }: SidebarProps) {
@@ -48,6 +52,17 @@ export function Sidebar({ className }: SidebarProps) {
     const [mounted, setMounted] = useState(false);
     const [health, setHealth] = useState<"online" | "offline" | "checking">("checking");
     const [approvalCount, setApprovalCount] = useState(0);
+    const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
+        overview: true,
+        observe: true,
+        orchestrate: false,
+        configure: false,
+    });
+
+    const toggleGroup = useCallback((id: string) => {
+        if (collapsed) return;
+        setOpenGroups(prev => ({ ...prev, [id]: !prev[id] }));
+    }, [collapsed]);
 
     useEffect(() => {
         setMounted(true);
@@ -84,46 +99,60 @@ export function Sidebar({ className }: SidebarProps) {
         return () => clearInterval(interval);
     }, []);
 
+    // Auto-open group containing current route
+    useEffect(() => {
+        groups.forEach((group) => {
+            const hasActive = group.routes.some(r =>
+                r.href === "/" ? pathname === "/" : pathname.startsWith(r.href)
+            );
+            if (hasActive) {
+                setOpenGroups(prev => ({ ...prev, [group.id]: true }));
+            }
+        });
+    }, [pathname]);
+
     const groups: Group[] = [
         {
+            id: "overview",
             label: "Overview",
+            defaultOpen: true,
             routes: [
-                { href: "/", label: "Command Centre", icon: LayoutDashboard },
+                { href: "/", label: "Dashboard", icon: LayoutDashboard },
+                { href: "/analytics", label: "Analytics", icon: BarChart3 },
             ]
         },
         {
-            label: "Observability",
+            id: "observe",
+            label: "Observe",
+            defaultOpen: true,
             routes: [
-                { href: "/analytics", label: "Global Analytics", icon: BarChart3 },
                 { href: "/audit", label: "Audit Logs", icon: ClipboardList },
-                { href: "/sessions", label: "Agent Sessions", icon: Layers },
+                { href: "/sessions", label: "Sessions", icon: Layers },
             ]
         },
         {
-            label: "Orchestration",
+            id: "orchestrate",
+            label: "Orchestrate",
             routes: [
                 { href: "/virtual-keys", label: "Virtual Keys", icon: Key },
-                { href: "/upstreams", label: "Upstreams & Models", icon: Activity },
-                { href: "/tools", label: "Managed Tools", icon: Plug },
-                { href: "/approvals", label: "Human-in-the-Loop", icon: CheckCircle, badge: approvalCount > 0 ? approvalCount : null },
-            ]
-        },
-        {
-            label: "Safety & Optimization",
-            routes: [
+                { href: "/upstreams", label: "Upstreams", icon: Activity },
+                { href: "/tools", label: "Tools", icon: Plug },
                 { href: "/guardrails", label: "Guardrails", icon: ShieldAlert },
-                { href: "/cache", label: "Cache Management", icon: Database },
+                { href: "/model-access-groups", label: "Model Access", icon: ShieldCheck },
+                { href: "/cache", label: "Cache", icon: Database },
+                { href: "/approvals", label: "Approvals", icon: CheckCircle, badge: approvalCount > 0 ? approvalCount : null },
                 { href: "/playground", label: "Playground", icon: FlaskConical },
             ]
         },
         {
-            label: "Configuration",
+            id: "configure",
+            label: "Configure",
             routes: [
-                { href: "/vault", label: "The Vault", icon: Fingerprint },
-                { href: "/api-keys", label: "Platform API Keys", icon: LockKeyhole },
+                { href: "/vault", label: "Vault", icon: Fingerprint },
+                { href: "/api-keys", label: "API Keys", icon: LockKeyhole },
                 { href: "/webhooks", label: "Webhooks", icon: Webhook },
-                { href: "/settings/sso", label: "SSO / OIDC", icon: ShieldAlert },
-                { href: "/billing", label: "Usage & Billing", icon: CreditCard },
+                { href: "/billing", label: "Billing", icon: CreditCard },
+                { href: "/config", label: "Config-as-Code", icon: FileCode },
                 { href: "/settings", label: "Settings", icon: Settings },
             ]
         }
@@ -132,8 +161,8 @@ export function Sidebar({ className }: SidebarProps) {
     return (
         <motion.div
             initial={false}
-            animate={{ width: collapsed ? 64 : 232 }}
-            transition={{ type: "spring", stiffness: 320, damping: 32 }}
+            animate={{ width: collapsed ? 56 : 220 }}
+            transition={{ type: "spring", stiffness: 400, damping: 35 }}
             className={cn(
                 "flex h-full flex-col relative overflow-hidden",
                 "bg-[var(--sidebar-bg)] border-r border-[var(--sidebar-border)]",
@@ -146,161 +175,159 @@ export function Sidebar({ className }: SidebarProps) {
                 aria-label="Toggle Sidebar"
                 className={cn(
                     "absolute -right-3 top-7 z-50",
-                    "flex h-6 w-6 items-center justify-center rounded-full",
-                    "border border-[#2C2C35] bg-[#1A1A1F]",
-                    "text-[#8A8A96] hover:text-[#F0F0F4]",
-                    "shadow-md transition-all duration-200",
-                    "hover:border-[#7C3AED]/30 hover:shadow-[0_0_12px_rgba(124,58,237,0.2)]"
+                    "flex h-5 w-5 items-center justify-center rounded-full",
+                    "border border-[var(--border)] bg-[var(--card)]",
+                    "text-muted-foreground hover:text-foreground",
+                    "transition-all duration-200",
+                    "hover:border-[var(--primary)]/30"
                 )}
             >
-                {collapsed ? <ChevronRight size={12} /> : <ChevronLeft size={12} />}
+                {collapsed ? <ChevronRight size={10} /> : <ChevronLeft size={10} />}
             </button>
 
-            {/* Logo / Brand */}
+            {/* Logo */}
             <div className={cn(
-                "flex h-14 shrink-0 items-center border-b border-[var(--sidebar-border)]",
-                collapsed ? "justify-center px-4" : "px-5"
+                "flex h-12 shrink-0 items-center border-b border-[var(--sidebar-border)]",
+                collapsed ? "justify-center px-3" : "px-4"
             )}>
-                <Link href="/" className="flex items-center gap-2.5 group min-w-0">
-                    {/* Icon mark */}
+                <Link href="/" className="flex items-center gap-2 group min-w-0">
                     <div className={cn(
-                        "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg",
-                        "bg-gradient-to-br from-violet-600 to-indigo-500",
-                        "text-white font-black text-xs shadow-lg",
-                        "shadow-violet-900/40 group-hover:shadow-violet-700/40 transition-shadow"
+                        "flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+                        "bg-gradient-to-br from-teal-500 to-teal-600",
+                        "text-white font-bold text-[10px] tracking-tight",
+                        "group-hover:shadow-[0_0_12px_rgba(20,184,166,0.3)] transition-shadow"
                     )}>
                         A
                     </div>
                     {!collapsed && (
-                        <motion.div
+                        <motion.span
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            className="flex items-center gap-2 min-w-0 overflow-hidden"
+                            className="gradient-text font-semibold text-sm tracking-tight whitespace-nowrap"
                         >
-                            <span className="gradient-text font-bold text-[15px] tracking-tight whitespace-nowrap">
-                                AIlink
-                            </span>
-                            <span className={cn(
-                                "rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider whitespace-nowrap",
-                                "bg-violet-500/10 text-violet-400 border border-violet-500/20"
-                            )}>
-                                Gateway
-                            </span>
-                        </motion.div>
+                            AIlink
+                        </motion.span>
                     )}
                 </Link>
             </div>
 
             {/* Navigation */}
-            <div className="flex-1 overflow-y-auto overflow-x-hidden py-3 space-y-5 scrollbar-none px-3">
-                {groups.map((group) => (
-                    <div key={group.label} className="space-y-0.5">
-                        {/* Group label */}
-                        {!collapsed && (
-                            <motion.p
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                className={cn(
-                                    "px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em]",
-                                    "text-[#8A8A96]/60"
-                                )}
-                            >
-                                {group.label}
-                            </motion.p>
-                        )}
-                        {group.routes.map((route) => {
-                            const isActive = route.href === "/"
-                                ? pathname === "/"
-                                : pathname.startsWith(route.href);
-                            return (
-                                <Link
-                                    key={route.href}
-                                    href={route.href}
-                                    title={collapsed ? route.label : undefined}
+            <div className="flex-1 overflow-y-auto overflow-x-hidden py-2 scrollbar-none px-2">
+                {groups.map((group) => {
+                    const isOpen = openGroups[group.id] ?? group.defaultOpen ?? false;
+                    const hasActiveChild = group.routes.some(r =>
+                        r.href === "/" ? pathname === "/" : pathname.startsWith(r.href)
+                    );
+
+                    return (
+                        <div key={group.id} className="mb-0.5">
+                            {/* Group header — clickable to collapse */}
+                            {!collapsed ? (
+                                <button
+                                    onClick={() => toggleGroup(group.id)}
                                     className={cn(
-                                        "relative flex items-center gap-2.5 rounded-lg py-2 text-[13px] font-medium",
-                                        "transition-all duration-150 group",
-                                        collapsed ? "justify-center px-2" : "px-2.5",
-                                        isActive
-                                            ? [
-                                                "text-[#F0F0F4] bg-violet-600/10",
-                                                "ring-1 ring-inset ring-violet-500/15"
-                                            ]
-                                            : [
-                                                "text-[#8A8A96]",
-                                                "hover:text-[#C8C8D4] hover:bg-[#1E1E24]"
-                                            ]
+                                        "w-full flex items-center justify-between",
+                                        "px-2 py-1.5 mt-2 first:mt-0",
+                                        "text-[10px] font-medium uppercase tracking-[0.08em]",
+                                        "text-muted-foreground/50 hover:text-muted-foreground",
+                                        "transition-colors rounded-md"
                                     )}
                                 >
-                                    {/* Active left indicator */}
-                                    {isActive && (
-                                        <span className="absolute left-0 top-1/2 -translate-y-1/2 h-4 w-0.5 rounded-r-full bg-violet-500 shadow-[0_0_6px_rgba(124,58,237,0.7)]" />
-                                    )}
-                                    <route.icon
-                                        size={15}
-                                        strokeWidth={isActive ? 2 : 1.6}
+                                    <span>{group.label}</span>
+                                    <ChevronDown
+                                        size={10}
                                         className={cn(
-                                            "shrink-0 transition-colors",
-                                            isActive ? "text-violet-400" : "text-[#8A8A96] group-hover:text-[#C8C8D4]"
+                                            "transition-transform duration-200",
+                                            !isOpen && "-rotate-90"
                                         )}
                                     />
-                                    {!collapsed && (
-                                        <motion.span
-                                            initial={{ opacity: 0 }}
-                                            animate={{ opacity: 1 }}
-                                            className="flex-1 whitespace-nowrap overflow-hidden text-ellipsis"
-                                        >
-                                            {route.label}
-                                        </motion.span>
-                                    )}
-                                    {/* approval badge */}
-                                    {!collapsed && route.badge && (
-                                        <motion.span
-                                            initial={{ opacity: 0, scale: 0.8 }}
-                                            animate={{ opacity: 1, scale: 1 }}
-                                            className={cn(
-                                                "flex h-4 min-w-[1rem] items-center justify-center rounded-full",
-                                                "bg-amber-500/15 px-1 text-[9px] font-bold text-amber-400 font-mono"
-                                            )}
-                                        >
-                                            {route.badge}
-                                        </motion.span>
-                                    )}
-                                </Link>
-                            );
-                        })}
-                    </div>
-                ))}
+                                </button>
+                            ) : (
+                                <div className="h-px bg-[var(--border)] mx-2 my-2" />
+                            )}
+
+                            {/* Routes */}
+                            <AnimatePresence initial={false}>
+                                {(isOpen || collapsed) && (
+                                    <motion.div
+                                        initial={collapsed ? false : { height: 0, opacity: 0 }}
+                                        animate={{ height: "auto", opacity: 1 }}
+                                        exit={{ height: 0, opacity: 0 }}
+                                        transition={{ duration: 0.15, ease: "easeInOut" }}
+                                        className="overflow-hidden space-y-px"
+                                    >
+                                        {group.routes.map((route) => {
+                                            const isActive = route.href === "/"
+                                                ? pathname === "/"
+                                                : pathname.startsWith(route.href);
+                                            return (
+                                                <Link
+                                                    key={route.href}
+                                                    href={route.href}
+                                                    title={collapsed ? route.label : undefined}
+                                                    className={cn(
+                                                        "relative flex items-center gap-2 rounded-md py-1.5 text-[13px] font-medium",
+                                                        "transition-all duration-100 group",
+                                                        collapsed ? "justify-center px-2" : "px-2",
+                                                        isActive
+                                                            ? "text-foreground bg-[var(--primary)]/8 border border-[var(--primary)]/12"
+                                                            : "text-muted-foreground hover:text-foreground/80 hover:bg-[var(--card)] border border-transparent"
+                                                    )}
+                                                >
+                                                    {/* Active left indicator */}
+                                                    {isActive && (
+                                                        <span className="absolute left-0 top-1/2 -translate-y-1/2 h-3.5 w-[2px] rounded-r-full bg-[var(--primary)]" />
+                                                    )}
+                                                    <route.icon
+                                                        size={14}
+                                                        strokeWidth={isActive ? 2 : 1.5}
+                                                        className={cn(
+                                                            "shrink-0 transition-colors",
+                                                            isActive ? "text-[var(--primary)]" : "text-muted-foreground group-hover:text-foreground/60"
+                                                        )}
+                                                    />
+                                                    {!collapsed && (
+                                                        <span className="flex-1 whitespace-nowrap overflow-hidden text-ellipsis">
+                                                            {route.label}
+                                                        </span>
+                                                    )}
+                                                    {/* Badge */}
+                                                    {!collapsed && route.badge && (
+                                                        <span className={cn(
+                                                            "flex h-4 min-w-[1rem] items-center justify-center rounded-full",
+                                                            "bg-amber-500/12 px-1 text-[9px] font-bold text-amber-400 font-mono"
+                                                        )}>
+                                                            {route.badge}
+                                                        </span>
+                                                    )}
+                                                </Link>
+                                            );
+                                        })}
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+                        </div>
+                    );
+                })}
             </div>
 
-            {/* Footer — health status */}
+            {/* Footer — health + version */}
             <div className={cn(
-                "shrink-0 border-t border-[var(--sidebar-border)] py-3",
-                collapsed ? "px-3" : "px-5"
+                "shrink-0 border-t border-[var(--sidebar-border)] py-2.5",
+                collapsed ? "px-2" : "px-4"
             )}>
                 <div className={cn(
-                    "flex items-center text-[11px] text-[#8A8A96]",
-                    collapsed ? "justify-center" : "justify-between"
+                    "flex items-center text-[11px] text-muted-foreground",
+                    collapsed ? "justify-center" : "gap-2"
                 )}>
-                    <div className="flex items-center gap-2">
-                        <div className={cn(
-                            "h-1.5 w-1.5 rounded-full transition-colors duration-500",
-                            health === "online" ? "bg-emerald-500 shadow-[0_0_6px_rgba(34,197,94,0.6)]" :
-                                health === "offline" ? "bg-rose-500" :
-                                    "bg-amber-500 animate-pulse"
-                        )} />
-                        {!collapsed && <span className="font-mono text-[10px]">v0.6.0</span>}
-                    </div>
+                    <div className={cn(
+                        "h-1.5 w-1.5 rounded-full transition-colors duration-500",
+                        health === "online" ? "bg-emerald-500" :
+                            health === "offline" ? "bg-rose-500" :
+                                "bg-amber-500 animate-pulse"
+                    )} />
                     {!collapsed && (
-                        <span className={cn(
-                            "text-[9px] uppercase tracking-widest font-medium",
-                            health === "online" ? "text-emerald-500/60" :
-                                health === "offline" ? "text-rose-500/60" :
-                                    "text-amber-500/60"
-                        )}>
-                            {health}
-                        </span>
+                        <span className="font-mono text-[10px] text-muted-foreground/60">v0.6.0</span>
                     )}
                 </div>
             </div>

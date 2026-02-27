@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { getToken, listAuditLogs, getTokenUsage, getSpendCaps, upsertSpendCap, deleteSpendCap, Token, AuditLog, TokenUsageStats, SpendStatus } from "@/lib/api";
+import { getToken, listAuditLogs, getTokenUsage, getSpendCaps, upsertSpendCap, deleteSpendCap, getCircuitBreaker, updateCircuitBreaker, Token, AuditLog, TokenUsageStats, SpendStatus, CircuitBreakerConfig } from "@/lib/api";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import {
     Key,
@@ -19,6 +19,9 @@ import {
     DollarSign,
     TrendingUp,
     X,
+    CircuitBoard,
+    ToggleLeft,
+    ToggleRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -64,6 +67,9 @@ export default function TokenDetailPage() {
     const [logs, setLogs] = useState<AuditLog[]>([]);
     const [usage, setUsage] = useState<TokenUsageStats | null>(null);
     const [spend, setSpend] = useState<SpendStatus | null>(null);
+    const [cb, setCb] = useState<CircuitBreakerConfig | null>(null);
+    const [cbEdits, setCbEdits] = useState<Partial<CircuitBreakerConfig>>({});
+    const [savingCb, setSavingCb] = useState(false);
     const [loading, setLoading] = useState(true);
     const [copied, setCopied] = useState(false);
     const [capInput, setCapInput] = useState<{ daily: string; monthly: string }>({ daily: "", monthly: "" });
@@ -74,16 +80,19 @@ export default function TokenDetailPage() {
 
         const loadData = async () => {
             try {
-                const [t, l, u, s] = await Promise.all([
+                const [t, l, u, s, c] = await Promise.all([
                     getToken(id),
                     listAuditLogs(50, 0, { token_id: id }),
                     getTokenUsage(id),
                     getSpendCaps(id).catch(() => null),
+                    getCircuitBreaker(id).catch(() => null),
                 ]);
                 setToken(t);
                 setLogs(l);
                 setUsage(u);
                 setSpend(s);
+                setCb(c);
+                setCbEdits(c ?? {});
                 if (s) {
                     setCapInput({
                         daily: s.daily_limit_usd != null ? String(s.daily_limit_usd) : "",
@@ -130,6 +139,20 @@ export default function TokenDetailPage() {
             setCapInput((prev) => ({ ...prev, [period]: "" }));
             toast.success(`${period === "daily" ? "Daily" : "Monthly"} cap removed`);
         } catch { toast.error("Failed to remove cap"); }
+    };
+
+    const handleSaveCb = async () => {
+        setSavingCb(true);
+        try {
+            const updated = await updateCircuitBreaker(id, cbEdits);
+            setCb(updated);
+            setCbEdits(updated);
+            toast.success("Circuit breaker config saved");
+        } catch (e: any) {
+            toast.error(e.message || "Failed to update circuit breaker");
+        } finally {
+            setSavingCb(false);
+        }
     };
 
     if (loading) {
@@ -394,6 +417,82 @@ export default function TokenDetailPage() {
                             </div>
                         );
                     })}
+                </CardContent>
+            </Card>
+
+            {/* Circuit Breaker */}
+            <Card className="glass-card">
+                <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                    <div className="flex items-center gap-2">
+                        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-orange-500/10">
+                            <CircuitBoard className="h-4 w-4 text-orange-500" />
+                        </div>
+                        <CardTitle className="text-sm font-medium">Circuit Breaker</CardTitle>
+                    </div>
+                    {cb && (
+                        <button
+                            onClick={() => setCbEdits(prev => ({ ...prev, enabled: !prev.enabled }))}
+                            className="flex items-center gap-1 text-xs"
+                        >
+                            {cbEdits.enabled
+                                ? <><ToggleRight className="h-5 w-5 text-emerald-500" /><span className="text-emerald-500">Enabled</span></>
+                                : <><ToggleLeft className="h-5 w-5 text-muted-foreground" /><span className="text-muted-foreground">Disabled</span></>}
+                        </button>
+                    )}
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    {!cb ? (
+                        <p className="text-xs text-muted-foreground italic">Circuit breaker config not available for this token.</p>
+                    ) : (
+                        <>
+                            <p className="text-[11px] text-muted-foreground">
+                                Automatically opens the circuit after <strong>{cbEdits.failure_threshold ?? cb.failure_threshold}</strong> consecutive failures,
+                                then retries after <strong>{cbEdits.recovery_cooldown_secs ?? cb.recovery_cooldown_secs}s</strong>.
+                                State is reflected in <code className="text-[10px] bg-muted px-1 rounded">X-AILink-CB-State</code> response header.
+                            </p>
+                            <div className="grid md:grid-cols-3 gap-4">
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Failure Threshold</label>
+                                    <input
+                                        type="number" min={1} max={100}
+                                        value={cbEdits.failure_threshold ?? cb.failure_threshold}
+                                        onChange={e => setCbEdits(p => ({ ...p, failure_threshold: parseInt(e.target.value) || 1 }))}
+                                        className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    />
+                                    <p className="text-[10px] text-muted-foreground">Failures before circuit opens</p>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Cooldown (seconds)</label>
+                                    <input
+                                        type="number" min={1}
+                                        value={cbEdits.recovery_cooldown_secs ?? cb.recovery_cooldown_secs}
+                                        onChange={e => setCbEdits(p => ({ ...p, recovery_cooldown_secs: parseInt(e.target.value) || 1 }))}
+                                        className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    />
+                                    <p className="text-[10px] text-muted-foreground">Wait before half-open try</p>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">Half-Open Max Requests</label>
+                                    <input
+                                        type="number" min={1}
+                                        value={cbEdits.half_open_max_requests ?? cb.half_open_max_requests}
+                                        onChange={e => setCbEdits(p => ({ ...p, half_open_max_requests: parseInt(e.target.value) || 1 }))}
+                                        className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                    />
+                                    <p className="text-[10px] text-muted-foreground">Probe requests in half-open</p>
+                                </div>
+                            </div>
+                            <div className="flex justify-end">
+                                <button
+                                    onClick={handleSaveCb}
+                                    disabled={savingCb}
+                                    className="rounded-md bg-primary px-4 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                                >
+                                    {savingCb ? "Saving…" : "Save Changes"}
+                                </button>
+                            </div>
+                        </>
+                    )}
                 </CardContent>
             </Card>
 

@@ -15,6 +15,7 @@ pub mod analytics;
 pub mod config;
 pub mod guardrail_presets;
 pub mod handlers;
+pub mod mcp_handlers;
 
 // ── Auth Context ─────────────────────────────────────────────
 
@@ -239,6 +240,12 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/config/export/policies", get(config::export_policies))
         .route("/config/export/tokens", get(config::export_tokens))
         .route("/config/import", post(config::import_config))
+        // MCP Server Management
+        .route("/mcp/servers", get(mcp_handlers::list_mcp_servers).post(mcp_handlers::register_mcp_server))
+        .route("/mcp/servers/test", post(mcp_handlers::test_mcp_server))
+        .route("/mcp/servers/:id", delete(mcp_handlers::delete_mcp_server))
+        .route("/mcp/servers/:id/refresh", post(mcp_handlers::refresh_mcp_server))
+        .route("/mcp/servers/:id/tools", get(mcp_handlers::list_mcp_server_tools))
         .layer(middleware::from_fn_with_state(state, admin_auth))
         .layer(TraceLayer::new_for_http())
         .fallback(fallback_404)

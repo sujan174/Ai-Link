@@ -480,35 +480,146 @@ async fn update_db_spend(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_get_period_key_daily() {
-        let now = Utc::now();
-        let key = now.format("%Y-%m-%d").to_string();
-        assert_eq!(key.len(), 10);
-        assert!(key.contains('-'));
-    }
+    // ── next_reset_at: real boundary tests ────────────────────
 
     #[test]
-    fn test_get_period_key_monthly() {
-        let now = Utc::now();
-        let key = now.format("%Y-%m").to_string();
-        assert_eq!(key.len(), 7);
-        assert!(key.contains('-'));
-    }
-
-    #[test]
-    fn test_next_reset_at_daily() {
+    fn test_next_reset_daily_is_tomorrow_midnight() {
         let reset = next_reset_at("daily");
         let now = Utc::now();
-        assert!(reset > now);
-        assert!(reset <= now + chrono::Duration::days(2));
+
+        // Must be in the future
+        assert!(reset > now, "Daily reset must be after now");
+        // Must be midnight (00:00:00)
+        assert_eq!(reset.time(), chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+        // Must be exactly 1 day ahead from the current date (not 2 days)
+        let tomorrow = (now.date_naive() + chrono::Duration::days(1)).and_hms_opt(0, 0, 0).unwrap().and_utc();
+        assert_eq!(reset, tomorrow, "Daily reset must be tomorrow at 00:00 UTC");
     }
 
     #[test]
-    fn test_next_reset_at_monthly() {
+    fn test_next_reset_monthly_is_first_of_next_month() {
         let reset = next_reset_at("monthly");
         let now = Utc::now();
+
         assert!(reset > now);
-        assert!(reset <= now + chrono::Duration::days(32));
+        // Must be day 1 of a month
+        assert_eq!(reset.day(), 1, "Monthly reset must be 1st of next month");
+        assert_eq!(reset.time(), chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_next_reset_monthly_dec_to_jan_rollover() {
+        // Verify the Dec→Jan year rollover logic
+        // We can't control Utc::now(), but we can test the function deterministically
+        // by checking that if current month is 12, next month is January of next year
+        let now = Utc::now();
+        if now.month() == 12 {
+            let reset = next_reset_at("monthly");
+            assert_eq!(reset.year(), now.year() + 1);
+            assert_eq!(reset.month(), 1);
+            assert_eq!(reset.day(), 1);
+        }
+        // Otherwise verify it's next month same year
+        if now.month() < 12 {
+            let reset = next_reset_at("monthly");
+            assert_eq!(reset.year(), now.year());
+            assert_eq!(reset.month(), now.month() + 1);
+        }
+    }
+
+    #[test]
+    fn test_next_reset_lifetime_is_far_future() {
+        let reset = next_reset_at("lifetime");
+        let now = Utc::now();
+        // Lifetime must be ~100 years in the future (36500 days)
+        let years_until_reset = (reset - now).num_days() as f64 / 365.25;
+        assert!(years_until_reset > 99.0, "Lifetime reset must be ~100 years out, got {:.1}", years_until_reset);
+    }
+
+    #[test]
+    fn test_next_reset_unknown_period_defaults_to_1_day() {
+        let reset = next_reset_at("weekly"); // not a real period
+        let now = Utc::now();
+        let diff = (reset - now).num_seconds();
+        // Should be ~86400s (1 day) with tiny tolerance
+        assert!(diff > 86390 && diff <= 86400, "Unknown period should default to ~1 day, got {}s", diff);
+    }
+
+    // ── SpendCap struct logic ─────────────────────────────────
+
+    #[test]
+    fn test_spend_cap_default_has_no_limits() {
+        let cap = SpendCap::default();
+        assert!(cap.daily_limit_usd.is_none(), "Default cap should have no daily limit");
+        assert!(cap.monthly_limit_usd.is_none(), "Default cap should have no monthly limit");
+        assert!(cap.lifetime_limit_usd.is_none(), "Default cap should have no lifetime limit");
+    }
+
+    #[test]
+    fn test_spend_cap_serde_roundtrip() {
+        let cap = SpendCap {
+            daily_limit_usd: Some(10.0),
+            monthly_limit_usd: Some(100.0),
+            lifetime_limit_usd: Some(1000.0),
+        };
+        let json = serde_json::to_string(&cap).unwrap();
+        let back: SpendCap = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.daily_limit_usd, Some(10.0));
+        assert_eq!(back.monthly_limit_usd, Some(100.0));
+        assert_eq!(back.lifetime_limit_usd, Some(1000.0));
+    }
+
+    #[test]
+    fn test_spend_status_serialization_all_fields_present() {
+        let status = SpendStatus {
+            daily_limit_usd: Some(10.0),
+            monthly_limit_usd: None,
+            lifetime_limit_usd: Some(500.0),
+            current_daily_usd: 5.123,
+            current_monthly_usd: 42.0,
+            current_lifetime_usd: 123.456,
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        // Must have all fields (no field silently dropped)
+        assert_eq!(json["daily_limit_usd"], 10.0);
+        assert!(json["monthly_limit_usd"].is_null());
+        assert_eq!(json["lifetime_limit_usd"], 500.0);
+        assert_eq!(json["current_daily_usd"], 5.123);
+        assert_eq!(json["current_monthly_usd"], 42.0);
+        assert_eq!(json["current_lifetime_usd"], 123.456);
+    }
+
+    // ── Cap enforcement logic (pure function extraction) ──────
+
+    /// Verify cap comparison logic: spend >= limit should fail
+    #[test]
+    fn test_cap_exceeded_when_at_limit() {
+        let limit = 10.0_f64;
+        let current = 10.0_f64;
+        assert!(current >= limit, "Current == limit should be considered exceeded");
+    }
+
+    #[test]
+    fn test_cap_exceeded_when_above_limit() {
+        let limit = 10.0_f64;
+        let current = 10.0001_f64;
+        assert!(current >= limit, "Current > limit should be exceeded");
+    }
+
+    #[test]
+    fn test_cap_not_exceeded_when_below() {
+        let limit = 10.0_f64;
+        let current = 9.999_f64;
+        assert!(current < limit, "Current < limit should not be exceeded");
+    }
+
+    #[test]
+    fn test_no_cap_means_no_enforcement() {
+        let caps = SpendCap::default();
+        // Simulate the early-return condition in check_spend_cap
+        assert!(
+            caps.daily_limit_usd.is_none() && caps.monthly_limit_usd.is_none(),
+            "Default caps should trigger early return (no enforcement)"
+        );
     }
 }

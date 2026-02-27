@@ -954,3 +954,229 @@ export interface AnomalyResponse {
 
 export const getAnomalyEvents = () =>
   api<AnomalyResponse>("/anomalies");
+
+// ── MCP Server Management ────────────────────────────────────
+
+export interface McpToolDef {
+  name: string;
+  description: string | null;
+  inputSchema: unknown;
+  outputSchema?: unknown;
+}
+
+export interface McpServerInfo {
+  id: string;
+  name: string;
+  endpoint: string;
+  status: string;
+  tool_count: number;
+  tools: string[];
+  last_refreshed_secs_ago: number;
+  server_info: { name: string; version: string } | null;
+}
+
+export interface RegisterMcpServerResponse {
+  id: string;
+  name: string;
+  tool_count: number;
+  tools: string[];
+}
+
+export interface TestMcpServerResponse {
+  connected: boolean;
+  tool_count: number;
+  tools: McpToolDef[];
+  error: string | null;
+}
+
+export const listMcpServers = () => api<McpServerInfo[]>("/mcp/servers");
+
+export const registerMcpServer = (data: {
+  name: string;
+  endpoint: string;
+  api_key?: string;
+}) =>
+  api<RegisterMcpServerResponse>("/mcp/servers", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const deleteMcpServer = (id: string) =>
+  api<void>(`/mcp/servers/${id}`, { method: "DELETE" });
+
+export const refreshMcpServer = (id: string) =>
+  api<McpToolDef[]>(`/mcp/servers/${id}/refresh`, { method: "POST" });
+
+export const listMcpServerTools = (id: string) =>
+  api<McpToolDef[]>(`/mcp/servers/${id}/tools`);
+
+export const testMcpServer = (data: {
+  name: string;
+  endpoint: string;
+  api_key?: string;
+}) =>
+  api<TestMcpServerResponse>("/mcp/servers/test", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+// ── Teams ─────────────────────────────────────────────────────
+
+export interface Team {
+  id: string;
+  org_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TeamMember {
+  team_id: string;
+  user_id: string;
+  role: string;
+  joined_at: string;
+}
+
+export interface TeamSpend {
+  team_id: string;
+  total_cost_usd: number;
+  total_requests: number;
+  period_start: string;
+  period_end: string;
+}
+
+export const listTeams = () => api<Team[]>("/teams");
+
+export const createTeam = (name: string) =>
+  api<Team>("/teams", { method: "POST", body: JSON.stringify({ name }) });
+
+export const updateTeam = (id: string, name: string) =>
+  api<Team>(`/teams/${id}`, { method: "PUT", body: JSON.stringify({ name }) });
+
+export const deleteTeam = (id: string) =>
+  api<void>(`/teams/${id}`, { method: "DELETE" });
+
+export const listTeamMembers = (id: string) =>
+  api<TeamMember[]>(`/teams/${id}/members`);
+
+export const addTeamMember = (id: string, user_id: string, role: string) =>
+  api<void>(`/teams/${id}/members`, {
+    method: "POST",
+    body: JSON.stringify({ user_id, role }),
+  });
+
+export const removeTeamMember = (id: string, user_id: string) =>
+  api<void>(`/teams/${id}/members/${user_id}`, { method: "DELETE" });
+
+export const getTeamSpend = (id: string) =>
+  api<TeamSpend>(`/teams/${id}/spend`);
+
+// ── Model Access Groups ───────────────────────────────────────
+
+export interface ModelAccessGroup {
+  id: string;
+  org_id: string;
+  name: string;
+  allowed_models: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export const listModelAccessGroups = () =>
+  api<ModelAccessGroup[]>("/model-access-groups");
+
+export const createModelAccessGroup = (data: {
+  name: string;
+  allowed_models: string[];
+}) =>
+  api<ModelAccessGroup>("/model-access-groups", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const updateModelAccessGroup = (
+  id: string,
+  data: { name?: string; allowed_models?: string[] }
+) =>
+  api<ModelAccessGroup>(`/model-access-groups/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+
+export const deleteModelAccessGroup = (id: string) =>
+  api<void>(`/model-access-groups/${id}`, { method: "DELETE" });
+
+// ── Circuit Breaker ───────────────────────────────────────────
+
+export interface CircuitBreakerConfig {
+  enabled: boolean;
+  failure_threshold: number;
+  recovery_cooldown_secs: number;
+  half_open_max_requests: number;
+}
+
+export const getCircuitBreaker = (tokenId: string) =>
+  api<CircuitBreakerConfig>(`/tokens/${tokenId}/circuit-breaker`);
+
+export const updateCircuitBreaker = (
+  tokenId: string,
+  data: Partial<CircuitBreakerConfig>
+) =>
+  api<CircuitBreakerConfig>(`/tokens/${tokenId}/circuit-breaker`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+
+// ── Config-as-Code ────────────────────────────────────────────
+
+export const exportConfig = (format: "yaml" | "json" = "yaml") =>
+  fetch(`/api/proxy/config/export?format=${format}`);
+
+export const exportPolicies = () =>
+  fetch(`/api/proxy/config/export/policies`);
+
+export const exportTokens = () =>
+  fetch(`/api/proxy/config/export/tokens`);
+
+export const importConfig = (content: string) =>
+  api<{ imported: boolean; message: string }>("/config/import", {
+    method: "POST",
+    body: content,
+    // Note: body is raw yaml/json string, override Content-Type
+  });
+
+// ── GDPR / Project Purge ─────────────────────────────────────
+
+export const purgeProjectData = (projectId: string) =>
+  api<{ purged: boolean; message: string }>(`/projects/${projectId}/purge`, {
+    method: "POST",
+  });
+
+// ── Spend Breakdown ───────────────────────────────────────────
+
+export interface SpendBreakdownItem {
+  label: string;
+  cost_usd: number;
+  request_count: number;
+  token_count: number;
+}
+
+export interface SpendBreakdown {
+  by_model: SpendBreakdownItem[];
+  by_token: SpendBreakdownItem[];
+}
+
+export const getSpendBreakdown = (range = "24") =>
+  api<SpendBreakdown>(`/analytics/spend/breakdown?range=${range}`);
+
+// ── PII Vault Rehydration ─────────────────────────────────────
+
+export interface PiiRehydrateResponse {
+  results: Record<string, string>;
+}
+
+export const rehydratePii = (tokens: string[]) =>
+  api<PiiRehydrateResponse>("/pii/rehydrate", {
+    method: "POST",
+    body: JSON.stringify({ tokens }),
+  });

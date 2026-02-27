@@ -902,4 +902,232 @@ mod tests {
             .contains("[REDACTED_PHONE]"));
         assert!(result.matched_types.contains(&"phone".to_string()));
     }
+
+    // ── SEC: Transform reserved header injection block ────────
+
+    #[test]
+    fn test_transform_blocks_authorization_header() {
+        let mut body = json!({});
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::SetHeader {
+                name: "Authorization".to_string(),
+                value: "Bearer stolen-token".to_string(),
+            },
+        );
+        assert!(mutations.inserts.is_empty(), "Authorization header must be blocked");
+    }
+
+    #[test]
+    fn test_transform_blocks_host_header() {
+        let mut body = json!({});
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::SetHeader {
+                name: "Host".to_string(),
+                value: "evil.com".to_string(),
+            },
+        );
+        assert!(mutations.inserts.is_empty(), "Host header must be blocked");
+    }
+
+    #[test]
+    fn test_transform_blocks_cookie_header() {
+        let mut body = json!({});
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::SetHeader {
+                name: "cookie".to_string(),
+                value: "session=hijacked".to_string(),
+            },
+        );
+        assert!(mutations.inserts.is_empty(), "Cookie header must be blocked");
+    }
+
+    #[test]
+    fn test_transform_blocks_admin_key_header() {
+        let mut body = json!({});
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::SetHeader {
+                name: "X-Admin-Key".to_string(),
+                value: "admin-override".to_string(),
+            },
+        );
+        assert!(mutations.inserts.is_empty(), "X-Admin-Key header must be blocked");
+    }
+
+    #[test]
+    fn test_transform_allows_non_reserved_header() {
+        let mut body = json!({});
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::SetHeader {
+                name: "X-Request-Id".to_string(),
+                value: "abc-123".to_string(),
+            },
+        );
+        assert_eq!(mutations.inserts.len(), 1, "Non-reserved header should be allowed");
+    }
+
+    // ── redact_for_logging ────────────────────────────────────
+
+    #[test]
+    fn test_redact_for_logging_removes_pii() {
+        let body = Some(json!({
+            "message": "My SSN is 123-45-6789 and email is test@example.com"
+        }));
+        let result = redact_for_logging(&body).unwrap();
+        assert!(result.contains("[REDACTED_SSN]"), "SSN should be redacted for logging");
+        assert!(result.contains("[REDACTED_EMAIL]"), "Email should be redacted for logging");
+        assert!(!result.contains("123-45-6789"), "Raw SSN must not appear in logged output");
+        assert!(!result.contains("test@example.com"), "Raw email must not appear in logged output");
+    }
+
+    #[test]
+    fn test_redact_for_logging_none_returns_none() {
+        let result = redact_for_logging(&None);
+        assert!(result.is_none(), "None body should return None");
+    }
+
+    // ── Transform: PrependSystemPrompt ────────────────────────
+
+    #[test]
+    fn test_transform_prepend_system_prompt_merges() {
+        let mut body = json!({
+            "messages": [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::PrependSystemPrompt {
+                text: "IMPORTANT CONTEXT:".to_string(),
+            },
+        );
+        let sys = body["messages"][0]["content"].as_str().unwrap();
+        assert!(sys.starts_with("IMPORTANT CONTEXT:"), "Prepend should come first: {}", sys);
+        assert!(sys.contains("You are helpful."), "Original content must be preserved");
+    }
+
+    #[test]
+    fn test_transform_prepend_no_existing_system_inserts_at_0() {
+        let mut body = json!({
+            "messages": [
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::PrependSystemPrompt {
+                text: "Be safe.".to_string(),
+            },
+        );
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "Be safe.");
+    }
+
+    // ── Transform: RegexReplace ───────────────────────────────
+
+    #[test]
+    fn test_transform_regex_replace_global() {
+        let mut body = json!({
+            "messages": [{"role": "user", "content": "foo bar foo baz foo"}]
+        });
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::RegexReplace {
+                pattern: "foo".to_string(),
+                replacement: "XXX".to_string(),
+                global: true,
+            },
+        );
+        let content = body["messages"][0]["content"].as_str().unwrap();
+        assert_eq!(content, "XXX bar XXX baz XXX");
+    }
+
+    #[test]
+    fn test_transform_regex_replace_single() {
+        let mut body = json!({
+            "messages": [{"role": "user", "content": "foo bar foo baz foo"}]
+        });
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::RegexReplace {
+                pattern: "foo".to_string(),
+                replacement: "XXX".to_string(),
+                global: false,
+            },
+        );
+        let content = body["messages"][0]["content"].as_str().unwrap();
+        assert_eq!(content, "XXX bar foo baz foo", "Non-global should replace only first match");
+    }
+
+    // ── Transform: SetBodyField / RemoveBodyField ─────────────
+
+    #[test]
+    fn test_transform_set_body_field_flat() {
+        let mut body = json!({"model": "gpt-4", "messages": []});
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::SetBodyField {
+                path: "temperature".to_string(),
+                value: json!(0.7),
+            },
+        );
+        assert_eq!(body["temperature"], 0.7);
+    }
+
+    #[test]
+    fn test_transform_set_body_field_nested() {
+        let mut body = json!({"model": "gpt-4"});
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::SetBodyField {
+                path: "metadata.source".to_string(),
+                value: json!("ailink"),
+            },
+        );
+        assert_eq!(body["metadata"]["source"], "ailink");
+    }
+
+    #[test]
+    fn test_transform_remove_body_field() {
+        let mut body = json!({"model": "gpt-4", "stream": true, "temperature": 0.5});
+        let mut mutations = HeaderMutations::default();
+        apply_transform(
+            &mut body,
+            &mut mutations,
+            &TransformOp::RemoveBodyField {
+                path: "stream".to_string(),
+            },
+        );
+        assert!(body.get("stream").is_none(), "stream field should be removed");
+        assert_eq!(body["model"], "gpt-4", "Other fields must be preserved");
+    }
 }

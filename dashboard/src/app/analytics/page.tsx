@@ -2,7 +2,7 @@
 
 import { useState, useMemo } from "react";
 import useSWR from "swr";
-import { swrFetcher, AnalyticsSummary, AnalyticsTimeseriesPoint } from "@/lib/api";
+import { swrFetcher, AnalyticsSummary, AnalyticsTimeseriesPoint, getSpendBreakdown, SpendBreakdown } from "@/lib/api";
 import {
     BarChart,
     Bar,
@@ -18,7 +18,8 @@ import {
     Legend,
     PieChart,
     Pie,
-    Cell
+    Cell,
+    LabelList,
 } from "recharts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -52,6 +53,12 @@ export default function AnalyticsPage() {
     const { data: statusData, isLoading: loadingStatus } = useSWR<any[]>(
         `/analytics/status?range=${range}`,
         swrFetcher
+    );
+
+    // Fetch Spend Breakdown
+    const { data: breakdown, isLoading: loadingBreakdown } = useSWR<SpendBreakdown>(
+        `/analytics/spend/breakdown?range=${range}`,
+        () => getSpendBreakdown(range)
     );
 
     const statusChartData = useMemo(() => {
@@ -345,7 +352,7 @@ export default function AnalyticsPage() {
                                                 <Cell key={`cell-${index}`} fill={entry.fill} />
                                             ))}
                                         </Pie>
-                                        <Tooltip content={<CustomTooltip  contentStyle={{ backgroundColor: "#1A1A1F", borderColor: "#2C2C35", color: "#F0F0F4" }} />} />
+                                        <Tooltip content={<CustomTooltip contentStyle={{ backgroundColor: "#1A1A1F", borderColor: "#2C2C35", color: "#F0F0F4" }} />} />
                                         <Legend verticalAlign="bottom" height={36} wrapperStyle={{ fontSize: '12px' }} />
                                     </PieChart>
                                 </ResponsiveContainer>
@@ -401,6 +408,79 @@ export default function AnalyticsPage() {
                                 </ResponsiveContainer>
                             )}
                         </div>
+                    </CardContent>
+                </Card>
+            </div>
+
+            {/* Spend Breakdown */}
+            <div className="grid gap-4 md:grid-cols-2">
+                {/* By Model */}
+                <Card className="glass-card">
+                    <CardHeader>
+                        <CardTitle>Cost by Model</CardTitle>
+                        <CardDescription>Spending breakdown across all LLM models.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        {loadingBreakdown ? (
+                            <Skeleton className="h-[220px] w-full" />
+                        ) : breakdown && breakdown.by_model.length > 0 ? (
+                            <ResponsiveContainer width="100%" height={220}>
+                                <BarChart
+                                    data={breakdown.by_model.slice(0, 8).map(d => ({ ...d, costFmt: `$${d.cost_usd.toFixed(4)}` }))}
+                                    layout="vertical"
+                                    margin={{ top: 0, right: 60, left: 0, bottom: 0 }}
+                                >
+                                    <XAxis type="number" {...CHART_AXIS_PROPS} tickFormatter={v => `$${v.toFixed(2)}`} />
+                                    <YAxis type="category" dataKey="label" {...CHART_AXIS_PROPS} width={90} tick={{ fontSize: 10 }} />
+                                    <Tooltip
+                                        content={<CustomTooltip valueFormatter={(v: any) => typeof v === 'number' ? `$${v.toFixed(4)}` : v} />}
+                                        cursor={{ fill: 'var(--border)', opacity: 0.1 }}
+                                    />
+                                    <Bar dataKey="cost_usd" name="Cost ($)" fill="#8b5cf6" radius={[0, 4, 4, 0]}>
+                                        <LabelList dataKey="costFmt" position="right" style={{ fontSize: 10, fill: 'var(--muted-foreground)' }} />
+                                    </Bar>
+                                </BarChart>
+                            </ResponsiveContainer>
+                        ) : (
+                            <div className="h-[220px] flex items-center justify-center text-xs text-muted-foreground border border-dashed rounded-md">
+                                No spend data for this period
+                            </div>
+                        )}
+                    </CardContent>
+                </Card>
+
+                {/* By Token */}
+                <Card className="glass-card">
+                    <CardHeader>
+                        <CardTitle>Cost by Virtual Key</CardTitle>
+                        <CardDescription>Top-spending virtual keys in the selected period.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        {loadingBreakdown ? (
+                            <Skeleton className="h-[220px] w-full" />
+                        ) : breakdown && breakdown.by_token.length > 0 ? (
+                            <ResponsiveContainer width="100%" height={220}>
+                                <BarChart
+                                    data={breakdown.by_token.slice(0, 8).map(d => ({ ...d, costFmt: `$${d.cost_usd.toFixed(4)}` }))}
+                                    layout="vertical"
+                                    margin={{ top: 0, right: 60, left: 0, bottom: 0 }}
+                                >
+                                    <XAxis type="number" {...CHART_AXIS_PROPS} tickFormatter={v => `$${v.toFixed(2)}`} />
+                                    <YAxis type="category" dataKey="label" {...CHART_AXIS_PROPS} width={90} tick={{ fontSize: 10 }} />
+                                    <Tooltip
+                                        content={<CustomTooltip valueFormatter={(v: any) => typeof v === 'number' ? `$${v.toFixed(4)}` : v} />}
+                                        cursor={{ fill: 'var(--border)', opacity: 0.1 }}
+                                    />
+                                    <Bar dataKey="cost_usd" name="Cost ($)" fill="#10b981" radius={[0, 4, 4, 0]}>
+                                        <LabelList dataKey="costFmt" position="right" style={{ fontSize: 10, fill: 'var(--muted-foreground)' }} />
+                                    </Bar>
+                                </BarChart>
+                            </ResponsiveContainer>
+                        ) : (
+                            <div className="h-[220px] flex items-center justify-center text-xs text-muted-foreground border border-dashed rounded-md">
+                                No spend data for this period
+                            </div>
+                        )}
                     </CardContent>
                 </Card>
             </div>

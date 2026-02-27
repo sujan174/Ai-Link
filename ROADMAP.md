@@ -45,9 +45,9 @@
 
 | # | Gap | Missing/Inferior | Why Critical | Effort |
 |---|---|---|---|---|
-| **10** | **Guardrails Breadth** — 60+ built-in rules, Palo Alto AIRS, Prompt Security | 🟠 Inferior | Portkey has 60+ rules + 5 security vendor partnerships. We have 5 patterns + 3 vendors. | ~3 days |
+| **10** | ~~**Guardrails Breadth** — 60+ built-in rules, Palo Alto AIRS, Prompt Security~~ | ✅ Done | Expanded to 100+ patterns, 22 presets, 5 vendors (Azure, AWS, LlamaGuard, Palo Alto AIRS, Prompt Security). 862 tests pass. | ✅ |
 | **11** | **KMS Integration** — HashiCorp Vault, AWS KMS | 🟠 Inferior | "Can I use my existing KMS?" is a standard enterprise security question. | ~1.5 days |
-| **12** | **MCP Server Integration** | 🔴 Missing | LiteLLM has MCP in beta. The future of agent tooling. Being early matters. | ~3 days |
+| **12** | ~~**MCP Server Integration**~~ | ✅ Done | MCP client (Streamable HTTP), registry, 6 API endpoints, proxy tool injection, dashboard UI. 25 tests pass. | ✅ |
 | **13** | **Dashboard Polish & UX** — onboarding, empty states, animations | 🟠 Inferior | Portkey's UI is a selling point. Buyer demos are won on UX. | ~3-5 days |
 
 ---

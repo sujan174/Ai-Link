@@ -92,10 +92,12 @@ Requests flow through a stack of **Tower Middleware** layers. Each layer is isol
     *   **Translation**: Converts incoming OpenAI-format body to target provider format (e.g., specific JSON structure for Gemini).
 12. **Upstream Request**:
     *   Injects the **Real API Key** (decrypted from Vault).
+    *   **MCP Tool Injection**: If `X-MCP-Servers` header is present, fetches cached tool schemas from `McpRegistry` and merges them into the request body's `tools[]` array.
     *   Applies **Retries** with exponential backoff and Jitter.
     *   Respects `Retry-After` headers.
 13. **Response Handling**:
     *   **Stream Processing**: Captures chunks for audit logging.
+    *   **MCP Tool Execution Loop**: If response `finish_reason == "tool_calls"` and the called tool is an `mcp__*` namespace tool, executes via MCP server JSON-RPC, appends result message, and re-sends to LLM (up to 10 iterations).
     *   **Translation (Reverse)**: Normalizes response back to OpenAI format.
     *   **Policy Engine (Post-Flight)**: Redacts PII (`response.body.*`) or alerts on specific errors.
     *   **Cache Write**: Stores successful LLM responses in Redis.
@@ -122,8 +124,27 @@ The heart of AIlink's control plane. Policies are JSON documents that bind **Con
     *   `redact`: Scrubs sensitive patterns (SSN, API Key) from body.
     *   `webhook`: Dispatches async event.
     *   `transform`: Modifies headers/body (e.g., inject system prompt).
+    *   `tool_scope`: RBAC for LLM tool calls — `allowed_tools` whitelist + `blocked_tools` blacklist.
 
-### 3.3. Identity & Security
+### 3.3. Guardrails Engine
+
+Built-in safety layer with 100+ pre-built patterns across 22 preset categories.
+
+*   **Pattern Library**: PII (SSN, CC, email, phone, API keys), prompt injection, HIPAA, GDPR, jailbreak, code injection, competitor mentions, and more.
+*   **Vendors**: Azure Content Safety, AWS Comprehend, LlamaGuard, Palo Alto AIRS, Prompt Security.
+*   **Presets API**: Single `POST /guardrails/enable` call activates a bundle of rules for a token.
+*   **Drift Detection**: Tracks `source` (sdk vs dashboard) so you can detect unauthorized changes.
+
+### 3.4. MCP Integration (Model Context Protocol)
+
+The gateway acts as a managed MCP client, bridging AI agents to external tool servers.
+
+*   **Registry** (`mcp/registry.rs`): In-memory `Arc<RwLock<HashMap>>` of connected MCP servers + cached tool schemas.
+*   **Client** (`mcp/client.rs`): JSON-RPC 2.0 over Streamable HTTP. Supports `initialize`, `tools/list` (paginated), `tools/call`.
+*   **Tool Namespacing**: Tools injected as `mcp__<server>__<tool>` to prevent collisions.
+*   **Execution Loop**: Gateway autonomously executes tool calls and re-submits to LLM (max 10 iterations).
+
+### 3.5. Identity & Security
 
 *   **Virtual Tokens**: `ailink_v1_...`. Randomly generated pointer to a configuration.
     *   **Isolation**: Tokens belong to a `project_id`. Access across projects is blocked (IDOR protection).
@@ -134,6 +155,13 @@ The heart of AIlink's control plane. Policies are JSON documents that bind **Con
         *   **Data Key (DEK)**: Unique 256-bit key per credential. Stored in DB encrypted by KEK.
         *   **Ciphertext**: The actual API key, encrypted by DEK using **AES-256-GCM** with a unique 96-bit nonce.
     *   **Lifecycle**: Decrypted only in memory, for the duration of the request context, then zeroed.
+*   **OIDC / SSO**:
+    *   Register external Identity Providers (Okta, Auth0, Entra ID) via `/oidc/providers`.
+    *   JWT tokens validated against OIDC discovery document. Claim-to-role mappings configurable.
+*   **RBAC**:
+    *   API keys have roles (`admin`, `member`, `read_only`) and fine-grained scopes (`tokens:write`, `policies:read`, etc.).
+    *   Model Access Groups restrict which LLM models a token can call.
+    *   Teams provide org-level grouping with per-team spend tracking.
 *   **SSRF Protection**:
     *   Webhook dispatcher validates URLs.
     *   Rejects private IP ranges (10.0.0.0/8, 192.168.0.0/16, etc.).
@@ -142,7 +170,7 @@ The heart of AIlink's control plane. Policies are JSON documents that bind **Con
 *   **Timing Attack Mitigation**:
     *   All key comparisons (Admin Key, Dashboard Secret) use `subtle::ConstantTimeEq`.
 
-### 3.4. Observability & Auditing
+### 3.6. Observability & Auditing
 
 *   **Audit Logging**:
     *   **Async Write**: Logs are pushed to a channel, batched, and written to `audit_logs` (PostgreSQL partition).
@@ -150,14 +178,20 @@ The heart of AIlink's control plane. Policies are JSON documents that bind **Con
         *   `0`: Metadata only (tokens, latency, cost).
         *   `1`: PII-scrubbed bodies.
         *   `2`: Full capture (automatically expired/downgraded after 24h).
-    *   **Cost Tracking**: Calculates token usage and USD cost based on model pricing (configurable).
+    *   **Cost Tracking**: Calculates token usage and USD cost based on model pricing (configurable per model pattern).
 *   **Tracing**:
     *   OpenTelemetry (OTLP) export to Jaeger/Tempo.
     *   Spans for: `middleware`, `db_query`, `redis_op`, `upstream_request`, `policy_eval`.
+    *   W3C Trace Context (`traceparent`) propagated to upstreams.
 *   **Metrics**:
-    *   Request counts, Latency histograms, Error rates.
+    *   Request counts, Latency histograms, Error rates (Prometheus-compatible).
+*   **Observability Exporters** (`ObserverHub`):
+    *   **Langfuse**: LLM tracing with prompt/response capture.
+    *   **DataDog**: APM metrics and log forwarding.
+    *   **Prometheus**: `/metrics` endpoint for scraping.
+*   **Anomaly Detection**: Sigma-based statistical analysis — flags tokens with abnormal request velocity.
 
-### 3.5. Background Jobs
+### 3.7. Background Jobs
 
 *   **Cleanup (`jobs/cleanup.rs`)**:
     *   Runs hourly.
@@ -165,7 +199,9 @@ The heart of AIlink's control plane. Policies are JSON documents that bind **Con
     *   **Downgrades**: Sets `log_level = 0`.
     *   **Strips**: Updates `request_body` / `response_body` to `[EXPIRED]` to reclaim storage.
 *   **Key Rotation**:
-    *   (Enterprise) Rotates upstream API keys based on policy schedules.
+    *   Rotates upstream API keys based on policy schedules.
+*   **Latency Cache Refresh**:
+    *   Background task recomputes p50 latency per model every 5 minutes from audit logs.
 
 ---
 
@@ -173,12 +209,19 @@ The heart of AIlink's control plane. Policies are JSON documents that bind **Con
 
 ### 4.1. PostgreSQL (System of Record)
 *   **`tokens`**: Virtual identities, upstream config, policy attachment, log level, and `circuit_breaker` (JSONB) per-token CB config.
-*   **`credentials`**: Encrypted provider keys.
-*   **`policies`**: Rulesets (JSONB).
-*   **`api_keys`**: Management API access (RBAC).
+*   **`credentials`**: Encrypted provider keys (envelope encrypted).
+*   **`policies`** + **`policy_versions`**: Rulesets (JSONB) with full version history.
+*   **`api_keys`**: Management API access (RBAC roles + scopes).
 *   **`audit_logs`**: Partitioned by month. High-volume write target.
 *   **`spend_caps`**: Daily/Monthly limits per token.
-*   **`model_pricing`**: Dynamic cost-per-1k-token by model and provider.
+*   **`model_pricing`**: Dynamic cost-per-1M-token by model pattern (glob matching).
+*   **`services`**: Registered external APIs for action gateway proxying.
+*   **`sessions`**: Multi-turn conversation tracking (cost, status, spend caps).
+*   **`teams`** + **`team_members`**: Org hierarchy.
+*   **`model_access_groups`**: LLM model RBAC.
+*   **`oidc_providers`**: SSO/OIDC identity provider configs.
+*   **`webhooks`**: Event delivery endpoints.
+*   **`notifications`**: In-app alert history.
 
 ### 4.2. Redis (System of Speed)
 *   **Cache (`cache:*`)**:

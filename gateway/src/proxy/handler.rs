@@ -1536,6 +1536,23 @@ pub async fn proxy_handler(
         body.to_vec()
     };
 
+    // ── MCP Tool Injection ───────────────────────────────────────
+    // If X-MCP-Servers header is present, inject MCP tool schemas into the
+    // request body's `tools[]` array before sending to the LLM.
+    let mcp_server_names = crate::middleware::mcp::parse_mcp_header(&headers);
+    let final_body = if !mcp_server_names.is_empty() {
+        match crate::middleware::mcp::inject_mcp_tools(
+            &state.mcp_registry,
+            &mcp_server_names,
+            &final_body,
+        ).await {
+            Some(injected) => injected,
+            None => final_body,
+        }
+    } else {
+        final_body
+    };
+
     // Build upstream headers
     let mut upstream_headers = reqwest::header::HeaderMap::new();
 

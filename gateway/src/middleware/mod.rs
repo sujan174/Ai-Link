@@ -7,6 +7,7 @@ pub mod fields;
 pub mod guardrail;
 pub mod hitl;
 pub mod langfuse;
+pub mod mcp;
 pub mod metrics;
 pub mod model_access;
 pub mod observer;

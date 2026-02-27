@@ -5,6 +5,7 @@
 pub mod cache;
 pub mod config;
 pub mod errors;
+pub mod mcp;
 pub mod middleware;
 pub mod models;
 pub mod notification;

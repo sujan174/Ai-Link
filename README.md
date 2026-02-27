@@ -45,19 +45,24 @@ AIlink sits between your agent and every external API. Instead of handing agents
 | Feature | Why It Matters |
 |---|---|
 | 🔐 **Key Isolation** | Real keys stay in the vault — agents can't leak what they don't have |
-| 📋 **Policy Engine** | Control methods, paths, rates, and spend per agent |
+| 📋 **Policy Engine** | Control methods, paths, rates, and spend per agent. 100+ built-in patterns |
 | 👤 **Human-in-the-Loop** | High-stakes operations pause for manual approval (Slack, dashboard) |
 | 👻 **Shadow Mode** | Test policies by logging violations without blocking anything |
-| 🔄 **Retry & Resilience** | Configurable retries with exponential backoff and jitter |
-| 🛡️ **PII Scrubbing** | Auto-redact credit cards, SSNs, emails, API keys from responses |
-| 📊 **Audit Trail** | Every request logged — who, what, when, which policy fired |
-| 🔌 **Service Registry** | Register APIs as named services — one token accesses multiple APIs |
+| 🔄 **Retry & Resilience** | Configurable retries with exponential backoff, jitter, and per-token circuit breakers |
+| 🛡️ **Guardrails** | 100+ safety patterns, 22 presets, 5 vendor integrations (Azure, AWS, LlamaGuard, Palo Alto AIRS, Prompt Security) |
+| 📊 **Audit Trail** | Every request logged — who, what, when, which policy fired, cost |
+| 🔌 **Service Registry** | Register external APIs as named services — one token accesses multiple APIs |
+| 🤖 **MCP Integration** | Register Model Context Protocol servers — tools auto-discovered and injected into LLM requests |
 | 🏷️ **Model Aliases** | Decouple agents from specific models; swap upstream providers without changing agent code |
-| 🎣 **Webhooks** | Get real-time event notifications for automated workflows (e.g. token created, approval needed) |
-| 💲 **Pricing Overrides** | Accurate, per-model custom spend tracking and cost accounting |
-| 🤖 **Realtime API** | Transparent WebSocket bidding proxy for OpenAI Realtime Voice/Audio sessions |
-| ⚙️ **Config-as-Code** | Export and sync policies, tokens, and routing via YAML |
-| ⚡ **Fast** | Rust gateway, tiered caching, <1ms overhead on the hot path |
+| 🎣 **Webhooks** | Real-time event notifications (policy violations, spend alerts, HITL requests) |
+| 💲 **Spend Caps** | Per-token daily/monthly monetary limits, atomically enforced via Redis |
+| 💲 **Pricing Overrides** | Custom per-model cost tracking with glob-pattern matching |
+| 🔑 **SSO / OIDC** | Plug in Okta, Auth0, or Entra ID for enterprise auth with claim-to-role mapping |
+| 👥 **Teams & RBAC** | Org hierarchy with teams, model access groups, and fine-grained API key scopes |
+| 📈 **Anomaly Detection** | Sigma-based traffic anomaly alerts for unusual request spikes |
+| 🤝 **Realtime API** | Transparent WebSocket proxy for OpenAI Realtime Voice/Audio sessions |
+| ⚙️ **Config-as-Code** | Export and sync policies, tokens, and routing via YAML/JSON |
+| ⚡ **Fast** | Rust gateway, tiered caching (in-memory + Redis), <1ms overhead on the hot path |
 
 ---
 
@@ -158,9 +163,9 @@ Upstream API (real key, never exposed)
 | Data | **PostgreSQL 16** + **Redis 7** |
 | Encryption | **AES-256-GCM** envelope encryption |
 | SDK | **Python** (TypeScript planned) |
-| Dashboard | **Next.js 14** |
-| Observability | **OpenTelemetry** → Jaeger |
-| Deployment | **Docker Compose** / Helm (planned) |
+| Dashboard | **Next.js 16** (App Router, Tailwind CSS 4, ShadCN) |
+| Observability | **OpenTelemetry** → Jaeger / Langfuse / DataDog |
+| Deployment | **Docker Compose** / Kubernetes (Helm planned) |
 
 ---
 
@@ -179,14 +184,16 @@ ailink/
 │       ├── cli.rs
 │       ├── errors.rs
 │       ├── rotation.rs
-│       ├── middleware/     # Policy engine, redaction, audit
-│       ├── proxy/          # Upstream proxy, retry logic
+│       ├── mcp/            # MCP client, registry, types
+│       ├── middleware/     # Policy engine, guardrails, redaction, audit, MCP proxy
+│       ├── proxy/          # Upstream proxy, retry logic, model router
 │       ├── vault/          # AES-256-GCM secret storage
 │       ├── store/          # PostgreSQL data layer
+│       ├── api/            # Management API handlers
 │       └── models/         # Shared types
 ├── sdk/
 │   └── python/             # Python SDK (pip install ailink)
-├── dashboard/              # Next.js admin UI
+├── dashboard/              # Next.js 16 admin UI
 ├── scripts/                # Integration test suites & CI checks
 ├── docs/                   # Documentation
 ├── docker-compose.yml

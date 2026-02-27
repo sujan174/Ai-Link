@@ -7,9 +7,10 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { AlertTriangle, Trash2, Save } from "lucide-react";
+import { AlertTriangle, Trash2, Save, ShieldOff } from "lucide-react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
+import { purgeProjectData } from "@/lib/api";
 
 export default function ProjectSettingsPage() {
     const { projects, selectedProjectId, updateProject, deleteProject } = useProject();
@@ -25,6 +26,8 @@ export default function ProjectSettingsPage() {
     // Local state for deletion confirmation
     const [deleteConfirmation, setDeleteConfirmation] = useState("");
     const [isDeleting, setIsDeleting] = useState(false);
+    const [isPurging, setIsPurging] = useState(false);
+    const [purgeConfirmation, setPurgeConfirmation] = useState("");
 
     // Initialize state when project loads
     useEffect(() => {
@@ -63,12 +66,29 @@ export default function ProjectSettingsPage() {
             setIsDeleting(true);
             try {
                 await deleteProject(project.id);
-                // Redirect handled in context/router logic, usually to default project or refresh
                 router.push("/");
             } catch (error) {
                 console.error(error);
                 setIsDeleting(false);
             }
+        }
+    };
+
+    const handlePurge = async () => {
+        if (purgeConfirmation !== `PURGE ${project.name}`) {
+            toast.error(`Type PURGE ${project.name} exactly`);
+            return;
+        }
+        if (!confirm("FINAL WARNING: This will permanently erase all audit logs, sessions, and usage data. Real credentials and tokens are unaffected but logs cannot be recovered. Continue?")) return;
+        setIsPurging(true);
+        try {
+            const result = await purgeProjectData(project.id);
+            toast.success(result.message || "Project data purged");
+            setPurgeConfirmation("");
+        } catch (e: any) {
+            toast.error(e.message || "Purge failed");
+        } finally {
+            setIsPurging(false);
         }
     };
 
@@ -153,6 +173,44 @@ export default function ProjectSettingsPage() {
                                     disabled={isDeleting || deleteConfirmation !== project.name}
                                 >
                                     {isDeleting ? "Deleting..." : <><Trash2 className="mr-2 h-4 w-4" /> Delete Project</>}
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* GDPR: Purge project data */}
+                    <div className="rounded-md border border-destructive/20 bg-background p-4">
+                        <div className="flex items-center gap-2 mb-2">
+                            <ShieldOff className="h-4 w-4 text-destructive" />
+                            <h3 className="font-semibold text-destructive">Purge All Data (GDPR Erasure)</h3>
+                        </div>
+                        <p className="text-[13px] text-muted-foreground mb-3">
+                            Permanently erase all <strong>audit logs, sessions, and usage data</strong> for this project.
+                            The project itself, virtual keys, and credentials are <em>not</em> deleted.
+                            This satisfies GDPR Article 17 (Right to Erasure) for data subjects.
+                        </p>
+                        <div className="rounded-md bg-destructive/5 border border-destructive/10 p-2.5 mb-3 text-[12px] text-amber-400 flex items-start gap-2">
+                            <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                            This action is <strong>irreversible</strong>. Purged audit data cannot be recovered.
+                        </div>
+                        <div className="space-y-2">
+                            <Label htmlFor="purgeConfirm" className="text-destructive">
+                                Type <strong>PURGE {project.name}</strong> to confirm
+                            </Label>
+                            <div className="flex gap-2 items-center">
+                                <Input
+                                    id="purgeConfirm"
+                                    value={purgeConfirmation}
+                                    onChange={(e) => setPurgeConfirmation(e.target.value)}
+                                    placeholder={`PURGE ${project.name}`}
+                                    className="border-destructive/30 focus-visible:ring-destructive/30 font-mono"
+                                />
+                                <Button
+                                    variant="destructive"
+                                    onClick={handlePurge}
+                                    disabled={isPurging || purgeConfirmation !== `PURGE ${project.name}`}
+                                >
+                                    {isPurging ? "Purging..." : <><ShieldOff className="mr-2 h-4 w-4" /> Purge Data</>}
                                 </Button>
                             </div>
                         </div>

@@ -4,10 +4,32 @@
 
 ## Management API
 
-The Management API controls the gateway's configuration: tokens, policies, credentials, and audit logs.
+Base URL: `http://localhost:8443/api/v1`  
+Auth: `Authorization: Bearer <api_key>` (create keys via `/auth/keys`)
 
-**Base URL**: `http://localhost:8443/api/v1` (default)
-**Auth**: `Authorization: Bearer <management_token>`
+---
+
+### API Keys (Admin Auth)
+
+Manage programmatic access keys for the Management API.
+
+#### List API Keys
+`GET /auth/keys`
+
+#### Create API Key
+`POST /auth/keys`
+
+```json
+{ "name": "ci-pipeline", "role": "admin", "scopes": ["tokens:write", "policies:read"] }
+```
+
+Roles: `admin` (full access within org), `member` (read/write, no delete), `read_only`.
+
+#### Revoke API Key
+`DELETE /auth/keys/{id}`
+
+#### Who Am I
+`GET /auth/whoami` — Returns current auth context (org_id, role, scopes).
 
 ---
 
@@ -20,42 +42,47 @@ Logical groups for tokens and policies.
 
 #### Create Project
 `POST /projects`
-
 ```json
 { "name": "finance-team" }
 ```
 
+#### Update Project
+`PUT /projects/{id}`
+
 #### Delete Project
 `DELETE /projects/{id}`
+
+#### Purge Project Data (GDPR)
+`POST /projects/{id}/purge`
+
+Permanently erases all audit logs, sessions, and usage data for a project. Irreversible. Implements GDPR Article 17 (Right to Erasure).
 
 ---
 
 ### Tokens
 
-Virtual tokens provided to agents.
+Virtual tokens issued to AI agents. Agents use these instead of real API keys.
 
 #### List Tokens
-`GET /tokens?project_id={uuid}`
+`GET /tokens`
 
-Returns a list of active tokens for a project.
+#### Get Token
+`GET /tokens/{id}`
 
 #### Create Token
 `POST /tokens`
 
-Create a new virtual token linked to a real credential.
-
 ```json
 {
-  "project_id": "uuid",
   "name": "billing-agent-prod",
-  "credential_id": "stripe-live-sk",
-  "upstream_url": "https://api.stripe.com",
+  "credential_id": "uuid",
+  "upstream_url": "https://api.openai.com",
   "upstreams": [
     { "url": "https://api.primary.com", "weight": 70, "priority": 1 },
     { "url": "https://api.backup.com", "weight": 30, "priority": 1 }
   ],
-  "policies": ["policy-uuid-1", "policy-uuid-2"],
-  "scopes": ["read", "write"],
+  "policy_ids": ["policy-uuid-1"],
+  "log_level": 0,
   "circuit_breaker": {
     "enabled": true,
     "failure_threshold": 3,
@@ -65,38 +92,21 @@ Create a new virtual token linked to a real credential.
 }
 ```
 
-All `circuit_breaker` fields are optional — omit to use gateway defaults (`enabled: true`, threshold: 3, cooldown: 30s). To disable circuit breaking for a dev/test token, pass `{"enabled": false}`.
-
-**Response**:
-```json
-{
-  "id": "ailink_v1_proj_abc123_tok_xyz789",
-  "created_at": "2026-02-14T10:00:00Z"
-}
-```
-
 #### Revoke Token
-`DELETE /tokens/{token_id}`
+`DELETE /tokens/{id}`
 
-Immediately invalidates the token. Active connections are terminated.
-
-#### Rotate Underlying Key
-`POST /tokens/{token_id}/rotate`
-
-Triggers an immediate rotation of the *real* credential associated with this token. The virtual token ID (`ailink_v1_...`) remains unchanged, so the agent doesn't need a restart.
+#### Get Token Usage
+`GET /tokens/{id}/usage`
 
 ---
 
 ### Circuit Breaker
 
-Per-token circuit breaker configuration. Controls how the load balancer handles unhealthy upstreams.
+Per-token circuit breaker configuration for upstream resilience.
 
 #### Get Circuit Breaker Config
-`GET /tokens/{token_id}/circuit-breaker`
+`GET /tokens/{id}/circuit-breaker`
 
-Returns the current circuit breaker configuration for a token.
-
-**Response:**
 ```json
 {
   "enabled": true,
@@ -107,273 +117,431 @@ Returns the current circuit breaker configuration for a token.
 ```
 
 #### Update Circuit Breaker Config
-`PATCH /tokens/{token_id}/circuit-breaker`
+`PATCH /tokens/{id}/circuit-breaker`
 
-Update circuit breaker settings at runtime — no gateway restart required.
+Update at runtime without gateway restart. CB states: `closed` → `open` (after N failures) → `half_open` (cooldown elapsed) → `closed`.
 
-```json
-{
-  "enabled": false
-}
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | bool | `true` | Toggle CB on/off per token |
-| `failure_threshold` | int | `3` | Consecutive failures before circuit opens |
-| `recovery_cooldown_secs` | int | `30` | Seconds before retrying an unhealthy upstream |
-| `half_open_max_requests` | int | `1` | Requests allowed in half-open state |
-
-> **Response headers on every proxied request:**
+> Response headers on every proxied request:
 > - `X-AILink-CB-State: closed | open | half_open | disabled`
-> - `X-AILink-Upstream: https://api.primary.com/v1`
+> - `X-AILink-Upstream: https://api.primary.com`
 
 ---
 
 ### Spend Caps
 
-Manage monetary limits for tokens.
+Monetary limits per token (enforced atomically via Redis Lua scripts).
 
 #### Get Spend Caps
-`GET /tokens/{token_id}/spend`
-
-Returns current configuration and usage.
-
-#### Upsert Spend Cap
-`PUT /tokens/{token_id}/spend`
-
-Sets a daily or monthly limit.
+`GET /tokens/{id}/spend`
 
 ```json
 {
-  "period": "daily", // or "monthly"
-  "limit_usd": 50.00
+  "daily_limit_usd": 50.0,
+  "monthly_limit_usd": 500.0,
+  "current_daily_usd": 12.34,
+  "current_monthly_usd": 89.01
 }
 ```
 
-**Note**: `limit_usd` must be positive. Zero or negative values return `422 Unprocessable Entity`.
+#### Set Spend Cap
+`PUT /tokens/{id}/spend`
+```json
+{ "period": "daily", "limit_usd": 50.00 }
+```
 
 #### Remove Spend Cap
-`DELETE /tokens/{token_id}/spend/{period}`
-
-Removes the limit for the specified period (`daily` or `monthly`).
+`DELETE /tokens/{id}/spend/{period}` — `period` is `daily` or `monthly`.
 
 ---
 
 ### Policies
 
-Defined rules for what a token can do.
+Traffic control rules. Bind conditions (method, path, spend, time) to actions (deny, rate_limit, redact, webhook, transform).
+
+#### List Policies
+`GET /policies`
 
 #### Create Policy
 `POST /policies`
 
 ```json
 {
-  "project_id": "uuid",
-  "name": "stripe-read-only",
+  "name": "prod-safety",
   "mode": "enforce",
   "rules": [
     {
-      "when": { "field": "method", "op": "eq", "value": "GET" },
-      "then": { "action": "allow" }
-    },
-    {
-      "when": { "always": true },
-      "then": { "action": "rate_limit", "window": "1m", "max_requests": 60 }
+      "when": { "field": "request.body.messages[0].content", "op": "contains", "value": "sk_live" },
+      "then": { "action": "deny", "message": "Cannot forward API keys" }
     }
   ]
 }
 ```
 
-#### Update Policy Mode
-`PATCH /policies/{policy_id}`
+Modes: `enforce` (blocks/modifies), `shadow` (logs only — safe rollout).
 
-Useful for promoting a policy from Shadow Mode to Enforce Mode.
+#### Update Policy
+`PUT /policies/{id}`
 
-```json
-{
-  "mode": "enforce"
-}
-```
+#### Delete Policy
+`DELETE /policies/{id}`
+
+#### List Policy Versions
+`GET /policies/{id}/versions` — Full audit trail of every policy change.
 
 ---
 
 ### Credentials
 
-Real API keys stored in the vault.
-
-#### Add Credential
-`POST /credentials`
-
-```json
-{
-  "project_id": "uuid",
-  "name": "stripe-live-sk",
-  "provider": "stripe",
-  "ciphertext": "sk_live_...", // Sent over TLS, encrypted immediately
-  "rotation_config": {
-    "enabled": true,
-    "interval": "24h"
-  }
-}
-```
+Real API keys stored in the vault (AES-256-GCM envelope encrypted — never returned in plaintext).
 
 #### List Credentials
-`GET /credentials`
+`GET /credentials` — Returns metadata only (name, provider, rotation status).
 
-Returns metadata only (names, providers, rotation status). **Never returns the secret key.**
+#### Create Credential
+`POST /credentials`
+```json
+{ "name": "openai-prod", "provider": "openai", "secret": "sk_live_..." }
+```
+
+#### Delete Credential
+`DELETE /credentials/{id}`
 
 ---
 
-### Services (Action Gateway)
+### Guardrail Presets
 
-Register external APIs as named services. The gateway proxies requests and injects credentials automatically.
+One-call safety rule bundles (PII, prompt injection, HIPAA, etc.). Backed by 100+ patterns across 22 preset categories.
 
-#### List Services
-`GET /services`
+#### List Available Presets
+`GET /guardrails/presets`
 
-Returns all registered services for the current project.
-
-**Response**:
-```json
-[
-  {
-    "id": "uuid",
-    "project_id": "uuid",
-    "name": "stripe",
-    "description": "Payment processing",
-    "base_url": "https://api.stripe.com",
-    "service_type": "generic",
-    "credential_id": "uuid",
-    "is_active": true,
-    "created_at": "2026-02-18T10:00:00Z",
-    "updated_at": "2026-02-18T10:00:00Z"
-  }
-]
-```
-
-#### Create Service
-`POST /services`
-
+#### Enable Guardrails
+`POST /guardrails/enable`
 ```json
 {
-  "name": "stripe",
-  "base_url": "https://api.stripe.com",
-  "description": "Payment processing",
-  "service_type": "generic",
-  "credential_id": "uuid"
+  "token_id": "ailink_v1_...",
+  "presets": ["pii_redaction", "prompt_injection", "hipaa"],
+  "source": "dashboard",
+  "topic_allowlist": ["billing"],
+  "topic_denylist": ["competitors"]
 }
 ```
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | yes | Unique name (used in proxy URL path) |
-| `base_url` | yes | Upstream root URL |
-| `description` | no | Human-readable description |
-| `service_type` | no | `"generic"` (default) or `"llm"` |
-| `credential_id` | no | Credential to inject when proxying |
+#### Check Guardrail Status
+`GET /guardrails/status?token_id={id}`
 
-#### Delete Service
-`DELETE /services/{id}`
+Returns active presets and source (sdk/dashboard) for drift detection.
 
-Removes a registered service. Existing proxy requests in flight are not affected.
+#### Disable Guardrails
+`DELETE /guardrails/disable` (body: `{"token_id": "..."}`)
 
-#### Proxy Through a Service
-`ANY /v1/proxy/services/{service_name}/*`
+---
 
-Routes the request to the service's `base_url` with the linked credential injected. The path after the service name is appended to the base URL.
+### MCP Server Management
 
-**Example**: `POST /v1/proxy/services/stripe/v1/charges` → `POST https://api.stripe.com/v1/charges`
+Register Model Context Protocol servers. The gateway auto-discovers tools and injects them into LLM requests via the `X-MCP-Servers` header.
+
+#### List MCP Servers
+`GET /mcp/servers`
+
+#### Register MCP Server
+`POST /mcp/servers`
+```json
+{ "name": "brave", "endpoint": "http://localhost:3001/mcp", "api_key": "optional" }
+```
+
+Performs the MCP `initialize` handshake and caches tool schemas. Server names must be alphanumeric (hyphens/underscores allowed).
+
+#### Delete MCP Server
+`DELETE /mcp/servers/{id}`
+
+#### Test Connection (without registering)
+`POST /mcp/servers/test`
+
+#### Refresh Tool Cache
+`POST /mcp/servers/{id}/refresh`
+
+#### List Cached Tools
+`GET /mcp/servers/{id}/tools`
+
+**Usage**: Add `X-MCP-Servers: brave,slack` header to any proxy request. Tools are injected as `mcp__brave__search`, `mcp__slack__send_message`, etc. The gateway executes tool calls autonomously (up to 10 iterations).
 
 ---
 
 ### Human-in-the-Loop (HITL)
 
-Manage pending approval requests.
+High-stakes operations that pause for manual review.
 
 #### List Pending Approvals
-`GET /approvals?status=pending`
+`GET /approvals`
 
-#### Approve Request
-`POST /approvals/{request_id}/approve`
-
-Resumes the blocked request.
-
-#### Reject Request
-`POST /approvals/{request_id}/reject`
-
-The agent receives a `403 Forbidden`.
+#### Decide Approval
+`POST /approvals/{id}/decision`
+```json
+{ "decision": "approved" }
+```
+Values: `approved` (resumes request), `rejected` (agent receives 403).
 
 ---
 
-### Audit
+### Sessions
 
-#### Query Logs
-`GET /audit/logs`
+Tracked multi-turn interactions across the gateway.
 
-**Parameters**:
-- `limit`: Max records (default 50)
-- `offset`: Pagination offset (default 0)
-- `project_id`: Filter by project
+#### List Sessions
+`GET /sessions?limit=50&offset=0`
+
+#### Get Session Details
+`GET /sessions/{id}`
+
+#### Update Session Status
+`PATCH /sessions/{id}/status`
+```json
+{ "status": "paused" }
+```
+Values: `active`, `paused`, `completed`.
+
+#### Set Session Spend Cap
+`PUT /sessions/{id}/spend-cap`
+
+#### Get Session Entity
+`GET /sessions/{id}/entity` — Returns real-time cost, token totals, and cap status.
+
+---
+
+### Audit Logs
+
+Immutable request audit trail. Partitioned by month in PostgreSQL.
+
+#### Query Audit Logs
+`GET /audit?limit=50&offset=0&token_id={id}`
+
+#### Get Audit Log Detail
+`GET /audit/{id}` — Full request/response bodies (if captured at log level ≥ 1).
+
+#### Stream Audit Logs (SSE)
+`GET /audit/stream` — Server-sent events for real-time log streaming to the dashboard.
 
 ---
 
 ### Analytics
 
 #### Request Volume
-`GET /analytics/volume`
-
-Returns request counts bucketed by hour for the last 24h.
+`GET /analytics/volume` — Hourly request counts (last 24h).
 
 #### Status Distribution
-`GET /analytics/status`
-
-Returns count of requests by HTTP status code (2xx, 4xx, 5xx).
+`GET /analytics/status` — Count by HTTP status class (2xx, 4xx, 5xx).
 
 #### Latency Percentiles
-`GET /analytics/latency`
+`GET /analytics/latency` — P50, P90, P99, mean (ms).
 
-Returns P50, P90, P99, and Mean latency in milliseconds.
+#### Analytics Summary
+`GET /analytics/summary` — Aggregated: total requests, errors, cost, tokens.
+
+#### Analytics Timeseries
+`GET /analytics/timeseries` — Per-bucket: request count, error count, cost, latency, tokens.
+
+#### Experiments
+`GET /analytics/experiments` — A/B model comparison metrics.
+
+#### Token Analytics
+`GET /analytics/tokens` — Per-token request volume and error rates.
+
+#### Token Volume
+`GET /analytics/tokens/{id}/volume`
+
+#### Token Status
+`GET /analytics/tokens/{id}/status`
+
+#### Token Latency
+`GET /analytics/tokens/{id}/latency`
+
+#### Spend Breakdown
+`GET /analytics/spend/breakdown` — Cost by model, token, or project.
 
 ---
 
-### Guardrail Presets
+### Teams
 
-Enable or disable bundled safety rules (PII, prompt injection, etc.) for a token.
+Organizational hierarchy for multi-team deployments.
 
-#### List Available Presets
-`GET /guardrails/presets`
+#### List Teams
+`GET /teams`
 
-Returns the list of supported built-in presets (e.g., `pii_redaction`, `hipaa`, `code_injection`).
+#### Create Team
+`POST /teams`
+```json
+{ "name": "platform-team" }
+```
 
-#### Enable Guardrails
-`POST /guardrails/enable`
+#### Update Team
+`PUT /teams/{id}`
 
+#### Delete Team
+`DELETE /teams/{id}`
+
+#### List Team Members
+`GET /teams/{id}/members`
+
+#### Add Team Member
+`POST /teams/{id}/members`
+```json
+{ "user_id": "uuid", "role": "member" }
+```
+
+#### Remove Team Member
+`DELETE /teams/{id}/members/{user_id}`
+
+#### Team Spend
+`GET /teams/{id}/spend` — Aggregate cost for all tokens belonging to the team.
+
+---
+
+### Model Access Groups
+
+Fine-grained RBAC — restrict which models a token or team can access.
+
+#### List Groups
+`GET /model-access-groups`
+
+#### Create Group
+`POST /model-access-groups`
+```json
+{ "name": "gpt4-only", "allowed_models": ["gpt-4o", "gpt-4o-mini"] }
+```
+
+#### Update Group
+`PUT /model-access-groups/{id}`
+
+#### Delete Group
+`DELETE /model-access-groups/{id}`
+
+---
+
+### Services (Action Gateway)
+
+Register external APIs for secure, credential-injected proxying.
+
+#### List Services
+`GET /services`
+
+#### Create Service
+`POST /services`
 ```json
 {
-  "token_id": "ailink_v1_...",
-  "presets": ["pii_redaction", "prompt_injection"],
-  "source": "sdk" // or "dashboard"
+  "name": "stripe",
+  "base_url": "https://api.stripe.com",
+  "service_type": "generic",
+  "credential_id": "uuid"
 }
 ```
 
-#### Disable Guardrails
-`DELETE /guardrails/disable?token_id={token_id}&source=sdk`
+#### Delete Service
+`DELETE /services/{id}`
 
-#### Check Guardrail Status
-`GET /guardrails/status?token_id={token_id}`
-
-Returns whether guardrails are active, the applied presets, and the source (`sdk` vs `dashboard`) for drift detection.
+#### Proxy Through a Service
+`ANY /v1/proxy/services/{service_name}/*`
 
 ---
 
-### Config-as-Code (Export/Import)
+### Webhooks
 
-Manage routing, policies, and tokens as version-controlled YAML or JSON.
+Event-driven notifications for automated workflows.
+
+#### List Webhooks
+`GET /webhooks`
+
+#### Create Webhook
+`POST /webhooks`
+```json
+{ "url": "https://example.com/hook", "events": ["policy_violation", "spend_cap_exceeded"] }
+```
+Events: `policy_violation`, `spend_cap_exceeded`, `rate_limit_exceeded`, `hitl_requested`, `token_created`.
+
+#### Delete Webhook
+`DELETE /webhooks/{id}`
+
+#### Test Webhook
+`POST /webhooks/test`
+```json
+{ "url": "https://example.com/hook" }
+```
+
+---
+
+### Model Pricing
+
+Custom cost-per-token overrides for accurate spend tracking.
+
+#### List Pricing
+`GET /pricing`
+
+#### Upsert Pricing
+`PUT /pricing`
+```json
+{ "provider": "openai", "model_pattern": "gpt-4o*", "input_per_m": 2.50, "output_per_m": 10.00 }
+```
+`model_pattern` supports glob matching.
+
+#### Delete Pricing
+`DELETE /pricing/{id}`
+
+---
+
+### Notifications
+
+In-app notifications for alerts and events.
+
+#### List Notifications
+`GET /notifications`
+
+#### Count Unread
+`GET /notifications/unread`
+
+#### Mark Read
+`POST /notifications/{id}/read`
+
+#### Mark All Read
+`POST /notifications/read-all`
+
+---
+
+### Billing
+
+Organization-level usage and cost tracking.
+
+#### Get Usage
+`GET /billing/usage?period=2026-02` — Returns total requests, tokens used, and spend for the given month.
+
+---
+
+### Anomaly Detection
+
+Automatic traffic anomaly detection using sigma-based statistical analysis.
+
+#### Get Anomaly Events
+`GET /anomalies`
+
+Returns tokens with anomalous request velocity compared to their baseline. Flags sudden spikes > N standard deviations.
+
+---
+
+### Settings
+
+#### Get Settings
+`GET /settings`
+
+#### Update Settings
+`PUT /settings`
+
+---
+
+### Config-as-Code
+
+Export/import your full gateway configuration as version-controlled YAML or JSON.
 
 #### Export Full Config
-`GET /config/export` (Returns YAML by default)
-`GET /config/export?format=json`
+`GET /config/export` (YAML default, `?format=json` for JSON)
 
 #### Export Policies Only
 `GET /config/export/policies`
@@ -382,51 +550,34 @@ Manage routing, policies, and tokens as version-controlled YAML or JSON.
 `GET /config/export/tokens`
 
 #### Import Config
-`POST /config/import`
-
-Imports a YAML or JSON configuration. Upserts policies and creates token stubs.
-
----
-
-### Sessions
-
-Query tracked sessions across the gateway.
-
-#### List Sessions
-`GET /sessions?project_id={uuid}&limit=50&offset=0`
-
-#### Get Session Details
-`GET /sessions/{session_id}?project_id={uuid}`
-
-Returns session metadata and an aggregate cost/metrics summary for all requests sharing this `session_id`.
+`POST /config/import` — Upserts policies and creates token stubs.
 
 ---
 
 ### System
 
 #### Get Cache Statistics
-`GET /system/cache-stats`
+`GET /system/cache-stats` — Redis hit rates, memory usage, namespace breakdown.
 
-Returns metrics about the Redis semantic cache and local token caches (hit rate, memory usage, item count).
+#### Flush Cache
+`POST /system/flush-cache` — Clears all cached token/policy mappings (use with caution).
+
+#### PII Vault Rehydration
+`POST /pii/rehydrate` — Decrypt tokenized PII references (requires `pii:rehydrate` scope).
 
 ---
 
 ### Health
 
 #### Liveness
-`GET /healthz`
-Returns `200 OK` if the process is running.
+`GET /healthz` — 200 OK if process is running.
 
 #### Readiness
-`GET /readyz`
-Returns `200 OK` if the gateway can connect to Postgres and Redis.
+`GET /readyz` — 200 OK if Postgres and Redis are reachable.
 
 #### Upstream Health
-`GET /health/upstreams`
+`GET /health/upstreams` — Circuit breaker health for all tracked upstreams.
 
-Returns the circuit breaker health status of all tracked upstream targets across all tokens.
-
-**Response:**
 ```json
 [
   {
@@ -435,13 +586,6 @@ Returns the circuit breaker health status of all tracked upstream targets across
     "is_healthy": true,
     "failure_count": 0,
     "cooldown_remaining_secs": null
-  },
-  {
-    "token_id": "ailink_v1_proj_abc_tok_xyz",
-    "url": "https://api.backup.com",
-    "is_healthy": false,
-    "failure_count": 3,
-    "cooldown_remaining_secs": 18
   }
 ]
 ```

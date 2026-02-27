@@ -14,6 +14,7 @@ mod cli;
 mod config;
 mod errors;
 mod jobs;
+mod mcp;
 mod middleware;
 mod models;
 mod notification;
@@ -44,6 +45,8 @@ pub struct AppState {
     pub payload_store: Arc<PayloadStore>,
     /// Observability exporters: Prometheus, Langfuse, DataDog.
     pub observer: Arc<middleware::observer::ObserverHub>,
+    /// MCP server registry — manages connections and cached tool schemas.
+    pub mcp_registry: Arc<mcp::registry::McpRegistry>,
 }
 
 #[tokio::main]
@@ -135,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
                 latency: models::latency_cache::LatencyCache::new(),
                 payload_store: Arc::new(PayloadStore::from_env().unwrap_or(PayloadStore::Postgres)),
                 observer: Arc::new(middleware::observer::ObserverHub::from_env()),
+                mcp_registry: Arc::new(mcp::registry::McpRegistry::new()),
             });
 
             handle_token_command(command, &state).await
@@ -169,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
                  latency: models::latency_cache::LatencyCache::new(),
                  payload_store: Arc::new(PayloadStore::from_env().unwrap_or(PayloadStore::Postgres)),
                  observer: Arc::new(middleware::observer::ObserverHub::from_env()),
+                 mcp_registry: Arc::new(mcp::registry::McpRegistry::new()),
              });
 
              handle_policy_command(command, &state).await
@@ -226,6 +231,7 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
         latency: latency.clone(),
         payload_store,
         observer: Arc::new(middleware::observer::ObserverHub::from_env()),
+        mcp_registry: Arc::new(mcp::registry::McpRegistry::new()),
     });
 
     // Load initial pricing from DB into the in-memory cache
