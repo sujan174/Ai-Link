@@ -46,9 +46,14 @@ class AuthenticationError(AIlinkError):
     pass
 
 
-class PermissionError(AIlinkError):
+class AccessDeniedError(AIlinkError):
     """Valid credentials but insufficient permissions."""
     pass
+
+
+# Backward-compatible alias — prefer AccessDeniedError in new code
+# to avoid shadowing Python's built-in PermissionError.
+PermissionError = AccessDeniedError
 
 
 class NotFoundError(AIlinkError):
@@ -79,11 +84,11 @@ class SpendCapError(AIlinkError):
     pass
 
 
-class PolicyDeniedError(PermissionError):
+class PolicyDeniedError(AccessDeniedError):
     """Request was blocked by a gateway policy."""
     pass
 
-class ContentBlockedError(PermissionError):
+class ContentBlockedError(AccessDeniedError):
     """Request was blocked by a content filter (jailbreak, harmful content, etc.)."""
 
     def __init__(self, message: str, matched_patterns: list = None, confidence: float = None, **kwargs):
@@ -163,7 +168,7 @@ def raise_for_status(response: httpx.Response) -> None:
                 confidence=confidence,
                 **kwargs,
             )
-        raise PermissionError(f"Permission denied: {message}", **kwargs)
+        raise AccessDeniedError(f"Permission denied: {message}", **kwargs)
     elif status == 404:
         raise NotFoundError(f"Resource not found: {message}", **kwargs)
     elif status == 413:

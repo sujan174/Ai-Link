@@ -1,4 +1,5 @@
 """Pydantic models for AIlink API responses."""
+from __future__ import annotations
 
 from dataclasses import dataclass, field as dataclass_field
 from typing import List, Optional, Dict, Any
@@ -59,8 +60,8 @@ class Token(AIlinkModel):
     credential_id: Optional[str] = None
     upstream_url: str
     project_id: Optional[str] = None
-    policy_ids: List[str] = []
-    scopes: List[str] = []
+    policy_ids: List[str] = Field(default_factory=list)
+    scopes: List[str] = Field(default_factory=list)
     is_active: bool
     created_at: Optional[datetime] = None
 

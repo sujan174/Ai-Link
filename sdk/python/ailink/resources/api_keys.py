@@ -41,26 +41,26 @@ class ApiKeysResource:
         if user_id:
             payload["user_id"] = user_id
 
-        resp = self._client.post("/auth/keys", json=payload)
+        resp = self._client._http.post("/api/v1/auth/keys", json=payload)
         raise_for_status(resp)
         return resp.json()
 
     def list(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
         """List API Keys."""
         params = {"limit": limit, "offset": offset}
-        resp = self._client.get("/auth/keys", params=params)
+        resp = self._client._http.get("/api/v1/auth/keys", params=params)
         raise_for_status(resp)
         return resp.json()
 
     def revoke(self, key_id: str) -> Dict[str, Any]:
         """Revoke an API Key."""
-        resp = self._client.delete(f"/auth/keys/{key_id}")
+        resp = self._client._http.delete(f"/api/v1/auth/keys/{key_id}")
         raise_for_status(resp)
         return resp.json()
 
     def whoami(self) -> Dict[str, Any]:
         """Get information about the current authentication context."""
-        resp = self._client.get("/auth/whoami")
+        resp = self._client._http.get("/api/v1/auth/whoami")
         raise_for_status(resp)
         return resp.json()
 
@@ -90,22 +90,22 @@ class AsyncApiKeysResource:
         if user_id:
             payload["user_id"] = user_id
 
-        response = await self._client.post("/auth/keys", json=payload)
+        response = await self._client._http.post("/api/v1/auth/keys", json=payload)
         raise_for_status(response)
         return response.json()
 
     async def list(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
         params = {"limit": limit, "offset": offset}
-        response = await self._client.get("/auth/keys", params=params)
+        response = await self._client._http.get("/api/v1/auth/keys", params=params)
         raise_for_status(response)
         return response.json()
 
     async def revoke(self, key_id: str) -> Dict[str, Any]:
-        response = await self._client.delete(f"/auth/keys/{key_id}")
+        response = await self._client._http.delete(f"/api/v1/auth/keys/{key_id}")
         raise_for_status(response)
         return response.json()
 
     async def whoami(self) -> Dict[str, Any]:
-        response = await self._client.get("/auth/whoami")
+        response = await self._client._http.get("/api/v1/auth/whoami")
         raise_for_status(response)
         return response.json()

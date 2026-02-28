@@ -271,7 +271,10 @@ class AsyncTokensResource:
         project_id: Optional[str] = None,
         policy_ids: Optional[List[str]] = None,
         circuit_breaker: Optional[Dict[str, Any]] = None,
-        expires_at: Optional[str] = None,
+        fallback_url: Optional[str] = None,
+        upstreams: Optional[List[Any]] = None,  # List[Upstream | dict]
+        log_level: Optional[str] = None,        # "metadata" | "redacted" | "full"
+        expires_at: Optional[str] = None,       # ISO8601 timestamp string
     ) -> TokenCreateResponse:
         """
         Create a new virtual token.
@@ -285,6 +288,13 @@ class AsyncTokensResource:
             policy_ids: Optional list of policy IDs to attach.
             circuit_breaker: Optional circuit breaker config dict.
                 Example: ``{"enabled": False}`` to disable CB for dev/test.
+            fallback_url: Convenience shorthand to set a single failover URL
+                (creates two upstreams: primary at priority 1, fallback at priority 2).
+            upstreams: Full upstream list as a mix of :class:`~ailink.types.Upstream`
+                objects and/or raw dicts. Takes precedence over ``fallback_url``.
+            log_level: Log verbosity for this token — ``"metadata"``, ``"redacted"``,
+                or ``"full"``. Defaults to the gateway global setting.
+            expires_at: Optional ISO8601 timestamp for token expiry.
 
         Returns:
             A TokenCreateResponse containing the 'token_id' and metadata.
@@ -301,6 +311,14 @@ class AsyncTokensResource:
             payload["policy_ids"] = policy_ids
         if circuit_breaker is not None:
             payload["circuit_breaker"] = circuit_breaker
+        if fallback_url:
+            payload["fallback_url"] = fallback_url
+        if upstreams:
+            payload["upstreams"] = [
+                u.to_dict() if hasattr(u, "to_dict") else u for u in upstreams
+            ]
+        if log_level:
+            payload["log_level_name"] = log_level
         if expires_at:
             payload["expires_at"] = expires_at
         resp = await self._client._http.post("/api/v1/tokens", json=payload)

@@ -7,7 +7,7 @@ name = "ailink"
 version = "0.1.0"
 description = "Official Python SDK for AIlink Gateway"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
     {name = "AIlink Team", email = "hello@ailink.dev"}

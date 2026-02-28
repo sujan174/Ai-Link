@@ -47,9 +47,11 @@ from .exceptions import (
     ValidationError,
     GatewayError,
     SpendCapError,
+    AccessDeniedError,
     PermissionError,
     PolicyDeniedError,
     PayloadTooLargeError,
+    ContentBlockedError,
 )
 
 # Backward-compatible alias
@@ -86,9 +88,11 @@ __all__ = [
     "ValidationError",
     "GatewayError",
     "SpendCapError",
-    "PermissionError",
+    "AccessDeniedError",
+    "PermissionError",  # backward-compatible alias for AccessDeniedError
     "PolicyDeniedError",
     "PayloadTooLargeError",
+    "ContentBlockedError",
     # Metadata
     "__version__",
     # Guardrail preset constants

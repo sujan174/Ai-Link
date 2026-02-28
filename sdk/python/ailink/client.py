@@ -44,6 +44,8 @@ class AIlinkClient:
         idempotency_key: Optional[str] = None,
         timeout: float = 30.0,
         max_retries: int = 2,
+        *,
+        _admin_key: Optional[str] = None,  # internal: set by admin() classmethod
         **kwargs,
     ):
         """
@@ -56,10 +58,14 @@ class AIlinkClient:
             max_retries: Number of connection retries (default: 2)
             **kwargs: Additional arguments passed to httpx.Client
         """
-        api_key = api_key or os.environ.get("AILINK_API_KEY")
-        if not api_key:
-            from .exceptions import AIlinkError
-            raise AIlinkError("No API key provided. Pass api_key= or set AILINK_API_KEY env var.")
+        # Admin mode: authenticate with X-Admin-Key header
+        if _admin_key:
+            api_key = _admin_key
+        else:
+            api_key = api_key or os.environ.get("AILINK_API_KEY")
+            if not api_key:
+                from .exceptions import AIlinkError
+                raise AIlinkError("No API key provided. Pass api_key= or set AILINK_API_KEY env var.")
         
         gateway_url = gateway_url or os.environ.get("AILINK_GATEWAY_URL", "http://localhost:8443")
         
@@ -67,11 +73,18 @@ class AIlinkClient:
         self.gateway_url = gateway_url.rstrip("/")
         self._agent_name = agent_name
 
-        headers = {"Authorization": f"Bearer {api_key}"}
-        if agent_name:
-            headers["X-AIlink-Agent-Name"] = agent_name
-        if idempotency_key:
-            headers["X-AIlink-Idempotency-Key"] = idempotency_key
+        if _admin_key:
+            headers = {
+                "X-Admin-Key": _admin_key,
+                "Content-Type": "application/json",
+            }
+        else:
+            headers = {"Authorization": f"Bearer {api_key}"}
+            if agent_name:
+                headers["X-AIlink-Agent-Name"] = agent_name
+            if idempotency_key:
+                headers["X-AIlink-Idempotency-Key"] = idempotency_key
+
         # Send SDK version on every request so the gateway can log it and
         # detect breaking incompatibilities (currently only logged, future: 426 upgrade hint)
         from . import __version__
@@ -345,21 +358,11 @@ class AIlinkClient:
             from .exceptions import AIlinkError
             raise AIlinkError("No admin key provided. Pass admin_key= or set AILINK_ADMIN_KEY env var.")
             
-        gateway_url = gateway_url or os.environ.get("AILINK_GATEWAY_URL", "http://localhost:8443")
-        
-        instance = cls.__new__(cls)
-        instance.api_key = admin_key
-        instance.gateway_url = gateway_url.rstrip("/")
-        instance._agent_name = None
-        instance._http = httpx.Client(
-            base_url=instance.gateway_url,
-            headers={
-                "X-Admin-Key": admin_key,
-                "Content-Type": "application/json",
-            },
+        return cls(
+            gateway_url=gateway_url,
+            _admin_key=admin_key,
             **kwargs,
         )
-        return instance
 
     # ── Provider Factories ─────────────────────────────────────
 
@@ -473,7 +476,9 @@ class AIlinkClient:
         from .resources.guardrails import GuardrailsResource
         return GuardrailsResource(self)
 
+    @cached_property
     def billing(self) -> "BillingResource":
+        """Billing and usage information."""
         from .resources.billing import BillingResource
         return BillingResource(self)
 
