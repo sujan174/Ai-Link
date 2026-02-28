@@ -40,7 +40,10 @@ jobs:
           workspaces: gateway
       
       - name: Install sqlx-cli
-        run: cargo install sqlx-cli --no-default-features --features postgres,native-tls
+        uses: baptiste0928/cargo-install@v3
+        with:
+          crate: sqlx-cli
+          features: postgres,native-tls
 
       - name: Migrate Database
         run: |
@@ -112,3 +115,77 @@ jobs:
       - name: Type Check (MyPy)
         working-directory: sdk/python
         run: mypy ailink
+
+  # 4. Docker Build Validation
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./gateway
+          push: false
+          cache-from: type=gha,scope=gateway
+          cache-to: type=gha,mode=max,scope=gateway
+
+      - name: Build dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./dashboard
+          push: false
+          cache-from: type=gha,scope=dashboard
+          cache-to: type=gha,mode=max,scope=dashboard
+
+  # 5. End-to-End Tests (runs after Docker images build)
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: [gateway, sdk-python]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start services
+        run: docker compose up -d gateway postgres redis mock-upstream
+        env:
+          COMPOSE_DOCKER_CLI_BUILD: 1
+          DOCKER_BUILDKIT: 1
+
+      - name: Wait for gateway to be healthy
+        run: |
+          echo "⏳ Waiting for services..."
+          timeout 120 bash -c '
+            until docker compose exec -T gateway sh -c "cat < /dev/null > /dev/tcp/localhost/8443" 2>/dev/null; do
+              sleep 2
+            done
+          '
+          echo "✅ Gateway is ready"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install SDK + test dependencies
+        run: |
+          pip install sdk/python/
+          pip install httpx
+
+      - name: Run E2E mock test suite
+        env:
+          AILINK_GATEWAY_URL: http://localhost:8443
+          AILINK_ADMIN_KEY: ailink-admin-test
+          MOCK_UPSTREAM_URL: http://localhost:9000
+        run: python tests/e2e/test_mock_suite.py
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail=100
+      
+      - name: Stop services
+        if: always()
+        run: docker compose down -v

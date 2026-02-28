@@ -1,5 +1,5 @@
 # Build Stage
-FROM rust:latest AS builder
+FROM rust:1.83-bookworm AS builder
 
 WORKDIR /usr/src/ailink
 
@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 # Cache dependencies: copy manifests, build a dummy, then replace with real source
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release --bin ailink 2>/dev/null || true
+RUN cargo build --release 2>/dev/null ; exit 0
 RUN rm -rf src
 
 # Now copy real source and rebuild (only app crate recompiles)
@@ -20,13 +20,10 @@ RUN touch src/main.rs && cargo build --release --bin ailink
 # Runtime Stage
 FROM debian:bookworm-slim
 
-# Install runtime dependencies (ca-certificates for HTTPS, libssl for reqwest)
-# Install runtime dependencies (OpenSSL) and debug tools
-RUN apt-get update && apt-get install -y \
+# Install minimal runtime dependencies (libssl3 for TLS, ca-certificates for HTTPS)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libssl-dev \
-    curl \
-    iputils-ping \
+    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 
