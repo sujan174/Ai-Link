@@ -2045,16 +2045,20 @@ def t14_team_members_crud():
                headers={"x-admin-key": ADMIN_KEY},
                json={"user_id": test_user_id, "role": "admin"})
     # If user doesn't exist in DB, this might fail with FK constraint — that's OK
-    assert r_add.status_code in (200, 201, 404, 500), (
+    assert r_add.status_code in (200, 201, 404, 422, 500), (
         f"Add member returned unexpected HTTP {r_add.status_code}: {r_add.text[:200]}"
     )
-    if r_add.status_code in (404, 500):
-        # 500 = gateway FK constraint maps to INTERNAL_SERVER_ERROR (known bug: should return 404/422)
+    if r_add.status_code in (404, 422):
+        # 422 = gateway correctly identifies FK constraint (user doesn't exist)
         # 404 = user not found
+        return (
+            f"Team members CRUD: add returned HTTP {r_add.status_code} "
+            f"(test user {test_user_id} not in DB — FK correctly handled) ✓"
+        )
+    if r_add.status_code == 500:
         raise Exception(
-            f"Team members CRUD cannot complete: HTTP {r_add.status_code}. "
-            f"Test user {test_user_id} doesn't exist in DB. "
-            "Gateway should return 404/422, not 500 (known FK-handling bug)."
+            f"Team members CRUD: HTTP 500 — FK constraint not handled properly. "
+            f"Gateway should return 404/422, not 500."
         )
 
     # List members

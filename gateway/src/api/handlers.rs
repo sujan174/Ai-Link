@@ -3153,10 +3153,15 @@ pub async fn add_team_member(
     .fetch_one(state.db.pool())
     .await
     .map_err(|e| {
-        tracing::error!("Failed to add team member: {}", e);
-        if e.to_string().contains("duplicate key") {
+        let msg = e.to_string();
+        if msg.contains("duplicate key") {
+            tracing::warn!("Duplicate team member: team={}, user={}", team_id, user_id);
             StatusCode::CONFLICT
+        } else if msg.contains("foreign key") || msg.contains("violates foreign key") {
+            tracing::warn!("Team member FK violation (user_id not found): team={}, user={}: {}", team_id, user_id, msg);
+            StatusCode::UNPROCESSABLE_ENTITY
         } else {
+            tracing::error!("Failed to add team member: {}", msg);
             StatusCode::INTERNAL_SERVER_ERROR
         }
     })?;
