@@ -4,7 +4,6 @@
 > **Completed items removed.** See git history for full feature history.
 
 ---
-
 ## 🔴 Priority 1 — Ship Now *(highest competitive impact)*
 
 | # | Gap | Why Critical | Effort |
@@ -12,7 +11,6 @@
 | **1** | **TypeScript SDK** (`@ailink/sdk`) — parity with Python SDK (HITL, trace, fallback, `openai()` wrapper) | ~50% of AI devs use TypeScript. Portkey, LiteLLM, Helicone, TensorZero, Bifrost all have TS SDKs. AILink is invisible to this audience. | ~1 week |
 | **2** | **MCP Auto-Discovery + OAuth 2.0 token refresh** — when a URL is provided, auto-`initialize` + `list_tools`; store `client_id/secret/token_endpoint`, refresh token when expired | Bifrost has auto-discovery + OAuth 2.0. LiteLLM added native MCP (Nov 2025). Kong ships MCP OAuth2 plugin. Our manual-registration-only approach is falling behind fast. Architecture is ready (`client.rs` + `registry.rs` + `SecretStore` trait). | ~1 week |
 | **3** | **Provider Breadth** — Azure OpenAI, Bedrock, Groq, Mistral, Together, Cohere, Ollama | Enterprise will reject in the first 5 min if their provider isn't supported. | ~2 days/provider |
-| **4** | **Free Tier + Self-Serve Onboarding** — hosted free tier (10K req/mo, 7-day logs) + "Start for free" CTA | Every competitor has a free tier. Without one, zero developer evangelism or bottom-up adoption pipeline. | ~3 days |
 
 ---
 
@@ -22,7 +20,6 @@
 |---|-----|-------------|--------|
 | **5** | **Dashboard SSO** — Okta / Google / GitHub OIDC login for dashboard | Enterprise procurement checklist item. OIDC auth is already in the gateway; apply it to the dashboard. | ~2 days |
 | **6** | **MCP Per-Token Tool Allow/Deny Lists** — policy-engine field restricting which MCP tools a token can invoke | Bifrost has per-key tool filtering + global tool blacklisting. Needed for security-conscious enterprise MCP usage. | ~1 day |
-| **7** | **Open-Source the Gateway Binary** — publish `gateway/` on GitHub under Apache 2.0 | Bottom-up developer trust and adoption. LiteLLM's entire community moat comes from being OSS. | ~2 days (legal review + README) |
 
 ---
 
@@ -46,17 +43,3 @@
 | **14** | **Compliance Certifications** — ISO 27001, HIPAA, GDPR readiness | Downstream from SOC-2. LiteLLM + Kong have both. | After SOC-2 |
 
 ---
-
-## 🏆 Unique Advantages to Protect & Extend
-
-These are areas where AILink leads every competitor. Keep shipping on them:
-
-- **HITL approval gateway** — native 202/poll pattern; no one else has this as a gateway primitive
-- **Shadow mode** — unique in the category; extend it into "policy simulation" (replay historical traffic)
-- **PII tokenization vault** — deterministic reversible tokens; no competitor has this
-- **Deep policy engine** — 15+ action types; extend with more condition operators
-- **Anomaly detection** — extend with configurable thresholds per-token
-
----
-
-*Last updated: Feb 2026*
