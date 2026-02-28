@@ -60,7 +60,15 @@ export class TokensResource {
         if (options.expiresAt) body["expires_at"] = options.expiresAt;
 
         const res = await this.http.post("/api/v1/tokens", body);
-        return (await res.json()) as TokenCreateResponse;
+        const raw = (await res.json()) as Record<string, unknown>;
+        return {
+            tokenId: (raw.token_id ?? raw.tokenId) as string | undefined,
+            id: raw.id as string | undefined,
+            name: raw.name as string | undefined,
+            upstreamUrl: (raw.upstream_url ?? raw.upstreamUrl) as string | undefined,
+            credentialId: (raw.credential_id ?? raw.credentialId) as string | undefined,
+            projectId: (raw.project_id ?? raw.projectId) as string | undefined,
+        };
     }
 
     /**

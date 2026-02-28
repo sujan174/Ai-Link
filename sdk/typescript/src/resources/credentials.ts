@@ -5,9 +5,11 @@ export class CredentialsResource {
     constructor(private readonly http: HttpClient) { }
 
     /** Store a new encrypted credential. */
-    async create(options: { name: string; provider: string; apiKey: string; projectId?: string }): Promise<CredentialCreateResponse> {
-        const body: Record<string, unknown> = { name: options.name, provider: options.provider, api_key: options.apiKey };
+    async create(options: { name: string; provider: string; secret: string; projectId?: string; injectionMode?: string; injectionHeader?: string }): Promise<CredentialCreateResponse> {
+        const body: Record<string, unknown> = { name: options.name, provider: options.provider, secret: options.secret };
         if (options.projectId) body["project_id"] = options.projectId;
+        if (options.injectionMode) body["injection_mode"] = options.injectionMode;
+        if (options.injectionHeader) body["injection_header"] = options.injectionHeader;
         const res = await this.http.post("/api/v1/credentials", body);
         return (await res.json()) as CredentialCreateResponse;
     }
