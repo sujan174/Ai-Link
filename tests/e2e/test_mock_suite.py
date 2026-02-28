@@ -2842,11 +2842,47 @@ _hitl_policy_id = None
 _hitl_token_id = None
 
 
+def _hitl_poll_and_decide(decision: str, timeout_s: float = 5.0):
+    """Background-thread helper: poll /approvals for a pending entry and submit `decision`.
+
+    Args:
+        decision: "approved" or "rejected".
+        timeout_s: how long to keep polling before giving up.
+
+    Returns the approval ID that was decided, or None if no pending found.
+    """
+    import threading
+
+    result = {"id": None}   # mutable closure variable
+
+    def _poll():
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            try:
+                r = gw("GET", "/api/v1/approvals",
+                        headers={"x-admin-key": ADMIN_KEY})
+                if r.status_code == 200:
+                    for appr in r.json():
+                        if appr.get("status") == "pending":
+                            gw("POST", f"/api/v1/approvals/{appr['id']}/decision",
+                               headers={"x-admin-key": ADMIN_KEY},
+                               json={"decision": decision})
+                            result["id"] = appr["id"]
+                            return
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_poll, daemon=True)
+    t.start()
+    return t, result
+
+
 def t23_setup_hitl():
     """Create a token + policy with RequireApproval action and short timeout."""
     global _hitl_policy_id, _hitl_token_id
 
-    # Policy: RequireApproval on every request (will only apply to the dedicated token)
+    # Policy: RequireApproval on every request (only affects the dedicated token below)
     p = admin.policies.create(
         name=f"hitl-gate-{RUN_ID}",
         rules=[{
@@ -2876,30 +2912,7 @@ def t23_setup_hitl():
 
 def t23_hitl_approval_flow():
     """Send request that triggers HITL, approve from background thread → 200."""
-    import threading
-
-    approval_found = threading.Event()
-
-    def approve_after_delay():
-        """Poll for pending approval and approve it."""
-        for _ in range(10):
-            time.sleep(0.5)
-            try:
-                r = gw("GET", "/api/v1/approvals",
-                        headers={"x-admin-key": ADMIN_KEY})
-                if r.status_code == 200:
-                    for appr in r.json():
-                        if appr.get("status") == "pending":
-                            gw("POST", f"/api/v1/approvals/{appr['id']}/decision",
-                               headers={"x-admin-key": ADMIN_KEY},
-                               json={"decision": "approved"})
-                            approval_found.set()
-                            return
-            except Exception:
-                pass
-
-    thread = threading.Thread(target=approve_after_delay, daemon=True)
-    thread.start()
+    thread, result = _hitl_poll_and_decide("approved")
 
     r = chat(_hitl_token_id, "hitl-approval-test", model="gpt-4o")
     thread.join(timeout=15)
@@ -2907,36 +2920,16 @@ def t23_hitl_approval_flow():
     assert r.status_code == 200, (
         f"HITL approved request should return 200, got {r.status_code}: {r.text[:200]}"
     )
-    return f"HITL approval → HTTP {r.status_code} ✓"
+    return f"HITL approval → HTTP {r.status_code} (approval_id={result['id']}) ✓"
 
 
 def t23_hitl_rejection_flow():
     """Send request that triggers HITL, reject from background thread → 403."""
-    import threading
-
-    def reject_after_delay():
-        for _ in range(10):
-            time.sleep(0.5)
-            try:
-                r = gw("GET", "/api/v1/approvals",
-                        headers={"x-admin-key": ADMIN_KEY})
-                if r.status_code == 200:
-                    for appr in r.json():
-                        if appr.get("status") == "pending":
-                            gw("POST", f"/api/v1/approvals/{appr['id']}/decision",
-                               headers={"x-admin-key": ADMIN_KEY},
-                               json={"decision": "rejected"})
-                            return
-            except Exception:
-                pass
-
-    thread = threading.Thread(target=reject_after_delay, daemon=True)
-    thread.start()
+    thread, result = _hitl_poll_and_decide("rejected")
 
     r = chat(_hitl_token_id, "hitl-rejection-test", model="gpt-4o")
     thread.join(timeout=15)
 
-    # Rejection returns 403 or similar error 
     assert r.status_code in (400, 403, 422, 500), (
         f"HITL rejected request should return error, got {r.status_code}: {r.text[:200]}"
     )
@@ -2975,7 +2968,7 @@ test("HITL: GET /approvals returns list", t23_hitl_pending_list)
 # ═══════════════════════════════════════════════════════════════
 section("Phase 24 — MCP Server Management API")
 
-_mcp_cleanup_ids = []
+
 
 
 def t24_mcp_register_invalid_name():
@@ -3079,46 +3072,37 @@ def t25_setup_pii_redact():
 
 
 def t25_pii_redact_ssn():
-    """SSN in prompt → [REDACTED_SSN] upstream."""
-    r = chat(_pii_redact_token_id, "My SSN is 123-45-6789", model="gpt-4o",
-             headers={"x-mock-echo": "true"})
-    if r.status_code == 200:
-        body = r.json()
-        # Check if echo returned the upstream body  
-        content = json.dumps(body)
-        if "[REDACTED_SSN]" in content:
-            return "SSN redacted to [REDACTED_SSN] ✓"
-        elif "123-45-6789" not in content:
-            return "SSN not present in response (redacted or filtered) ✓"
-    # If echo not available, just verify the request succeeds
+    """SSN in prompt → [REDACTED_SSN] in upstream body."""
+    r = chat(_pii_redact_token_id, "My SSN is 123-45-6789", model="gpt-4o")
     assert r.status_code == 200, f"PII redact request failed: {r.status_code}"
-    return f"PII redact SSN: request passed (HTTP {r.status_code}) ✓"
+    content = json.dumps(r.json())
+    # The raw SSN must NOT survive through the proxy
+    assert "123-45-6789" not in content, (
+        "Raw SSN leaked through PII redact policy — expected [REDACTED_SSN]"
+    )
+    return "SSN redacted ✓"
 
 
 def t25_pii_redact_email():
-    """Email in prompt → [REDACTED_EMAIL] upstream."""
-    r = chat(_pii_redact_token_id, "Contact me at john@example.com", model="gpt-4o",
-             headers={"x-mock-echo": "true"})
+    """Email in prompt → must not appear in upstream response."""
+    r = chat(_pii_redact_token_id, "Contact me at john@example.com", model="gpt-4o")
     assert r.status_code == 200, f"PII redact failed: {r.status_code}"
     content = json.dumps(r.json())
-    if "[REDACTED_EMAIL]" in content:
-        return "Email redacted to [REDACTED_EMAIL] ✓"
-    elif "john@example.com" not in content:
-        return "Email not present in response (redacted or filtered) ✓"
-    return f"PII redact email: request completed ✓"
+    assert "john@example.com" not in content, (
+        "Raw email leaked through PII redact policy — expected [REDACTED_EMAIL]"
+    )
+    return "Email redacted ✓"
 
 
 def t25_pii_redact_credit_card():
-    """Credit card in prompt → [REDACTED_CC] upstream."""
-    r = chat(_pii_redact_token_id, "Card: 4111-1111-1111-1111", model="gpt-4o",
-             headers={"x-mock-echo": "true"})
+    """Credit card in prompt → must not appear in upstream response."""
+    r = chat(_pii_redact_token_id, "Card: 4111-1111-1111-1111", model="gpt-4o")
     assert r.status_code == 200, f"PII redact failed: {r.status_code}"
     content = json.dumps(r.json())
-    if "[REDACTED_CC]" in content:
-        return "CC redacted to [REDACTED_CC] ✓"
-    elif "4111-1111-1111-1111" not in content:
-        return "CC not present in response (redacted or filtered) ✓"
-    return f"PII redact CC: request completed ✓"
+    assert "4111-1111-1111-1111" not in content, (
+        "Raw CC leaked through PII redact policy — expected [REDACTED_CC]"
+    )
+    return "CC redacted ✓"
 
 
 def t25_pii_redact_clean_passes():
@@ -3204,7 +3188,6 @@ test("Prometheus: has latency histogram", t26_prometheus_has_latency_histogram)
 section("Phase 27 — Scoped Tokens RBAC Enforcement")
 
 _scoped_key_readonly = None
-_scoped_key_limited = None
 _cleanup_api_keys = []
 
 
@@ -3296,33 +3279,50 @@ section("Phase 28 — SSRF Protection")
 
 
 def t28_ssrf_private_ip_rejected():
-    """Creating a service with private IP upstream → rejected."""
-    private_urls = ["http://127.0.0.1:8080", "http://192.168.1.1:3000",
-                    "http://10.0.0.1:5000"]
-    for url in private_urls:
+    """Creating a service with RFC-1918 private IP upstream → must be rejected."""
+    private_urls = [
+        ("http://127.0.0.1:8080", "loopback"),
+        ("http://192.168.1.1:3000", "RFC-1918 class C"),
+        ("http://10.0.0.1:5000", "RFC-1918 class A"),
+    ]
+    rejected = []
+    for url, label in private_urls:
         r = gw("POST", "/api/v1/services",
                 headers={"x-admin-key": ADMIN_KEY},
-                json={"name": f"ssrf-test-{RUN_ID}", "base_url": url})
+                json={"name": f"ssrf-{label}-{RUN_ID}", "base_url": url})
         if r.status_code in (400, 403, 422):
-            return f"Private IP ({url}) rejected → HTTP {r.status_code} ✓"
-    # If all pass, SSRF might not be enforced on services (it may only be on proxy)
-    return f"SSRF check: private IPs not rejected at service level (may be proxy-only) ✓"
+            rejected.append((url, r.status_code))
+        elif r.status_code in (200, 201):
+            # Clean up accidentally-created service
+            svc_id = r.json().get("id")
+            if svc_id:
+                gw("DELETE", f"/api/v1/services/{svc_id}",
+                   headers={"x-admin-key": ADMIN_KEY})
+    assert len(rejected) > 0, (
+        f"SSRF: none of {[u for u,_ in private_urls]} were rejected — "
+        "is_private() check may not be enforced at the service-creation layer"
+    )
+    return f"SSRF: {len(rejected)}/{len(private_urls)} private IPs rejected ✓"
 
 
 def t28_ssrf_localhost_rejected():
-    """Creating a service with localhost → rejected."""
+    """Creating a service with 'localhost' hostname → must be rejected or noted."""
     r = gw("POST", "/api/v1/services",
             headers={"x-admin-key": ADMIN_KEY},
             json={"name": f"ssrf-localhost-{RUN_ID}", "base_url": "http://localhost:8080"})
-    if r.status_code in (400, 403, 422):
-        return f"Localhost rejected → HTTP {r.status_code} ✓"
-    # Clean up if it was created
     if r.status_code in (200, 201):
+        # Clean up — 'localhost' may resolve to 127.0.0.1 but DNS resolution
+        # happens later at proxy time, not at service creation. Still clean up.
         svc_id = r.json().get("id")
         if svc_id:
             gw("DELETE", f"/api/v1/services/{svc_id}",
                headers={"x-admin-key": ADMIN_KEY})
-    return f"SSRF: localhost → HTTP {r.status_code} (proxy-level enforcement) ✓"
+        return (f"Localhost accepted at service-creation (HTTP {r.status_code}) — "
+                f"SSRF check deferred to proxy time ✓")
+    assert r.status_code in (400, 403, 422), (
+        f"Unexpected status for localhost SSRF: {r.status_code}"
+    )
+    return f"Localhost rejected → HTTP {r.status_code} ✓"
 
 
 test("SSRF: private IP upstream → rejected", t28_ssrf_private_ip_rejected)
@@ -3335,31 +3335,30 @@ section("Phase 29 — Additional Provider Translation Smoke Tests")
 
 
 def t29_groq_model_routes():
-    """Groq model (llama-3.1-70b) routes through gateway correctly."""
+    """Groq model (llama-3.1-70b) routes through mock upstream → 200."""
     r = chat(_openai_tok, "Hello Groq", model="llama-3.1-70b")
-    # Groq is OpenAI-compatible, mock should handle it
-    assert r.status_code in (200, 404, 502), (
-        f"Groq model request: got {r.status_code} {r.text[:200]}"
+    assert r.status_code == 200, (
+        f"Groq model request failed: {r.status_code} {r.text[:200]}"
     )
-    return f"Groq model (llama-3.1-70b) → HTTP {r.status_code} ✓"
+    return f"Groq model (llama-3.1-70b) → HTTP 200 ✓"
 
 
 def t29_mistral_model_routes():
-    """Mistral model routes through gateway correctly."""
+    """Mistral model routes through mock upstream → 200."""
     r = chat(_openai_tok, "Hello Mistral", model="mistral-large-latest")
-    assert r.status_code in (200, 404, 502), (
-        f"Mistral model request: got {r.status_code} {r.text[:200]}"
+    assert r.status_code == 200, (
+        f"Mistral model request failed: {r.status_code} {r.text[:200]}"
     )
-    return f"Mistral model (mistral-large-latest) → HTTP {r.status_code} ✓"
+    return f"Mistral model (mistral-large-latest) → HTTP 200 ✓"
 
 
 def t29_cohere_model_routes():
-    """Cohere model routes through gateway correctly."""
+    """Cohere model routes through mock upstream → 200."""
     r = chat(_openai_tok, "Hello Cohere", model="command-r-plus")
-    assert r.status_code in (200, 404, 502), (
-        f"Cohere model request: got {r.status_code} {r.text[:200]}"
+    assert r.status_code == 200, (
+        f"Cohere model request failed: {r.status_code} {r.text[:200]}"
     )
-    return f"Cohere model (command-r-plus) → HTTP {r.status_code} ✓"
+    return f"Cohere model (command-r-plus) → HTTP 200 ✓"
 
 
 def t29_unknown_model_still_works():
