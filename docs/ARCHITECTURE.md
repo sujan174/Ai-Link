@@ -125,6 +125,9 @@ The heart of AIlink's control plane. Policies are JSON documents that bind **Con
     *   `webhook`: Dispatches async event.
     *   `transform`: Modifies headers/body (e.g., inject system prompt).
     *   `tool_scope`: RBAC for LLM tool calls — `allowed_tools` whitelist + `blocked_tools` blacklist.
+    *   `content_filter`: Built-in pattern-based content filtering (used by guardrail presets).
+    *   `conditional_route`: Branch to different upstreams based on request properties.
+    *   `external_guardrail`: Delegate safety checks to Azure Content Safety, AWS Comprehend, or LlamaGuard.
 
 ### 3.3. Guardrails Engine
 

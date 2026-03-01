@@ -470,6 +470,29 @@ Delegates the guardrail safety check to an external vendor API. Can be extremely
 | `threshold` | Float. Threshold above which a request/response is flagged (vendor-specific) |
 | `on_fail` | `"allow"`, `"deny"`, or `"log"` (default: `"deny"`) |
 
+### `content_filter`
+
+Built-in content filtering used by guardrail presets. Checks request/response text against regex patterns and rejects on match.
+
+```json
+{
+  "action": "content_filter",
+  "patterns": ["ssn", "credit_card", "api_key"],
+  "direction": "request",
+  "on_match": "deny",
+  "message": "Content blocked by safety filter"
+}
+```
+
+| Param | Description |
+|---|---|
+| `patterns` | Array of pattern names (built-in) or regex strings |
+| `direction` | `"request"`, `"response"`, or `"both"` |
+| `on_match` | `"deny"` (block with 403), `"redact"` (scrub and continue), or `"log"` (record only) |
+| `message` | Custom error message when blocked |
+
+> **Note:** This action is primarily used internally by guardrail presets (e.g., `pii_redaction`, `prompt_injection`). For most use cases, prefer the `POST /guardrails/enable` API instead of crafting `content_filter` rules manually.
+
 ---
 
 ## 4. Spend Caps

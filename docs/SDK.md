@@ -560,21 +560,66 @@ with client.with_guardrails(["pii_redaction", "prompt_injection"]) as g:
 npm install @ailink/sdk
 ```
 
-### Quick Start
+### Quick Start — OpenAI Drop-In
+
+The TypeScript SDK provides the same OpenAI-compatible drop-in as Python:
 
 ```typescript
-import { AIlink } from '@ailink/sdk';
+import { AILinkClient } from '@ailink/sdk';
 
-const client = new AIlink({
-  token: 'ailink_v1_proj_abc123_tok_def456',
+const client = new AILinkClient({
+  apiKey: 'ailink_v1_...',
+  gatewayUrl: 'https://gateway.ailink.dev',
+});
+
+// Get a configured OpenAI client — works with openai@4+
+const openai = client.openai();
+
+const response = await openai.chat.completions.create({
+  model: 'gpt-4o',
+  messages: [{ role: 'user', content: 'Hello from TypeScript!' }],
+});
+console.log(response.choices[0].message.content);
+```
+
+**Streaming:**
+
+```typescript
+const stream = await openai.chat.completions.create({
+  model: 'gpt-4o',
+  messages: [{ role: 'user', content: 'Write a haiku' }],
+  stream: true,
+});
+
+for await (const chunk of stream) {
+  process.stdout.write(chunk.choices[0]?.delta?.content ?? '');
+}
+```
+
+**Anthropic Drop-In:**
+
+```typescript
+const anthropic = client.anthropic();
+const message = await anthropic.messages.create({
+  model: 'claude-3-5-sonnet-20241022',
+  max_tokens: 1024,
+  messages: [{ role: 'user', content: 'Hello Claude via AILink!' }],
+});
+```
+
+### Action Gateway (API Proxy)
+
+```typescript
+const client = new AILinkClient({
+  apiKey: 'ailink_v1_proj_abc123_tok_def456',
   gatewayUrl: 'https://gateway.ailink.dev',
   agentName: 'billing-agent',
 });
 
-// GET
+// GET request
 const customers = await client.get('/v1/customers');
 
-// POST
+// POST request
 const charge = await client.post('/v1/charges', {
   body: { amount: 5000, currency: 'usd' },
 });
@@ -588,19 +633,164 @@ const result = await client.post('/v1/charges', {
 });
 ```
 
+### Admin Mode (Management API)
+
+All management resources are available via the admin client:
+
+```typescript
+import { AILinkClient } from '@ailink/sdk';
+
+const admin = AILinkClient.admin({
+  adminKey: 'ailink-admin-test',
+  gatewayUrl: 'http://localhost:8443',
+});
+
+// ── Tokens ──
+const tokens = await admin.tokens.list();
+const newToken = await admin.tokens.create({
+  name: 'prod-agent',
+  credentialId: 'cred-uuid',
+  upstreamUrl: 'https://api.openai.com',
+  circuitBreaker: { enabled: true, failureThreshold: 5 },
+});
+await admin.tokens.delete(newToken.tokenId);
+
+// ── Credentials ──
+const creds = await admin.credentials.list();
+const newCred = await admin.credentials.create({
+  name: 'openai-prod',
+  provider: 'openai',
+  secret: 'sk-...',
+  injectionMode: 'header',
+  injectionHeader: 'Authorization',
+});
+
+// ── Policies ──
+const policies = await admin.policies.list();
+const policy = await admin.policies.create({
+  name: 'rate-limit-60rpm',
+  mode: 'enforce',
+  rules: [
+    { when: { always: true }, then: { action: 'rate_limit', window: '1m', max_requests: 60 } },
+  ],
+});
+
+// ── Guardrails ──
+await admin.guardrails.enable('ailink_v1_...', ['pii_redaction', 'prompt_injection']);
+const status = await admin.guardrails.status('ailink_v1_...');
+await admin.guardrails.disable('ailink_v1_...');
+
+// ── Services ──
+await admin.services.create({
+  name: 'stripe',
+  baseUrl: 'https://api.stripe.com',
+  serviceType: 'generic',
+  credentialId: 'cred-uuid',
+});
+
+// ── Webhooks ──
+await admin.webhooks.create({
+  url: 'https://hooks.example.com/ailink',
+  events: ['policy_violation', 'spend_cap_exceeded'],
+});
+
+// ── Analytics ──
+const summary = await admin.analytics.summary();
+const timeseries = await admin.analytics.timeseries();
+
+// ── Config-as-Code ──
+const yamlConfig = await admin.config.export();
+await admin.config.importYaml(yamlConfig);
+
+// ── Billing ──
+const usage = await admin.billing.usage({ period: '2026-03' });
+```
+
+### Health Polling & Fallback
+
+```typescript
+import { AILinkClient, HealthPoller } from '@ailink/sdk';
+import OpenAI from 'openai';
+
+const client = new AILinkClient({ apiKey: 'ailink_v1_...' });
+const fallback = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// One-shot health check
+if (await client.isHealthy()) {
+  const openai = client.openai();
+  // ... use openai
+} else {
+  // ... use fallback
+}
+
+// Background polling (long-running services)
+const poller = new HealthPoller(client, { interval: 15 });
+poller.start();
+
+const openai = poller.isHealthy ? client.openai() : fallback;
+// ... use openai
+
+poller.stop();
+```
+
+### Guardrail Presets
+
+```typescript
+import { AILinkClient, PRESET_PII_REDACTION, PRESET_PROMPT_INJECTION } from '@ailink/sdk';
+
+// Use typed preset constants
+const admin = AILinkClient.admin({ adminKey: '...' });
+await admin.guardrails.enable('ailink_v1_...', [
+  PRESET_PII_REDACTION,
+  PRESET_PROMPT_INJECTION,
+]);
+```
+
 ### Error Handling
 
 ```typescript
-import { AIlinkError, PolicyDeniedError, ApprovalTimeoutError } from '@ailink/sdk';
+import {
+  AILinkError,
+  PolicyDeniedError,
+  RateLimitError,
+  SpendCapError,
+  ContentBlockedError,
+  AuthenticationError,
+} from '@ailink/sdk';
 
 try {
   const response = await client.post('/v1/charges', { body: { amount: 5000 } });
 } catch (error) {
   if (error instanceof PolicyDeniedError) {
     console.error(`Blocked: ${error.policyName} — ${error.reason}`);
-  } else if (error instanceof ApprovalTimeoutError) {
-    console.error(`Approval timed out`);
+  } else if (error instanceof RateLimitError) {
+    console.error(`Rate limited — retry after ${error.retryAfter}s`);
+  } else if (error instanceof SpendCapError) {
+    console.error('Spend cap exceeded');
+  } else if (error instanceof ContentBlockedError) {
+    console.error('Content blocked by guardrail');
+  } else if (error instanceof AuthenticationError) {
+    console.error('Invalid token');
   }
+}
+```
+
+### Realtime API (WebSocket)
+
+```typescript
+const session = await client.realtime.connect('gpt-4o-realtime-preview');
+await session.send({ type: 'session.update', /* ... */ });
+const event = await session.recv();
+await session.close();
+```
+
+### SSE Streaming (Audit Log Stream)
+
+```typescript
+import { streamSSE } from '@ailink/sdk';
+
+for await (const event of streamSSE('http://localhost:8443/api/v1/audit/stream')) {
+  console.log(event);
 }
 ```
 

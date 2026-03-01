@@ -200,8 +200,22 @@ Real API keys stored in the vault (AES-256-GCM envelope encrypted — never retu
 #### Create Credential
 `POST /credentials`
 ```json
-{ "name": "openai-prod", "provider": "openai", "secret": "sk_live_..." }
+{
+  "name": "openai-prod",
+  "provider": "openai",
+  "secret": "sk_live_...",
+  "injection_mode": "header",
+  "injection_header": "Authorization"
+}
 ```
+
+| Field | Default | Description |
+|---|---|---|
+| `name` | required | Display name |
+| `provider` | required | Provider identifier (e.g., `openai`, `anthropic`, `stripe`) |
+| `secret` | required | The real API key (encrypted at rest) |
+| `injection_mode` | `"header"` | How the secret is injected: `"header"` or `"query"` |
+| `injection_header` | `"Authorization"` | Header name for injection (when mode is `"header"`) |
 
 #### Delete Credential
 `DELETE /credentials/{id}`
@@ -589,3 +603,74 @@ Export/import your full gateway configuration as version-controlled YAML or JSON
   }
 ]
 ```
+
+---
+
+### Prometheus Metrics
+
+#### Scrape Metrics
+`GET /metrics` — Prometheus-compatible text exposition format. No authentication required.
+
+Exposes:
+- `ailink_requests_total` — Counter by method, status, token
+- `ailink_request_duration_seconds` — Histogram of proxy latency
+- `ailink_upstream_errors_total` — Counter by upstream URL and error type
+- `ailink_active_tokens` — Gauge of active tokens
+- `ailink_cache_hits_total` / `ailink_cache_misses_total` — Response cache counters
+
+---
+
+### SSO / OIDC
+
+Register external identity providers for Single Sign-On.
+
+#### List OIDC Providers
+`GET /oidc/providers`
+
+#### Register OIDC Provider
+`POST /oidc/providers`
+```json
+{
+  "name": "okta-prod",
+  "issuer_url": "https://your-org.okta.com",
+  "client_id": "0oa...",
+  "client_secret": "...",
+  "claim_mappings": {
+    "role": "groups",
+    "org_id": "org_claim"
+  }
+}
+```
+
+#### Update OIDC Provider
+`PUT /oidc/providers/{id}`
+
+#### Delete OIDC Provider
+`DELETE /oidc/providers/{id}`
+
+---
+
+### Upstreams
+
+Manage upstream provider configurations and multi-upstream routing.
+
+#### List Upstreams
+`GET /upstreams`
+
+#### Create Upstream
+`POST /upstreams`
+```json
+{
+  "name": "openai-primary",
+  "url": "https://api.openai.com",
+  "weight": 70,
+  "priority": 1,
+  "credential_id": "uuid"
+}
+```
+
+#### Update Upstream
+`PUT /upstreams/{id}`
+
+#### Delete Upstream
+`DELETE /upstreams/{id}`

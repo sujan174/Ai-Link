@@ -13,11 +13,10 @@ docker compose up -d
 ```
 
 This starts:
-- **Dashboard** (Port 3000)
-- **Gateway** (Port 8443)
-- **Postgres** (Database)
-- **Redis** (Caching/Rate Limiting)
-- **Jaeger** (Tracing)
+- **Dashboard** — `http://localhost:3000` (Web UI)
+- **Gateway** — `http://localhost:8443` (Proxy API)
+- **PostgreSQL 16** — Port 5432 (database)
+- **Redis 7** — Port 6379 (cache / rate limiting)
 
 ## 2. Access the Dashboard
 
@@ -33,26 +32,26 @@ ailink-admin-test
 AILink acts as the secure middleman between your application and AI providers (like OpenAI or Anthropic). Let’s set up your first route.
 
 ### Step A: Add a Credential
-1. Go to **Credentials** in the sidebar.
+1. Go to **Vault** in the sidebar.
 2. Click **Add Credential**.
 3. Name it (e.g., `My OpenAI Key`).
-4. Select the provider (e.g., `OpenAI`).
+4. Select the provider (e.g., `openai`).
 5. Paste your *real* OpenAI API key (`sk-...`). 
-> **Note:** This key is encrypted and stored in AILink's vault. Your application will never see this key.
+> **Note:** This key is encrypted at rest with AES-256-GCM envelope encryption. Your application will never see this key.
 
-### Step B: Create a Policy
+### Step B: Create a Policy (Optional)
 Policies define rules for the traffic passing through AILink.
-1. Go to **Policies**.
+1. Go to **Guardrails** in the sidebar.
 2. Click **Create Policy**.
 3. Choose a template (e.g., **A/B Model Split**) or write a custom condition.
 4. Save the policy. 
 
 ### Step C: Generate a Virtual Token
-1. Go to **Tokens**.
+1. Go to **Agents** (Virtual Keys) in the sidebar.
 2. Click **Create Token**.
 3. Name it (e.g., `Dev Environment Token`).
 4. Select the **Credential** you created in Step A.
-5. Apply the **Policy** you created in Step B.
+5. Optionally apply the **Policy** you created in Step B.
 6. Click Save and **copy the generated Token ID** (it starts with `ailink_v1_...`).
 
 ## 4. Make Your First Request
@@ -83,6 +82,29 @@ response = oai.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
+### TypeScript Example
+Install the SDK:
+```bash
+npm install @ailink/sdk
+```
+
+```typescript
+import { AIlink } from '@ailink/sdk';
+
+const client = new AIlink({
+  token: 'ailink_v1_YOUR_TOKEN_HERE',
+  gatewayUrl: 'http://localhost:8443',
+});
+
+const response = await client.post('/v1/chat/completions', {
+  body: {
+    model: 'gpt-4o-mini',
+    messages: [{ role: 'user', content: 'Hello AILink!' }],
+  },
+});
+console.log(response.choices[0].message.content);
+```
+
 ### cURL Example
 ```bash
 curl -X POST http://localhost:8443/v1/chat/completions \
@@ -98,9 +120,11 @@ curl -X POST http://localhost:8443/v1/chat/completions \
 Go back to your Dashboard at [http://localhost:3000](http://localhost:3000):
 - **Audit Logs:** See exactly what prompt was sent, which policy approved it, and the latency.
 - **Analytics:** View token usage and estimated cost charts.
-- **Experiments:** If you used the A/B Split policy, compare model latency and cost metrics!
+- **Sessions:** Track multi-turn agent conversations with cost attribution.
 
 ## Moving to Production
 When you're ready to deploy AILink for real traffic:
-- Update the default secrets in `docker-compose.yml`.
-- See the [Deployment Guide](DEPLOYMENT.md) for more robust hosting details.
+- Change `AILINK_MASTER_KEY` and `AILINK_ADMIN_KEY` in `docker-compose.yml`.
+- Set `DASHBOARD_SECRET` to a strong random value.
+- See the [Deployment Guide](DEPLOYMENT.md) for production hosting details.
+- See the [Self-Hosting Guide](self-hosting.md) for single-server setups.

@@ -147,19 +147,25 @@ AIlink occupies a unique intersection that no existing product covers:
 
 ## Product Roadmap
 
-### Phase 1: Core Gateway (Now → 8 Weeks)
-Docker Compose, PG+Redis, CLI management, Slack HITL, Python & TypeScript SDKs, shadow mode, audit logs.
+### ✅ Shipped
 
-### Phase 2: SaaS Platform (Weeks 9–12)
-Next.js dashboard, auto key rotation, Stripe billing, multi-tenancy, Helm charts.
+- **Rust Gateway** — High-performance reverse proxy (Axum), policy engine, circuit breaker, response caching, MCP tool injection, guardrail presets (22 categories, 100+ patterns), session tracing, spend caps, HITL approvals, multi-upstream load balancing
+- **Next.js Dashboard** — Full management UI, analytics, audit logs, sessions, playground, project switcher, command palette, mobile nav
+- **Python SDK** — OpenAI drop-in, async, HITL, fallback patterns, health polling, session tracing, guardrails, BYOK passthrough, LangChain/CrewAI/LlamaIndex integrations
+- **TypeScript SDK** — Full parity: OpenAI/Anthropic drop-in, admin management API, health polling, guardrail presets, realtime WebSocket, SSE streaming
+- **Universal Model Router** — Auto-detect and translate between OpenAI, Anthropic Claude, and Google Gemini formats
+- **MCP Integration** — Register MCP servers, auto-discover tools, autonomous tool execution loop (up to 10 iterations)
+- **Docker Compose** — One-command self-hosted deployment with PostgreSQL 16, Redis 7, optional Jaeger tracing
 
-### Phase 3: Ecosystem (Weeks 13+)
-- Go SDK
-- MCP gateway support (secure Model Context Protocol tool calls)  
-- HashiCorp Vault & AWS KMS backends
-- SSO / RBAC
-- Terraform provider (policy-as-code)
-- SOC 2 Type II certification
+### 🔜 Next
+
+- **Provider Breadth** — Azure OpenAI, Bedrock, Groq, Mistral, Together, Cohere, Ollama
+- **MCP Auto-Discovery + OAuth 2.0** — Auto-initialize from URL + OAuth 2.0 token refresh
+- **Helm Charts** — Production Kubernetes deployment
+- **Terraform Provider** — Policy-as-code and GitOps workflows
+- **Go SDK** — For Go-native agent frameworks
+- **HashiCorp Vault / AWS KMS** — External master key management
+- **SOC 2 Type II** — Compliance certification
 
 ---
 

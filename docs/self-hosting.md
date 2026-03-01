@@ -1,58 +1,114 @@
-# Self-Hosting AILink 🚀
+# Self-Hosting AILink
 
-Run the full AILink stack (Gateway + Dashboard + Database) on your machine or a server in a few minutes.
+Run the full AILink stack (Gateway + Dashboard + PostgreSQL + Redis) on your machine or server.
 
 ## Prerequisites
 
-*   [Docker](https://docs.docker.com/get-docker/) installed and running.
-*   `git` (optional, to clone the repo).
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose installed
+- At least **2 GB RAM** available for the stack
+- `git` (to clone the repo)
 
 ## Quick Start
 
-1.  **Clone the repository**
-    ```bash
-    git clone https://github.com/sujan174/ailink.git
-    cd ailink
-    ```
+### 1. Clone the Repository
+```bash
+git clone https://github.com/sujan174/ailink.git
+cd ailink
+```
 
-2.  **Start the Stack**
-    Run the following command to build and start all services:
-    ```bash
-    docker compose up -d --build
-    ```
+### 2. Start the Stack
+```bash
+docker compose up -d --build
+```
 
-    *This may take a few minutes the first time as it compiles the Rust Gateway and builds the Next.js Dashboard.*
+> This may take 5–10 minutes the first time as it compiles the Rust gateway and builds the Next.js dashboard.
 
-3.  **Access the Dashboard**
-    Open your browser and navigate to:
-    👉 **[http://localhost:3000](http://localhost:3000)**
+### 3. Access the Dashboard
 
-    *   **Default Admin Key**: `ailink-admin-test` (configured in `docker-compose.yml`)
+Open your browser → **[http://localhost:3000](http://localhost:3000)**
+
+- **Default Admin Key**: `ailink-admin-test` (set in `docker-compose.yml`)
 
 ## What's Running?
 
-| Service | URL | Description |
-|---------|-----|-------------|
-| **Dashboard** | `http://localhost:3000` | Web UI for managing policies, tokens, and logs. |
-| **Gateway** | `http://localhost:8443` | The AI Proxy API. Point your LLM clients here. |
-| **Postgres** | `localhost:5432` | Database (User: `postgres`, Pass: `password`). |
-| **Redis** | `localhost:6379` | Cache and Rate Limiting store. |
+| Service | URL / Port | Description |
+|---------|-----------|-------------|
+| **Dashboard** | `http://localhost:3000` | Web UI for managing tokens, policies, credentials, and audit logs |
+| **Gateway** | `http://localhost:8443` | The AI proxy. Point your LLM clients and agents here |
+| **PostgreSQL** | `localhost:5432` | Database (User: `postgres`, Pass: `password`) |
+| **Redis** | `localhost:6379` | Cache, rate limiting, spend counters, HITL queues |
+
+### Optional Services
+
+| Service | Command to Enable | URL |
+|---------|-------------------|-----|
+| **Jaeger** (Tracing) | `docker compose --profile tracing up -d` | `http://localhost:16686` |
+| **Mock Upstream** (Testing) | `docker compose up mock-upstream -d` | `http://localhost:9000` |
 
 ## Configuration
 
-You can customize the setup by editing `docker-compose.yml`:
+Edit `docker-compose.yml` to customize your deployment:
 
-*   **AILink Master Key**: `AILINK_MASTER_KEY` (Change this for production!)
-*   **Admin Key**: `AILINK_ADMIN_KEY`
-*   **Ports**: Change `8443:8443` or `3000:3000` if you have conflicts.
+| Variable | What It Does | Default |
+|----------|-------------|---------|
+| `AILINK_MASTER_KEY` | Encryption key for the credential vault. **Change for production** | dev key |
+| `AILINK_ADMIN_KEY` | Root admin API key for the Management API | `ailink-admin-test` |
+| `DASHBOARD_SECRET` | Shared secret for dashboard ↔ gateway auth | `ailink-dashboard-dev-secret` |
+| `DASHBOARD_ORIGIN` | CORS origin for the dashboard | `http://localhost:3000` |
+| Port `8443` | Gateway port (change `"8443:8443"` if conflicts) | `8443` |
+| Port `3000` | Dashboard port (change `"3000:3000"` if conflicts) | `3000` |
+
+## Verifying the Installation
+
+```bash
+# Check all containers are healthy
+docker compose ps
+
+# Check gateway health
+curl http://localhost:8443/healthz
+
+# Check gateway readiness (Postgres + Redis connected)
+curl http://localhost:8443/readyz
+```
+
+## Updating
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+## Stopping
+
+```bash
+# Stop all services (data is preserved in Docker volumes)
+docker compose down
+
+# Stop and DELETE all data (start fresh)
+docker compose down -v
+```
 
 ## Troubleshooting
 
-**"Connection Refused"**
-Ensure Docker is running. Check `docker ps` to see if containers are healthy.
+### "Connection Refused"
+Ensure Docker is running. Check `docker compose ps` — all containers should show `healthy`.
 
-**"Gateway container keeps restarting"**
-Check logs: `docker logs ailink-gateway-1`. Usually due to database connection issues.
+### "Gateway container keeps restarting"
+Check logs: `docker logs ailink-gateway-1`. Usually indicates a database connection issue — ensure PostgreSQL is healthy first.
 
-**"Dashboard shows Network Error"**
-Ensure the Dashboard can reach the Gateway. The default config uses `http://localhost:8443` for client-side browser calls.
+### "Dashboard shows Network Error"
+The dashboard makes browser-side requests to `NEXT_PUBLIC_API_URL` (default: `http://localhost:8443/api/v1`). Ensure:
+1. The gateway container is running and healthy
+2. Port 8443 is accessible from your browser
+3. `DASHBOARD_ORIGIN` matches the URL you're accessing the dashboard from
+
+### "Build takes too long"
+The Rust gateway compilation is CPU-intensive. On the first build:
+- Ensure at least 2 CPU cores available to Docker
+- Subsequent builds use Docker layer caching and are much faster
+
+## Next Steps
+
+- **[Quickstart Guide](QUICKSTART.md)** — Create your first credential, policy, and token
+- **[Deployment Guide](DEPLOYMENT.md)** — Production deployment with Kubernetes
+- **[SDK Guide](SDK.md)** — Python and TypeScript client libraries
