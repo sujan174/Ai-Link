@@ -5,6 +5,7 @@ import { Sidebar } from "@/components/sidebar";
 import { Toaster } from "@/components/ui/sonner";
 import { ProjectProvider } from "@/contexts/project-context";
 import { ThemeProvider } from "next-themes";
+import dynamic from "next/dynamic";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -25,10 +26,12 @@ export const metadata: Metadata = {
 };
 
 import { Breadcrumbs } from "@/components/breadcrumbs";
-import { CommandPalette } from "@/components/command-palette";
 import { MobileNav } from "@/components/mobile-nav";
-import { NotificationBell } from "@/components/notification-bell";
-import { ProjectSwitcher } from "@/components/project-switcher";
+
+// Lazy-load non-critical header components (code-split, not needed for first paint)
+const CommandPalette = dynamic(() => import("@/components/command-palette").then(m => m.CommandPalette), { loading: () => null });
+const NotificationBell = dynamic(() => import("@/components/notification-bell").then(m => m.NotificationBell), { loading: () => null });
+const ProjectSwitcher = dynamic(() => import("@/components/project-switcher").then(m => m.ProjectSwitcher), { loading: () => null });
 
 export default function RootLayout({
   children,

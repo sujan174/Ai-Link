@@ -17,12 +17,10 @@ import {
     Sun,
     Menu,
     FlaskConical,
-    CreditCard,
     Activity,
-    Plug,
     LockKeyhole,
-    Webhook,
     Settings,
+    Layers,
 } from "lucide-react";
 import { ProjectSwitcher } from "@/components/project-switcher";
 import { Button } from "@/components/ui/button";
@@ -49,36 +47,29 @@ export function MobileNav() {
 
     const groups = [
         {
-            label: "Platform",
+            label: "Overview",
             routes: [
-                { href: "/", label: "Overview", icon: LayoutDashboard },
-                { href: "/playground", label: "Playground", icon: FlaskConical },
-                { href: "/audit", label: "Traces & Logs", icon: ClipboardList },
+                { href: "/", label: "Dashboard", icon: LayoutDashboard },
                 { href: "/analytics", label: "Analytics", icon: BarChart3 },
-                { href: "/billing", label: "Usage & Billing", icon: CreditCard },
+                { href: "/audit", label: "Audit Logs", icon: ClipboardList },
+                { href: "/sessions", label: "Sessions", icon: Layers },
             ]
         },
         {
-            label: "Gateway",
+            label: "Operate",
             routes: [
+                { href: "/virtual-keys", label: "Agents", icon: Key },
                 { href: "/upstreams", label: "Upstreams", icon: Activity },
-                { href: "/services", label: "Services", icon: Plug },
-                { href: "/policies", label: "Policies", icon: ShieldAlert },
-                { href: "/credentials", label: "Credentials", icon: Fingerprint },
-            ]
-        },
-        {
-            label: "Security",
-            routes: [
-                { href: "/tokens", label: "Agent Tokens", icon: Key },
-                { href: "/keys", label: "API Keys", icon: LockKeyhole },
+                { href: "/guardrails", label: "Guardrails", icon: ShieldAlert },
+                { href: "/playground", label: "Playground", icon: FlaskConical },
                 { href: "/approvals", label: "Approvals", icon: CheckCircle },
             ]
         },
         {
-            label: "Developers",
+            label: "Configure",
             routes: [
-                { href: "/webhooks", label: "Webhooks", icon: Webhook },
+                { href: "/vault", label: "Vault", icon: Fingerprint },
+                { href: "/api-keys", label: "API Keys", icon: LockKeyhole },
                 { href: "/settings", label: "Settings", icon: Settings },
             ]
         }
@@ -96,10 +87,10 @@ export function MobileNav() {
                 <div className="flex flex-col gap-3 h-full">
                     {/* Logo */}
                     <div className="flex items-center gap-2 font-bold text-lg">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-violet-600 text-white text-sm font-black">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-teal-500 to-teal-600 text-white text-sm font-black">
                             A
                         </div>
-                        <span className="bg-gradient-to-r from-blue-500 to-violet-500 bg-clip-text text-transparent">
+                        <span className="gradient-text font-semibold">
                             AIlink
                         </span>
                     </div>

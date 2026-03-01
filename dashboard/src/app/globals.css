@@ -301,50 +301,6 @@
   .dot-danger { background-color: #E11D48; }
   .dot-neutral { background-color: #64748B; }
 
-  /* ── KPI Icon Circles ── */
-  .icon-circle-blue,
-  .icon-circle-emerald,
-  .icon-circle-amber,
-  .icon-circle-violet,
-  .icon-circle-teal,
-  .icon-circle-rose {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 0.5rem;
-    padding: 0.5rem;
-  }
-
-  .icon-circle-blue {
-    background-color: rgba(99, 102, 241, 0.10);
-    color: #818CF8;
-  }
-
-  .icon-circle-emerald {
-    background-color: rgba(16, 185, 129, 0.10);
-    color: #34D399;
-  }
-
-  .icon-circle-amber {
-    background-color: rgba(245, 158, 11, 0.10);
-    color: #FBBF24;
-  }
-
-  .icon-circle-violet {
-    background-color: rgba(124, 58, 237, 0.10);
-    color: #A78BFA;
-  }
-
-  .icon-circle-teal {
-    background-color: rgba(20, 184, 166, 0.10);
-    color: #2DD4BF;
-  }
-
-  .icon-circle-rose {
-    background-color: rgba(225, 29, 72, 0.10);
-    color: #FB7185;
-  }
-
   /* ── Page Transition ── */
   .page-enter {
     animation: fade-in 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94), 
@@ -360,23 +316,5 @@
   .surface-raised {
     background: var(--surface-raised);
     border: 1px solid var(--border);
-  }
-
-  /* ── Active indicator (sidebar) ── */
-  .nav-active-indicator {
-    position: absolute;
-    left: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    height: 1rem;
-    width: 2px;
-    border-radius: 0 2px 2px 0;
-    background: var(--primary);
-    box-shadow: 0 0 8px rgba(20, 184, 166, 0.5);
-  }
-
-  /* ── Violet glow kept for backward compat ── */
-  .violet-glow {
-    box-shadow: 0 0 0 1px rgba(20, 184, 166, 0.3), 0 4px 16px rgba(20, 184, 166, 0.12);
   }
 }

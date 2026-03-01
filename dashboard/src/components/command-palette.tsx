@@ -36,13 +36,14 @@ export function CommandPalette() {
         {
             heading: "Navigation",
             items: [
-                { icon: Search, name: "Traffic Inspector", shortcut: "G T", action: () => router.push("/audit") },
-                { icon: Key, name: "Tokens", shortcut: "G K", action: () => router.push("/tokens") },
-                { icon: Shield, name: "Policies", shortcut: "G P", action: () => router.push("/policies") },
+                { icon: Search, name: "Audit Logs", shortcut: "G T", action: () => router.push("/audit") },
+                { icon: Key, name: "Agents", shortcut: "G K", action: () => router.push("/virtual-keys") },
+                { icon: Shield, name: "Guardrails", shortcut: "G P", action: () => router.push("/guardrails") },
                 { icon: CheckCircle2, name: "Approvals", shortcut: "G A", action: () => router.push("/approvals") },
                 { icon: Calculator, name: "Analytics", shortcut: "G Y", action: () => router.push("/analytics") },
-                { icon: CreditCard, name: "Credentials", shortcut: "G C", action: () => router.push("/credentials") },
+                { icon: CreditCard, name: "Vault", shortcut: "G C", action: () => router.push("/vault") },
                 { icon: Zap, name: "Playground", shortcut: "G L", action: () => router.push("/playground") },
+                { icon: Settings, name: "Settings", shortcut: "G S", action: () => router.push("/settings") },
             ]
         },
         {
