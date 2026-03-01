@@ -8,7 +8,6 @@
 
 | # | Gap | Why Critical | Effort |
 |---|-----|-------------|--------|
-| **1** | **TypeScript SDK** (`@ailink/sdk`) — parity with Python SDK (HITL, trace, fallback, `openai()` wrapper) | ~50% of AI devs use TypeScript. Portkey, LiteLLM, Helicone, TensorZero, Bifrost all have TS SDKs. AILink is invisible to this audience. | ~1 week |
 | **2** | **MCP Auto-Discovery + OAuth 2.0 token refresh** — when a URL is provided, auto-`initialize` + `list_tools`; store `client_id/secret/token_endpoint`, refresh token when expired | Bifrost has auto-discovery + OAuth 2.0. LiteLLM added native MCP (Nov 2025). Kong ships MCP OAuth2 plugin. Our manual-registration-only approach is falling behind fast. Architecture is ready (`client.rs` + `registry.rs` + `SecretStore` trait). | ~1 week |
 | **3** | **Provider Breadth** — Azure OpenAI, Bedrock, Groq, Mistral, Together, Cohere, Ollama | Enterprise will reject in the first 5 min if their provider isn't supported. | ~2 days/provider |
 

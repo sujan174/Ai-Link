@@ -7,12 +7,13 @@
 </p>
 
 <p align="center">
-  <a href="#-quickstart"><strong>Quickstart</strong></a> ·
-  <a href="docs/API.md"><strong>API Reference</strong></a> ·
-  <a href="docs/SDK.md"><strong>SDK Guide</strong></a> ·
-  <a href="docs/POLICIES.md"><strong>Policy Guide</strong></a> ·
-  <a href="docs/ARCHITECTURE.md"><strong>Architecture</strong></a> ·
-  <a href="docs/SECURITY.md"><strong>Security</strong></a>
+  <a href="docs/getting-started/quickstart.md"><strong>Quickstart</strong></a> ·
+  <a href="docs/reference/api.md"><strong>API Reference</strong></a> ·
+  <a href="docs/sdks/python.md"><strong>Python SDK</strong></a> ·
+  <a href="docs/sdks/typescript.md"><strong>TypeScript SDK</strong></a> ·
+  <a href="docs/guides/policies.md"><strong>Policies</strong></a> ·
+  <a href="docs/reference/architecture.md"><strong>Architecture</strong></a> ·
+  <a href="docs/reference/security.md"><strong>Security</strong></a>
 </p>
 
 <p align="center">
@@ -179,7 +180,7 @@ print(resp.choices[0].message.content)
 
 **Works with any OpenAI-compatible SDK** — LangChain, CrewAI, LlamaIndex, Vercel AI SDK — just point `base_url` at AILink.
 
-📚 **[Full Quickstart Guide →](docs/QUICKSTART.md)**
+📚 **[Full Quickstart Guide →](docs/getting-started/quickstart.md)**
 
 ---
 
@@ -211,7 +212,7 @@ print(resp.choices[0].message.content)
 | **Data** | PostgreSQL 16 + Redis 7 (tiered cache) |
 | **Encryption** | AES-256-GCM envelope encryption |
 | **Dashboard** | Next.js 16 (App Router, Tailwind, ShadCN) |
-| **SDKs** | Python (TypeScript planned) |
+| **SDKs** | Python & TypeScript |
 | **Observability** | OpenTelemetry → Jaeger / Langfuse / DataDog / Prometheus |
 | **Deployment** | Docker Compose / Kubernetes (Helm planned) |
 
@@ -231,6 +232,7 @@ ailink/
 │   └── migrations/           # SQL migrations (001–036)
 ├── dashboard/                # Next.js admin UI
 ├── sdk/python/               # Python SDK (pip install ailink)
+├── sdk/typescript/           # TypeScript SDK (npm install @ailink/sdk)
 ├── tests/                    # All tests in one place
 │   ├── unit/                 # Pure unit tests — no gateway needed
 │   ├── integration/          # Live gateway + docker tests
@@ -240,6 +242,11 @@ ailink/
 │   ├── conftest.py           # Shared pytest fixtures
 │   └── ci_security_check.sh # CI security gate
 ├── docs/                     # Documentation
+│   ├── getting-started/      # Quickstart & self-hosting
+│   ├── sdks/                 # Python & TypeScript SDK guides
+│   ├── guides/               # Policies, providers, frameworks
+│   ├── reference/            # API, architecture, security
+│   └── deployment/           # Docker & Kubernetes
 └── docker-compose.yml
 ```
 
@@ -249,14 +256,17 @@ ailink/
 
 | Doc | Description |
 |---|---|
-| **[Quickstart](docs/QUICKSTART.md)** | Zero to running in 5 minutes |
-| **[API Reference](docs/API.md)** | Every endpoint, request/response format |
-| **[Policy Guide](docs/POLICIES.md)** | Authoring conditions, actions, shadow mode |
-| **[SDK Guide](docs/SDK.md)** | Python & TypeScript, LangChain / CrewAI integration |
-| **[Architecture](docs/ARCHITECTURE.md)** | System design, caching, data flow |
-| **[Security](docs/SECURITY.md)** | Threat model, encryption, key lifecycle |
-| **[Deployment](docs/DEPLOYMENT.md)** | Docker, Kubernetes, env vars |
-| **[Framework Integrations](docs/FRAMEWORK_INTEGRATIONS.md)** | LangChain, CrewAI, LlamaIndex drop-in support |
+| **[Quickstart](docs/getting-started/quickstart.md)** | Zero to running in 5 minutes |
+| **[API Reference](docs/reference/api.md)** | Every endpoint, request/response format |
+| **[Policy Guide](docs/guides/policies.md)** | Authoring conditions, actions, shadow mode |
+| **[Python SDK](docs/sdks/python.md)** | OpenAI drop-in, LangChain / CrewAI, async, resilience |
+| **[TypeScript SDK](docs/sdks/typescript.md)** | OpenAI/Anthropic drop-in, SSE streaming, typed errors |
+| **[Supported Providers](docs/guides/providers.md)** | All 10 LLM providers — model prefixes, auth, feature matrix |
+| **[Architecture](docs/reference/architecture.md)** | System design, caching, data flow |
+| **[Security](docs/reference/security.md)** | Threat model, encryption, key lifecycle |
+| **[Docker Deployment](docs/deployment/docker.md)** | Docker Compose for dev and production |
+| **[Kubernetes](docs/deployment/kubernetes.md)** | K8s manifests, health probes, scaling |
+| **[Framework Integrations](docs/guides/framework-integrations.md)** | LangChain, CrewAI, LlamaIndex drop-in support |
 
 ---
 

@@ -149,6 +149,137 @@ pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body
     (body, result_slot)
 }
 
+/// FIX(X2/X3): Tee an SSE stream with per-chunk translation.
+///
+/// Identical to [`tee_sse_stream`] except each text chunk is passed through
+/// `translate_fn(raw_bytes, model)` before being sent to the client.
+/// This is used for Anthropic and Gemini, which return SSE in their own
+/// event format — the translation converts each chunk into OpenAI
+/// `chat.completion.chunk` SSE before the client sees it.
+///
+/// The StreamAccumulator receives the **translated** SSE lines so that
+/// token/cost extraction works correctly (it expects OpenAI format).
+pub fn tee_translating_sse_stream<F>(
+    upstream_resp: reqwest::Response,
+    start: Instant,
+    model: String,
+    translate_fn: F,
+) -> (Body, StreamResultSlot)
+where
+    F: Fn(&[u8], &str) -> Vec<u8> + Send + 'static,
+{
+    let result_slot: StreamResultSlot = Arc::new(Mutex::new(None));
+    let slot_for_bg = result_slot.clone();
+
+    let accumulator = Arc::new(Mutex::new(StreamAccumulator::new_with_start(start)));
+    let mut byte_stream = upstream_resp.bytes_stream();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1024);
+
+    tokio::spawn(async move {
+        let mut first = true;
+        let mut utf8_residual: Vec<u8> = Vec::new();
+
+        while let Some(chunk_result) = byte_stream.next().await {
+            match chunk_result {
+                Ok(bytes) => {
+                    let mut acc_guard = accumulator.lock().await;
+
+                    // Record TTFT on first data chunk
+                    if first {
+                        first = false;
+                        acc_guard.set_ttft_ms(start.elapsed().as_millis() as u64);
+                    }
+
+                    // Combine residual bytes from previous chunk
+                    let combined = if utf8_residual.is_empty() {
+                        bytes.to_vec()
+                    } else {
+                        let mut buf = std::mem::take(&mut utf8_residual);
+                        buf.extend_from_slice(&bytes);
+                        buf
+                    };
+
+                    // Find longest valid UTF-8 prefix
+                    let (valid_bytes, leftover) = match std::str::from_utf8(&combined) {
+                        Ok(_) => (combined.as_slice(), &[][..]),
+                        Err(e) => {
+                            let valid_up_to = e.valid_up_to();
+                            (&combined[..valid_up_to], &combined[valid_up_to..])
+                        }
+                    };
+                    utf8_residual = leftover.to_vec();
+
+                    if valid_bytes.is_empty() {
+                        drop(acc_guard);
+                        continue;
+                    }
+
+                    // Translate provider SSE → OpenAI SSE
+                    let translated = translate_fn(valid_bytes, &model);
+
+                    // Feed translated SSE to accumulator
+                    if let Ok(translated_str) = std::str::from_utf8(&translated) {
+                        let mut done = false;
+                        for line in translated_str.lines() {
+                            if acc_guard.push_sse_line(line) {
+                                done = true;
+                            }
+                        }
+
+                        if done {
+                            let mut slot_guard = slot_for_bg.lock().await;
+                            if slot_guard.is_none() {
+                                let finished_acc = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
+                                *slot_guard = Some(finished_acc.finish());
+                            }
+                        }
+                    }
+
+                    drop(acc_guard);
+
+                    // Send translated bytes to client
+                    if tx.send(Ok(Bytes::from(translated))).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let sse_error = format!(
+                        "data: {{\"error\":{{\"message\":\"upstream connection lost: {}\",\"type\":\"stream_error\"}}}}\n\n",
+                        e.to_string().replace('"', "'")
+                    );
+                    let _ = tx.send(Ok(Bytes::from(sse_error))).await;
+
+                    {
+                        let mut slot_guard = slot_for_bg.lock().await;
+                        if slot_guard.is_none() {
+                            let mut acc_guard = accumulator.lock().await;
+                            let partial = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
+                            *slot_guard = Some(partial.finish());
+                        }
+                    }
+
+                    let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string());
+                    let _ = tx.send(Err(io_err)).await;
+                    break;
+                }
+            }
+        }
+
+        // EOF: ensure result_slot is populated
+        let mut slot_guard = slot_for_bg.lock().await;
+        if slot_guard.is_none() {
+            let mut acc_guard = accumulator.lock().await;
+            let finished_acc = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
+            *slot_guard = Some(finished_acc.finish());
+        }
+    });
+
+    let mapped = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let body = Body::from_stream(mapped);
+    (body, result_slot)
+}
+
 /// Wait for the stream result to be populated, with a timeout.
 /// Returns `None` if the timeout expires before the stream completes.
 pub async fn wait_for_stream_result(
@@ -169,4 +300,234 @@ pub async fn wait_for_stream_result(
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+}
+
+/// Tee a Bedrock binary event stream (`application/vnd.amazon.eventstream`)
+/// into two consumers, translating binary frames to OpenAI SSE on the fly:
+/// - An [`axum::body::Body`] that streams translated SSE to the HTTP client
+/// - A [`StreamResultSlot`] for accumulated usage/audit data
+///
+/// This differs from [`tee_sse_stream`] because Bedrock uses a binary framing
+/// protocol, not text-based SSE. We:
+/// 1. Buffer incoming binary chunks (frames can span TCP boundaries)
+/// 2. Decode complete binary frames using `decode_bedrock_event_stream`
+/// 3. Translate each Bedrock event to an OpenAI `chat.completion.chunk` SSE line
+/// 4. Pipe the translated SSE text to the client
+/// 5. Feed SSE lines to StreamAccumulator for cost/audit tracking
+pub fn tee_bedrock_stream(
+    upstream_resp: reqwest::Response,
+    start: Instant,
+    model: String,
+) -> (Body, StreamResultSlot) {
+    let result_slot: StreamResultSlot = Arc::new(Mutex::new(None));
+    let slot_for_bg = result_slot.clone();
+
+    let accumulator = Arc::new(Mutex::new(StreamAccumulator::new_with_start(start)));
+    let mut byte_stream = upstream_resp.bytes_stream();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1024);
+
+    tokio::spawn(async move {
+        let mut first = true;
+        // Buffer for accumulating binary data across TCP chunks.
+        // Bedrock binary frames can be split across chunk boundaries.
+        let mut binary_buffer: Vec<u8> = Vec::new();
+        let chunk_id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
+
+        while let Some(chunk_result) = byte_stream.next().await {
+            match chunk_result {
+                Ok(bytes) => {
+                    let mut acc_guard = accumulator.lock().await;
+
+                    if first {
+                        first = false;
+                        acc_guard.set_ttft_ms(start.elapsed().as_millis() as u64);
+                    }
+
+                    // Append new bytes to the binary buffer
+                    binary_buffer.extend_from_slice(&bytes);
+
+                    // Try to decode complete frames from the buffer
+                    let mut sse_output = String::new();
+                    let mut consumed = 0;
+
+                    while consumed + 12 <= binary_buffer.len() {
+                        let remaining = &binary_buffer[consumed..];
+                        if remaining.len() < 4 {
+                            break;
+                        }
+                        let total_length = u32::from_be_bytes([
+                            remaining[0], remaining[1], remaining[2], remaining[3]
+                        ]) as usize;
+
+                        if total_length < 16 || remaining.len() < total_length {
+                            break; // Incomplete frame, wait for more data
+                        }
+
+                        // Decode this single complete frame
+                        let frame_bytes = &remaining[..total_length];
+                        let events = crate::proxy::model_router::decode_bedrock_event_stream(frame_bytes);
+
+                        for (event_type, payload) in &events {
+                            match event_type.as_str() {
+                                "messageStart" => {
+                                    let role = payload.get("role")
+                                        .and_then(|r| r.as_str())
+                                        .unwrap_or("assistant");
+                                    sse_output.push_str(&crate::proxy::model_router::openai_sse_chunk(
+                                        &chunk_id, &model,
+                                        serde_json::json!({"role": role, "content": ""}),
+                                        None,
+                                    ));
+                                }
+                                "contentBlockStart" => {
+                                    if let Some(start) = payload.get("start") {
+                                        if let Some(tool_use) = start.get("toolUse") {
+                                            let index = payload.get("contentBlockIndex")
+                                                .and_then(|i| i.as_u64())
+                                                .unwrap_or(0);
+                                            let name = tool_use.get("name")
+                                                .and_then(|n| n.as_str()).unwrap_or("");
+                                            let tool_id = tool_use.get("toolUseId")
+                                                .and_then(|id| id.as_str()).unwrap_or("");
+                                            sse_output.push_str(&crate::proxy::model_router::openai_sse_chunk(
+                                                &chunk_id, &model,
+                                                serde_json::json!({"tool_calls": [{
+                                                    "index": index,
+                                                    "id": tool_id,
+                                                    "type": "function",
+                                                    "function": {"name": name, "arguments": ""}
+                                                }]}),
+                                                None,
+                                            ));
+                                        }
+                                    }
+                                }
+                                "contentBlockDelta" => {
+                                    if let Some(delta) = payload.get("delta") {
+                                        if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                                            sse_output.push_str(&crate::proxy::model_router::openai_sse_chunk(
+                                                &chunk_id, &model,
+                                                serde_json::json!({"content": text}),
+                                                None,
+                                            ));
+                                        }
+                                        if let Some(input) = delta.get("toolUse")
+                                            .and_then(|tu| tu.get("input"))
+                                        {
+                                            let input_str = if input.is_string() {
+                                                input.as_str().unwrap_or("").to_string()
+                                            } else {
+                                                serde_json::to_string(input).unwrap_or_default()
+                                            };
+                                            let index = payload.get("contentBlockIndex")
+                                                .and_then(|i| i.as_u64())
+                                                .unwrap_or(0);
+                                            sse_output.push_str(&crate::proxy::model_router::openai_sse_chunk(
+                                                &chunk_id, &model,
+                                                serde_json::json!({"tool_calls": [{
+                                                    "index": index,
+                                                    "function": {"arguments": input_str}
+                                                }]}),
+                                                None,
+                                            ));
+                                        }
+                                    }
+                                }
+                                "messageStop" => {
+                                    let finish = match payload.get("stopReason")
+                                        .and_then(|s| s.as_str())
+                                    {
+                                        Some("end_turn") => "stop",
+                                        Some("tool_use") => "tool_calls",
+                                        Some("max_tokens") => "length",
+                                        Some("stop_sequence") => "stop",
+                                        Some("content_filtered") => "content_filter",
+                                        _ => "stop",
+                                    };
+                                    sse_output.push_str(&crate::proxy::model_router::openai_sse_chunk(
+                                        &chunk_id, &model,
+                                        serde_json::json!({}),
+                                        Some(finish),
+                                    ));
+                                    sse_output.push_str("data: [DONE]\n\n");
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        consumed += total_length;
+                    }
+
+                    // Remove consumed bytes from buffer
+                    if consumed > 0 {
+                        binary_buffer.drain(..consumed);
+                    }
+
+                    // Feed translated SSE lines to accumulator
+                    if !sse_output.is_empty() {
+                        let mut done = false;
+                        for line in sse_output.lines() {
+                            if acc_guard.push_sse_line(line) {
+                                done = true;
+                            }
+                        }
+                        if done {
+                            let mut slot_guard = slot_for_bg.lock().await;
+                            if slot_guard.is_none() {
+                                let finished = std::mem::replace(
+                                    &mut *acc_guard, StreamAccumulator::new(),
+                                );
+                                *slot_guard = Some(finished.finish());
+                            }
+                        }
+                        drop(acc_guard);
+
+                        // Send translated SSE to client
+                        if tx.send(Ok(Bytes::from(sse_output))).await.is_err() {
+                            break;
+                        }
+                    } else {
+                        drop(acc_guard);
+                    }
+                }
+                Err(e) => {
+                    let sse_error = format!(
+                        "data: {{\"error\":{{\"message\":\"Bedrock stream error: {}\",\"type\":\"stream_error\"}}}}\n\n",
+                        e.to_string().replace('"', "'")
+                    );
+                    let _ = tx.send(Ok(Bytes::from(sse_error))).await;
+
+                    {
+                        let mut slot_guard = slot_for_bg.lock().await;
+                        if slot_guard.is_none() {
+                            let mut acc_guard = accumulator.lock().await;
+                            let partial = std::mem::replace(
+                                &mut *acc_guard, StreamAccumulator::new(),
+                            );
+                            *slot_guard = Some(partial.finish());
+                        }
+                    }
+
+                    let io_err = std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe, e.to_string(),
+                    );
+                    let _ = tx.send(Err(io_err)).await;
+                    break;
+                }
+            }
+        }
+
+        // EOF: ensure result_slot is populated
+        let mut slot_guard = slot_for_bg.lock().await;
+        if slot_guard.is_none() {
+            let mut acc_guard = accumulator.lock().await;
+            let finished = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
+            *slot_guard = Some(finished.finish());
+        }
+    });
+
+    let mapped = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let body = Body::from_stream(mapped);
+    (body, result_slot)
 }

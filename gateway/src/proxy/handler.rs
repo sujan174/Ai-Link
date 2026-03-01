@@ -1560,9 +1560,18 @@ pub async fn proxy_handler(
     // This is the industry-standard approach (Portkey, Helicone, LangSmith all do this).
     let final_body = if is_streaming_req {
         if let Ok(mut body_json) = serde_json::from_slice::<serde_json::Value>(&final_body) {
-            // Only inject for OpenAI-compatible endpoints (not Anthropic, which uses its own protocol)
-            let is_anthropic = upstream_url.contains("anthropic");
-            if !is_anthropic {
+            // FIX(C3): Only inject stream_options for OpenAI-compatible providers.
+            // Anthropic, Gemini, and Bedrock use different API formats that don't
+            // recognize this field — Bedrock returns ValidationException, Gemini
+            // returns INVALID_ARGUMENT. Only OpenAI/Azure/Groq/Mistral/Together/
+            // Cohere/Ollama support stream_options.include_usage.
+            let skip_stream_options = matches!(
+                detected_provider,
+                proxy::model_router::Provider::Anthropic
+                | proxy::model_router::Provider::Gemini
+                | proxy::model_router::Provider::Bedrock
+            );
+            if !skip_stream_options {
                 // Set stream_options.include_usage = true (preserve any existing stream_options)
                 let stream_opts = body_json
                     .as_object_mut()
@@ -1619,6 +1628,16 @@ pub async fn proxy_handler(
             }
             "query" => {
                 // Don't inject a header — we'll append to the URL below
+            }
+            // FIX(C1): SigV4 signing for Amazon Bedrock.
+            // The vault stores credentials as "ACCESS_KEY_ID:SECRET_ACCESS_KEY".
+            // The region is extracted from the upstream URL.
+            // Signing is deferred until after the final body is ready (see below).
+            "sigv4" => {
+                // SigV4 signing will be applied later, after the final body is built,
+                // because the signature depends on the request body hash.
+                // We store the parsed credentials here and apply signing below.
+                // (Headers are injected later in the sigv4 signing block)
             }
             _ => {
                 upstream_headers.insert(
@@ -1749,6 +1768,39 @@ pub async fn proxy_handler(
 
     // Track in-flight requests for least-busy routing
     state.lb.increment_in_flight(&final_upstream_url);
+
+    // ── FIX(C1): Apply deferred SigV4 signing for Bedrock ──────────────────
+    // SigV4 signing requires the final body (for payload hash) and final URL,
+    // so it must happen after all body/URL transformations but before sending.
+    // The credential key format is "ACCESS_KEY_ID:SECRET_ACCESS_KEY".
+    if let Some(ref cred) = injected_cred {
+        if cred.mode == "sigv4" {
+            // Parse "ACCESS_KEY_ID:SECRET_ACCESS_KEY"
+            let (access_key, secret_key) = cred.key.split_once(':')
+                .ok_or_else(|| AppError::Internal(anyhow::anyhow!(
+                    "SigV4 credential must be in format ACCESS_KEY_ID:SECRET_ACCESS_KEY"
+                )))?;
+
+            let region = proxy::sigv4::extract_region(&final_upstream_url)
+                .unwrap_or_else(|| "us-east-1".to_string());
+
+            proxy::sigv4::sign_request(
+                method.as_str(),
+                &final_upstream_url,
+                &mut upstream_headers,
+                &final_body,
+                access_key,
+                secret_key,
+                &region,
+                "bedrock",
+            ).map_err(|e| AppError::Internal(anyhow::anyhow!("SigV4 signing failed: {}", e)))?;
+
+            tracing::debug!(
+                region = %region,
+                "SigV4 request signed for Bedrock"
+            );
+        }
+    }
 
     // Zero the decrypted key from memory (if credential was injected)
     if let Some(mut cred) = injected_cred {
@@ -1908,8 +1960,31 @@ pub async fn proxy_handler(
     // For successful streaming responses, pipe bytes directly to the client.
     // Audit, cost tracking, and sanitization happen in a background task.
     if is_streaming_req && status.is_success() {
-        let (stream_body, result_slot) =
-            proxy::stream_bridge::tee_sse_stream(upstream_resp, start);
+        // FIX(X2/X3): Route non-OpenAI providers through translating bridges.
+        // - Bedrock: binary event stream → OpenAI SSE (dedicated decoder)
+        // - Anthropic: Anthropic SSE → OpenAI SSE (per-chunk translation)
+        // - Gemini: Gemini SSE → OpenAI SSE (per-chunk translation)
+        // - All others: OpenAI-compatible, passthrough SSE unchanged
+        let (stream_body, result_slot) = match detected_provider {
+            proxy::model_router::Provider::Bedrock => {
+                proxy::stream_bridge::tee_bedrock_stream(upstream_resp, start, detected_model.clone())
+            }
+            proxy::model_router::Provider::Anthropic => {
+                proxy::stream_bridge::tee_translating_sse_stream(
+                    upstream_resp, start, detected_model.clone(),
+                    proxy::model_router::translate_anthropic_sse_to_openai,
+                )
+            }
+            proxy::model_router::Provider::Gemini => {
+                proxy::stream_bridge::tee_translating_sse_stream(
+                    upstream_resp, start, detected_model.clone(),
+                    proxy::model_router::translate_gemini_sse_to_openai,
+                )
+            }
+            _ => {
+                proxy::stream_bridge::tee_sse_stream(upstream_resp, start)
+            }
+        };
 
         // Build the SSE response immediately — this starts streaming to the client
         let mut sse_response = axum::response::Response::builder()
@@ -1969,12 +2044,22 @@ pub async fn proxy_handler(
             let mut estimated_cost_usd: Option<rust_decimal::Decimal> = None;
             if let (Some(inp), Some(out)) = (prompt_tokens, completion_tokens) {
                 // GAP-1 FIX: detect all supported providers, not just openai/anthropic
-                let provider = if token_bg_upstream_url.contains("anthropic") {
+                let provider = if token_bg_upstream_url.contains("anthropic") && !token_bg_upstream_url.contains("bedrock") {
                     "anthropic"
                 } else if token_bg_upstream_url.contains("generativelanguage") || token_bg_upstream_url.contains("googleapis") {
                     "google"
                 } else if token_bg_upstream_url.contains("mistral") {
                     "mistral"
+                } else if token_bg_upstream_url.contains("bedrock") {
+                    "bedrock"
+                } else if token_bg_upstream_url.contains("groq") {
+                    "groq"
+                } else if token_bg_upstream_url.contains("cohere") {
+                    "cohere"
+                } else if token_bg_upstream_url.contains("together") {
+                    "together"
+                } else if token_bg_upstream_url.contains("localhost:11434") || token_bg_upstream_url.contains("ollama") {
+                    "ollama"
                 } else {
                     "openai"
                 };
@@ -2405,12 +2490,22 @@ pub async fn proxy_handler(
                 let model = extract_model(&sanitized_body).unwrap_or("unknown".to_string());
                 audit_model = Some(model.clone());
                 // GAP-1 FIX: detect all supported providers (was missing Gemini/Mistral)
-                let provider = if token.upstream_url.contains("anthropic") {
+                let provider = if token.upstream_url.contains("anthropic") && !token.upstream_url.contains("bedrock") {
                     "anthropic"
                 } else if token.upstream_url.contains("generativelanguage") || token.upstream_url.contains("googleapis") {
                     "google"
                 } else if token.upstream_url.contains("mistral") {
                     "mistral"
+                } else if token.upstream_url.contains("bedrock") {
+                    "bedrock"
+                } else if token.upstream_url.contains("groq") {
+                    "groq"
+                } else if token.upstream_url.contains("cohere") {
+                    "cohere"
+                } else if token.upstream_url.contains("together") {
+                    "together"
+                } else if token.upstream_url.contains("localhost:11434") || token.upstream_url.contains("ollama") {
+                    "ollama"
                 } else {
                     "openai"
                 };

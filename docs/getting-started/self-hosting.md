@@ -109,6 +109,6 @@ The Rust gateway compilation is CPU-intensive. On the first build:
 
 ## Next Steps
 
-- **[Quickstart Guide](QUICKSTART.md)** — Create your first credential, policy, and token
-- **[Deployment Guide](DEPLOYMENT.md)** — Production deployment with Kubernetes
-- **[SDK Guide](SDK.md)** — Python and TypeScript client libraries
+- **[Quickstart Guide](../getting-started/quickstart.md)** — Create your first credential, policy, and token
+- **[Deployment Guide](../deployment/docker.md)** — Production deployment with Kubernetes
+- **[Python SDK](../sdks/python.md)** / **[TypeScript SDK](../sdks/typescript.md)** — Client libraries

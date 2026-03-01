@@ -4,6 +4,7 @@ pub mod model_router;
 pub mod realtime;
 pub mod response_cache;
 pub mod retry;
+pub mod sigv4;
 pub mod smart_router;
 pub mod stream;
 pub mod stream_bridge;

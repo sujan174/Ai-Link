@@ -89,18 +89,17 @@ npm install @ailink/sdk
 ```
 
 ```typescript
-import { AIlink } from '@ailink/sdk';
+import { AILinkClient } from '@ailink/sdk';
 
-const client = new AIlink({
-  token: 'ailink_v1_YOUR_TOKEN_HERE',
+const client = new AILinkClient({
+  apiKey: 'ailink_v1_YOUR_TOKEN_HERE',
   gatewayUrl: 'http://localhost:8443',
 });
 
-const response = await client.post('/v1/chat/completions', {
-  body: {
-    model: 'gpt-4o-mini',
-    messages: [{ role: 'user', content: 'Hello AILink!' }],
-  },
+const openai = client.openai();
+const response = await openai.chat.completions.create({
+  model: 'gpt-4o-mini',
+  messages: [{ role: 'user', content: 'Hello AILink!' }],
 });
 console.log(response.choices[0].message.content);
 ```
@@ -126,5 +125,4 @@ Go back to your Dashboard at [http://localhost:3000](http://localhost:3000):
 When you're ready to deploy AILink for real traffic:
 - Change `AILINK_MASTER_KEY` and `AILINK_ADMIN_KEY` in `docker-compose.yml`.
 - Set `DASHBOARD_SECRET` to a strong random value.
-- See the [Deployment Guide](DEPLOYMENT.md) for production hosting details.
-- See the [Self-Hosting Guide](self-hosting.md) for single-server setups.
+- See the [Deployment Guide](../deployment/docker.md) for production hosting details.
