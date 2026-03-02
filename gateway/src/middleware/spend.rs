@@ -134,20 +134,22 @@ pub async fn check_and_increment_spend(
     let mut conn = cache.redis();
     let now = Utc::now();
 
-    // SEC-01 FIX: Atomic check-then-increment Lua script.
-    // Checks `current + cost > limit` INSIDE Redis before incrementing.
-    // Returns -1 if the cap would be exceeded (caller should deny).
+    // SEC-01 FIX: Atomic increment-then-check Lua script.
+    // ALWAYS increments the spend counter first, then checks if the cap
+    // was exceeded. Returns the new total (positive) if under cap, or -1
+    // if the cap was breached. By always incrementing, the pre-flight
+    // check_spend_cap on the NEXT request will see the real spend in Redis
+    // and correctly return 402.
     // KEYS[1] = spend key, ARGV[1] = limit, ARGV[2] = cost, ARGV[3] = TTL
     let lua_script = r#"
-        local current = tonumber(redis.call('GET', KEYS[1]) or '0')
-        local limit = tonumber(ARGV[1])
         local cost = tonumber(ARGV[2])
         local ttl = tonumber(ARGV[3])
-        if current + cost > limit then
-            return '-1'
-        end
         local new_val = redis.call('INCRBYFLOAT', KEYS[1], cost)
         redis.call('EXPIRE', KEYS[1], ttl)
+        local limit = tonumber(ARGV[1])
+        if tonumber(new_val) > limit then
+            return '-1'
+        end
         return new_val
     "#;
 
