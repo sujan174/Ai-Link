@@ -251,6 +251,73 @@ Returns active presets and source (sdk/dashboard) for drift detection.
 
 ---
 
+### Prompt Management
+
+CRUD for reusable prompt templates with immutable versioning, label-based deployment (`production` / `staging`), folder organisation, and server-side `{{variable}}` rendering.
+
+#### List Prompts
+`GET /prompts?folder=/production` — Filter by folder path (optional).
+
+#### Create Prompt
+`POST /prompts`
+```json
+{ "name": "Customer Support Agent", "folder": "/support", "description": "..." }
+```
+
+#### Get Prompt
+`GET /prompts/{id}` — Returns prompt with its latest version.
+
+#### Update Prompt Metadata
+`PUT /prompts/{id}`
+
+#### Delete Prompt
+`DELETE /prompts/{id}` — Soft-delete.
+
+#### List Versions
+`GET /prompts/{id}/versions`
+
+#### Publish New Version
+`POST /prompts/{id}/versions`
+```json
+{
+  "model": "gpt-4o",
+  "messages": [
+    { "role": "system", "content": "You help {{user_name}} with {{topic}}." },
+    { "role": "user", "content": "{{question}}" }
+  ],
+  "temperature": 0.7,
+  "commit_message": "Improved tone"
+}
+```
+
+#### Get Specific Version
+`GET /prompts/{id}/versions/{version}`
+
+#### Deploy Version to Label
+`POST /prompts/{id}/deploy`
+```json
+{ "version": 2, "label": "production" }
+```
+Atomically promotes a version. The previous holder of the label is demoted. Use this for zero-downtime prompt rollouts.
+
+#### Render Prompt (GET — query params)
+`GET /prompts/by-slug/{slug}/render?label=production&user_name=Alice&topic=billing`
+
+#### Render Prompt (POST — body variables)
+`POST /prompts/by-slug/{slug}/render`
+```json
+{ "label": "production", "variables": { "user_name": "Alice", "topic": "billing", "question": "Where is my invoice?" } }
+```
+Returns an OpenAI-compatible payload ready to pass to any chat completions endpoint:
+```json
+{ "model": "gpt-4o", "messages": [...], "temperature": 0.7, "prompt_id": "uuid", "prompt_slug": "customer-support-agent", "version": 2 }
+```
+
+#### List Folders
+`GET /prompts/folders` — Unique folder paths across all prompts.
+
+---
+
 ### MCP Server Management
 
 Register Model Context Protocol servers. The gateway auto-discovers tools and injects them into LLM requests via the `X-MCP-Servers` header.
@@ -355,8 +422,8 @@ Immutable request audit trail. Partitioned by month in PostgreSQL.
 #### Analytics Timeseries
 `GET /analytics/timeseries` — Per-bucket: request count, error count, cost, latency, tokens.
 
-#### Experiments
-`GET /analytics/experiments` — A/B model comparison metrics.
+#### Experiments Analytics
+`GET /analytics/experiments` — Per-variant A/B experiment metrics (requests, latency, cost, tokens, error rate). For managing experiments themselves, see the [Experiments API](#experiments) below.
 
 #### Token Analytics
 `GET /analytics/tokens` — Per-token request volume and error rates.
@@ -537,6 +604,50 @@ Automatic traffic anomaly detection using sigma-based statistical analysis.
 `GET /anomalies`
 
 Returns tokens with anomalous request velocity compared to their baseline. Flags sudden spikes > N standard deviations.
+
+---
+
+### Experiments (A/B Testing)
+
+Create and monitor A/B experiments to compare models, prompts, or routing strategies. Experiments are a convenience layer over the policy engine's `Action::Split` — creating one auto-generates a weighted Split policy.
+
+#### Create Experiment
+`POST /experiments`
+```json
+{
+  "name": "gpt4o-vs-claude",
+  "variants": [
+    { "name": "control",   "weight": 50, "model": "gpt-4o" },
+    { "name": "treatment", "weight": 50, "model": "claude-3-5-sonnet-20241022" }
+  ]
+}
+```
+Variant selection is deterministic per `request_id` — the same caller always gets the same variant within a request. Weights do not need to sum to 100 (e.g. 1+1 = 50/50).
+
+#### List Experiments
+`GET /experiments` — All running experiments.
+
+#### Get Experiment
+`GET /experiments/{id}` — Returns experiment config + live analytics.
+
+#### Get Results
+`GET /experiments/{id}/results`
+```json
+{
+  "experiment": "gpt4o-vs-claude",
+  "status": "running",
+  "variants": [
+    { "variant": "control",   "total_requests": 1240, "avg_latency_ms": 342, "total_cost_usd": 1.23, "error_rate": 0.01 },
+    { "variant": "treatment", "total_requests": 1238, "avg_latency_ms": 289, "total_cost_usd": 0.87, "error_rate": 0.00 }
+  ]
+}
+```
+
+#### Update Weights
+`PUT /experiments/{id}` — Adjust variant weights mid-experiment without stopping.
+
+#### Stop Experiment
+`POST /experiments/{id}/stop` — Soft-deletes the underlying Split policy.
 
 ---
 

@@ -33,7 +33,7 @@ pub async fn run_budget_check(pool: &PgPool) -> Result<()> {
         FROM audit_logs
         WHERE
             estimated_cost_usd IS NOT NULL
-            AND timestamp >= DATE_TRUNC('month', NOW())
+            AND created_at >= DATE_TRUNC('month', NOW())
         GROUP BY project_id
         ON CONFLICT (project_id) DO UPDATE
             SET spend_usd    = EXCLUDED.spend_usd,

@@ -1153,8 +1153,6 @@ pub async fn proxy_handler(
         // so BLPOP blocks only this connection without affecting the connection pool.
         // This gives us sub-millisecond notification latency vs the old 500ms LPOP polling.
         let hitl_key = format!("hitl:decision:{}", approval_id);
-        #[allow(unused_assignments)]
-        let mut approved = false;
         let mut decision_opt: Option<String> = None;
 
         // Try dedicated BLPOP first, fall back to LPOP polling if connection fails
@@ -1234,7 +1232,6 @@ pub async fn proxy_handler(
 
         match decision.as_str() {
             "approved" => {
-                approved = true;
                 hitl_decision = Some("approved".to_string());
             }
             "rejected" => {
@@ -1271,22 +1268,6 @@ pub async fn proxy_handler(
             }
         }
 
-        if !approved {
-            hitl_decision = Some("timeout".to_string());
-            let mut audit = base_audit(
-                request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
-                &token.upstream_url, &policies, true, hitl_decision.clone(),
-                Some(hitl_start.elapsed().as_millis() as i32),
-                user_id.clone(), tenant_id.clone(), external_request_id.clone(),
-                session_id.clone(), parent_span_id.clone(),
-                custom_properties.clone(),
-            );
-            audit.policy_result = Some(crate::models::audit::PolicyResult::HitlTimeout);
-            audit.response_latency_ms = start.elapsed().as_millis() as u64;
-            audit.shadow_violations = if shadow_violations.is_empty() { None } else { Some(shadow_violations.clone()) };
-            audit.emit(&state);
-            return Err(AppError::ApprovalTimeout);
-        }
 
         hitl_latency_ms = Some(hitl_start.elapsed().as_millis() as i32);
     }
@@ -1539,12 +1520,17 @@ pub async fn proxy_handler(
     // ── MCP Tool Injection ───────────────────────────────────────
     // If X-MCP-Servers header is present, inject MCP tool schemas into the
     // request body's `tools[]` array before sending to the LLM.
+    // Per-token allow/deny lists filter which MCP tools are injected.
     let mcp_server_names = crate::middleware::mcp::parse_mcp_header(&headers);
+    let mcp_allowed = crate::middleware::mcp::parse_tool_list(token.mcp_allowed_tools.as_ref());
+    let mcp_blocked = crate::middleware::mcp::parse_tool_list(token.mcp_blocked_tools.as_ref());
     let final_body = if !mcp_server_names.is_empty() {
         match crate::middleware::mcp::inject_mcp_tools(
             &state.mcp_registry,
             &mcp_server_names,
             &final_body,
+            mcp_allowed.as_deref(),
+            mcp_blocked.as_deref(),
         ).await {
             Some(injected) => injected,
             None => final_body,
@@ -2145,18 +2131,11 @@ pub async fn proxy_handler(
     // -- 5.5 Post-flight policy evaluation --
     let mut resp_body_vec = resp_body.to_vec();
 
-    // ── Universal Model Router: translate SSE streams or JSON responses ──
-    if status.is_success() && is_streaming_req {
-        // SSE stream: translate entire body from Anthropic/Gemini SSE → OpenAI SSE
-        if let Some(translated_sse) = proxy::model_router::translate_sse_body(
-            detected_provider,
-            &resp_body_vec,
-            &detected_model,
-        ) {
-            resp_body_vec = translated_sse;
-        }
-    } else if status.is_success() {
-        // Non-streaming JSON response: translate as before
+    // ── Universal Model Router: translate JSON responses ──
+    // BUG-01 FIX: Removed dead `is_streaming_req` branch — streaming + success
+    // requests are handled by the fast path (line 1948) and never reach here.
+    if status.is_success() {
+        // Non-streaming JSON response: translate to OpenAI format
         if let Some(parsed) = serde_json::from_slice::<serde_json::Value>(&resp_body_vec).ok() {
             if let Some(translated) = proxy::model_router::translate_response(
                 detected_provider,
@@ -2724,29 +2703,30 @@ pub async fn proxy_handler(
     }
 
     // -- Budget-remaining headers (best-effort, non-blocking) --
-    // Lets developers know how much headroom they have left without polling the API.
-    // We read from Redis which is already primed by check_and_increment_spend.
-    if let Ok(status) = middleware::spend::get_spend_status(
-        state.db.pool(),
-        &state.cache,
-        &token.id,
-    ).await {
-        if let Some(daily_limit) = status.daily_limit_usd {
-            let remaining = (daily_limit - status.current_daily_usd).max(0.0);
-            if let Ok(hv) = axum::http::HeaderValue::from_str(&format!("{:.4}", remaining)) {
-                response = response.header("x-ailink-budget-remaining-daily", hv);
+    // SEC-08 FIX: Only emit when log_level >= 1 (opt-in) to avoid leaking financial data
+    if log_level >= 1 {
+        if let Ok(status) = middleware::spend::get_spend_status(
+            state.db.pool(),
+            &state.cache,
+            &token.id,
+        ).await {
+            if let Some(daily_limit) = status.daily_limit_usd {
+                let remaining = (daily_limit - status.current_daily_usd).max(0.0);
+                if let Ok(hv) = axum::http::HeaderValue::from_str(&format!("{:.4}", remaining)) {
+                    response = response.header("x-ailink-budget-remaining-daily", hv);
+                }
             }
-        }
-        if let Some(monthly_limit) = status.monthly_limit_usd {
-            let remaining = (monthly_limit - status.current_monthly_usd).max(0.0);
-            if let Ok(hv) = axum::http::HeaderValue::from_str(&format!("{:.4}", remaining)) {
-                response = response.header("x-ailink-budget-remaining-monthly", hv);
+            if let Some(monthly_limit) = status.monthly_limit_usd {
+                let remaining = (monthly_limit - status.current_monthly_usd).max(0.0);
+                if let Ok(hv) = axum::http::HeaderValue::from_str(&format!("{:.4}", remaining)) {
+                    response = response.header("x-ailink-budget-remaining-monthly", hv);
+                }
             }
-        }
-        if let Some(lifetime_limit) = status.lifetime_limit_usd {
-            let remaining = (lifetime_limit - status.current_lifetime_usd).max(0.0);
-            if let Ok(hv) = axum::http::HeaderValue::from_str(&format!("{:.4}", remaining)) {
-                response = response.header("x-ailink-budget-remaining-lifetime", hv);
+            if let Some(lifetime_limit) = status.lifetime_limit_usd {
+                let remaining = (lifetime_limit - status.current_lifetime_usd).max(0.0);
+                if let Ok(hv) = axum::http::HeaderValue::from_str(&format!("{:.4}", remaining)) {
+                    response = response.header("x-ailink-budget-remaining-lifetime", hv);
+                }
             }
         }
     }
@@ -2818,8 +2798,17 @@ pub async fn proxy_handler(
                         }
                     }
                     crate::models::policy::Action::Webhook { url, timeout_ms, .. } => {
-                        // Fire webhook asynchronously
+                        // SEC-04 FIX: Validate webhook URL before async fire
                         let w_url = url.clone();
+                        if !is_safe_webhook_url(&w_url) {
+                            tracing::warn!(
+                                token_id = %token_id_async,
+                                policy = %triggered.policy_name,
+                                url = %w_url,
+                                "async guardrail: blocked unsafe webhook URL (SSRF protection)"
+                            );
+                            continue;
+                        }
                         let w_timeout = *timeout_ms;
                         let _ = reqwest::Client::new()
                             .post(&w_url)
@@ -2997,13 +2986,24 @@ fn base_audit(
     }
 }
 
+/// SEC-03 FIX: Headers that must be redacted in audit logs (credential-bearing).
+const REDACTED_HEADER_NAMES: &[&str] = &[
+    "authorization", "x-admin-key", "cookie", "set-cookie",
+    "x-api-key", "x-real-authorization", "x-upstream-authorization",
+    "proxy-authorization",
+];
+
+/// Returns true if a header name should be redacted in audit logs.
+fn is_sensitive_header(name: &str) -> bool {
+    REDACTED_HEADER_NAMES.iter().any(|h| name.eq_ignore_ascii_case(h))
+}
+
 /// Convert axum HeaderMap to JSON object for Level 2 logging.
 fn headers_to_json(headers: &HeaderMap) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (key, value) in headers.iter() {
         if let Ok(v) = value.to_str() {
-            // Skip authorization to never log real credentials
-            if key.as_str().eq_ignore_ascii_case("authorization") {
+            if is_sensitive_header(key.as_str()) {
                 map.insert(key.to_string(), serde_json::json!("[REDACTED]"));
             } else {
                 map.insert(key.to_string(), serde_json::json!(v));
@@ -3014,11 +3014,16 @@ fn headers_to_json(headers: &HeaderMap) -> serde_json::Value {
 }
 
 /// Convert reqwest HeaderMap to JSON object for Level 2 logging.
+/// SEC-03 FIX: Also redacts credential-bearing response headers.
 fn headers_to_json_reqwest(headers: &reqwest::header::HeaderMap) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (key, value) in headers.iter() {
         if let Ok(v) = value.to_str() {
-            map.insert(key.to_string(), serde_json::json!(v));
+            if is_sensitive_header(key.as_str()) {
+                map.insert(key.to_string(), serde_json::json!("[REDACTED]"));
+            } else {
+                map.insert(key.to_string(), serde_json::json!(v));
+            }
         }
     }
     serde_json::Value::Object(map)
@@ -3041,7 +3046,7 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, AppError> {
 }
 
 /// SEC: Validate that a webhook URL from a policy definition is safe to call.
-/// Blocks private IPs, cloud metadata endpoints, and non-HTTP(S) schemes.
+/// Blocks private IPs (v4 + v6), cloud metadata endpoints, and non-HTTP(S) schemes.
 fn is_safe_webhook_url(url_str: &str) -> bool {
     let parsed = match reqwest::Url::parse(url_str) {
         Ok(u) => u,
@@ -3058,27 +3063,45 @@ fn is_safe_webhook_url(url_str: &str) -> bool {
         None => return false,
     };
 
-    // Block known cloud metadata endpoints
+    // Block known cloud metadata endpoints and localhost hostnames
     let blocked_hosts = [
         "169.254.169.254",
         "metadata.google.internal",
         "metadata.internal",
         "0.0.0.0",
+        "localhost",
+        "[::1]",
+        // AWS IMDSv2 IPv6
+        "[fd00:ec2::254]",
     ];
     if blocked_hosts.contains(&host) {
         return false;
     }
 
-    // Block private/reserved IP ranges
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+    // SEC-02 FIX: Block private/reserved IP ranges (IPv4 + full IPv6 coverage)
+    if let Ok(ip) = host.trim_matches(|c| c == '[' || c == ']').parse::<std::net::IpAddr>() {
         let is_private = match ip {
             std::net::IpAddr::V4(v4) => {
                 v4.is_loopback()
                     || v4.is_private()
                     || v4.is_link_local()
                     || v4.octets()[0] == 169 && v4.octets()[1] == 254
+                    || v4.is_unspecified()
             }
-            std::net::IpAddr::V6(v6) => v6.is_loopback(),
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()       // ::1
+                    || v6.is_unspecified()  // ::
+                    // Unique local (fd00::/8)
+                    || (v6.segments()[0] & 0xff00) == 0xfd00
+                    // Link-local (fe80::/10)
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+                    // IPv4-mapped (::ffff:x.x.x.x) — check the embedded v4
+                    || v6.to_ipv4_mapped().map_or(false, |v4| {
+                        v4.is_loopback() || v4.is_private() || v4.is_link_local()
+                            || v4.is_unspecified()
+                            || (v4.octets()[0] == 169 && v4.octets()[1] == 254)
+                    })
+            }
         };
         if is_private {
             return false;
@@ -3086,4 +3109,80 @@ fn is_safe_webhook_url(url_str: &str) -> bool {
     }
 
     true
+}
+
+// ── Unit Tests ──────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── SSRF: is_safe_webhook_url ──────────────────────────────────────
+
+    #[test]
+    fn test_ssrf_blocks_ipv4_private() {
+        assert!(!is_safe_webhook_url("http://127.0.0.1/callback"));
+        assert!(!is_safe_webhook_url("http://10.0.0.1/hook"));
+        assert!(!is_safe_webhook_url("http://192.168.1.1:8080/hook"));
+        assert!(!is_safe_webhook_url("http://172.16.0.1/hook"));
+        assert!(!is_safe_webhook_url("http://169.254.169.254/latest/meta-data/"));
+        assert!(!is_safe_webhook_url("http://0.0.0.0/hook"));
+    }
+
+    #[test]
+    fn test_ssrf_blocks_ipv6_private() {
+        assert!(!is_safe_webhook_url("http://[::1]/callback"));
+        assert!(!is_safe_webhook_url("http://[fd00::1]/hook"));
+        assert!(!is_safe_webhook_url("http://[fe80::1]/hook"));
+        // IPv4-mapped IPv6 — loopback
+        assert!(!is_safe_webhook_url("http://[::ffff:127.0.0.1]/hook"));
+        // IPv4-mapped IPv6 — private
+        assert!(!is_safe_webhook_url("http://[::ffff:10.0.0.1]/hook"));
+    }
+
+    #[test]
+    fn test_ssrf_blocks_localhost() {
+        assert!(!is_safe_webhook_url("http://localhost/hook"));
+        assert!(!is_safe_webhook_url("http://localhost:3000/callback"));
+    }
+
+    #[test]
+    fn test_ssrf_allows_public_urls() {
+        assert!(is_safe_webhook_url("https://hooks.slack.com/services/T00/B00/xxx"));
+        assert!(is_safe_webhook_url("https://api.example.com/webhook"));
+        assert!(is_safe_webhook_url("http://203.0.113.1/hook")); // TEST-NET, but not private
+    }
+
+    #[test]
+    fn test_ssrf_blocks_ftp_scheme() {
+        assert!(!is_safe_webhook_url("ftp://evil.com/payload"));
+        assert!(!is_safe_webhook_url("file:///etc/passwd"));
+        assert!(!is_safe_webhook_url("gopher://evil.com"));
+    }
+
+    // ── Header redaction: is_sensitive_header ──────────────────────────
+
+    #[test]
+    fn test_header_redaction_sensitive() {
+        assert!(is_sensitive_header("authorization"));
+        assert!(is_sensitive_header("Authorization"));
+        assert!(is_sensitive_header("AUTHORIZATION"));
+        assert!(is_sensitive_header("cookie"));
+        assert!(is_sensitive_header("Cookie"));
+        assert!(is_sensitive_header("set-cookie"));
+        assert!(is_sensitive_header("x-admin-key"));
+        assert!(is_sensitive_header("X-Admin-Key"));
+        assert!(is_sensitive_header("x-api-key"));
+        assert!(is_sensitive_header("proxy-authorization"));
+        assert!(is_sensitive_header("x-real-authorization"));
+        assert!(is_sensitive_header("x-upstream-authorization"));
+    }
+
+    #[test]
+    fn test_header_redaction_passes_normal() {
+        assert!(!is_sensitive_header("content-type"));
+        assert!(!is_sensitive_header("x-request-id"));
+        assert!(!is_sensitive_header("accept"));
+        assert!(!is_sensitive_header("user-agent"));
+        assert!(!is_sensitive_header("x-session-id"));
+    }
 }

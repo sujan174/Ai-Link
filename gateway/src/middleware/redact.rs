@@ -25,7 +25,7 @@ static EMAIL_RE: Lazy<Regex> =
 
 static SSN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap());
 
-static CREDIT_CARD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:\d[ -]*?){13,19}\b").unwrap());
+static CREDIT_CARD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:\d{4}[ -]){3}\d{1,7}\b|\b\d{15,16}\b").unwrap());
 
 static API_KEY_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\b(sk-[a-zA-Z0-9_\-\.]{20,})\b").unwrap());
@@ -49,8 +49,9 @@ static IPV4_RE: Lazy<Regex> = Lazy::new(|| {
 
 // Phase 7: Extended PII patterns for enterprise compliance
 static PASSPORT_RE: Lazy<Regex> = Lazy::new(|| {
-    // US, UK, common formats: letter(s) followed by 6-9 digits
-    Regex::new(r"\b[A-Z]{1,2}\d{6,9}\b").unwrap()
+    // BUG-05 FIX: Tighter — 2 letters + 7-9 digits (US/UK/EU passports).
+    // Old pattern (1-2 letters + 6-9 digits) matched version codes like V12345678.
+    Regex::new(r"\b[A-Z]{2}\d{7,9}\b").unwrap()
 });
 
 static AWS_KEY_RE: Lazy<Regex> = Lazy::new(|| {
@@ -58,8 +59,8 @@ static AWS_KEY_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 static DL_RE: Lazy<Regex> = Lazy::new(|| {
-    // US driver's license: 1 letter + 4-12 digits (covers most states)
-    Regex::new(r"\b[A-Z]\d{4,12}\b").unwrap()
+    // BUG-05 FIX: Tighter — 1 letter + 7-12 digits (minimum 7 to avoid A100, B2345, etc.).
+    Regex::new(r"\b[A-Z]\d{7,12}\b").unwrap()
 });
 
 static MRN_RE: Lazy<Regex> = Lazy::new(|| {

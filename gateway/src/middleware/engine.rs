@@ -182,7 +182,7 @@ fn check_glob(actual: &Value, pattern: &Value) -> bool {
 }
 
 /// Simple glob matching: `*` matches any sequence, `?` matches one char.
-fn glob_match(pattern: &str, text: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
     if pattern == "*" || pattern == "/*" {
         return true;
     }

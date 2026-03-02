@@ -13,6 +13,7 @@ import {
     getTeamSpend,
     Team,
     TeamMember,
+    CreateTeamRequest,
     swrFetcher,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -49,6 +50,11 @@ export default function TeamsPage() {
     const [expandedTeam, setExpandedTeam] = useState<string | null>(null);
     const [createOpen, setCreateOpen] = useState(false);
     const [newName, setNewName] = useState("");
+    const [newDescription, setNewDescription] = useState("");
+    const [newBudget, setNewBudget] = useState("");
+    const [newBudgetDuration, setNewBudgetDuration] = useState("monthly");
+    const [newAllowedModels, setNewAllowedModels] = useState("");
+    const [newTags, setNewTags] = useState("");
     const [creating, setCreating] = useState(false);
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editName, setEditName] = useState("");
@@ -57,11 +63,23 @@ export default function TeamsPage() {
         if (!newName.trim()) return;
         setCreating(true);
         try {
-            await createTeam(newName.trim());
+            const payload: CreateTeamRequest = { name: newName.trim() };
+            if (newDescription.trim()) payload.description = newDescription.trim();
+            if (newBudget && !isNaN(parseFloat(newBudget))) {
+                payload.max_budget_usd = parseFloat(newBudget);
+                payload.budget_duration = newBudgetDuration;
+            }
+            if (newAllowedModels.trim()) {
+                payload.allowed_models = newAllowedModels.split(",").map(m => m.trim()).filter(Boolean);
+            }
+            if (newTags.trim()) {
+                try { payload.tags = JSON.parse(newTags); } catch { toast.error("Tags must be valid JSON"); return; }
+            }
+            await createTeam(payload);
             mutate();
             setCreateOpen(false);
-            setNewName("");
-            toast.success(`Team "${newName}" created`);
+            setNewName(""); setNewDescription(""); setNewBudget(""); setNewAllowedModels(""); setNewTags("");
+            toast.success(`Team "${payload.name}" created`);
         } catch (e: any) {
             toast.error(e.message || "Failed to create team");
         } finally {
@@ -113,13 +131,13 @@ export default function TeamsPage() {
                             <Plus className="h-3.5 w-3.5" /> Create Team
                         </Button>
                     </DialogTrigger>
-                    <DialogContent className="sm:max-w-[400px]">
+                    <DialogContent className="sm:max-w-[460px]">
                         <DialogHeader>
                             <DialogTitle>Create Team</DialogTitle>
                         </DialogHeader>
                         <div className="space-y-4 pt-2">
                             <div className="space-y-2">
-                                <Label>Team Name</Label>
+                                <Label>Team Name <span className="text-destructive">*</span></Label>
                                 <Input
                                     placeholder="e.g. Platform Engineering"
                                     value={newName}
@@ -127,8 +145,55 @@ export default function TeamsPage() {
                                     onKeyDown={e => e.key === "Enter" && handleCreate()}
                                 />
                             </div>
+                            <div className="space-y-2">
+                                <Label>Description</Label>
+                                <Input
+                                    placeholder="What does this team work on?"
+                                    value={newDescription}
+                                    onChange={e => setNewDescription(e.target.value)}
+                                />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div className="space-y-2">
+                                    <Label>Budget (USD)</Label>
+                                    <Input
+                                        type="number" min="0" step="1"
+                                        placeholder="500"
+                                        value={newBudget}
+                                        onChange={e => setNewBudget(e.target.value)}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label>Period</Label>
+                                    <Select value={newBudgetDuration} onValueChange={setNewBudgetDuration}>
+                                        <SelectTrigger><SelectValue /></SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="daily">Daily</SelectItem>
+                                            <SelectItem value="monthly">Monthly</SelectItem>
+                                            <SelectItem value="yearly">Yearly</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+                            <div className="space-y-2">
+                                <Label>Allowed Models (optional)</Label>
+                                <Input
+                                    placeholder="gpt-4o, claude-3-*, gemini-*"
+                                    value={newAllowedModels}
+                                    onChange={e => setNewAllowedModels(e.target.value)}
+                                />
+                                <p className="text-[10px] text-muted-foreground">Comma-separated. Leave blank to allow all.</p>
+                            </div>
+                            <div className="space-y-2">
+                                <Label>Tags (optional)</Label>
+                                <Input
+                                    placeholder='{"cost_center": "CC-42"}'
+                                    value={newTags}
+                                    onChange={e => setNewTags(e.target.value)}
+                                />
+                            </div>
                             <Button onClick={handleCreate} disabled={creating || !newName.trim()} className="w-full">
-                                {creating ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Creating…</> : "Create Team"}
+                                {creating ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Creating…</> : "Create Team"}
                             </Button>
                         </div>
                     </DialogContent>
@@ -253,6 +318,19 @@ function TeamCard({
                     ) : (
                         <div className="flex items-center gap-2">
                             <span className="font-medium text-sm">{team.name}</span>
+                            {team.description && (
+                                <span className="text-[11px] text-muted-foreground truncate max-w-[200px]">{team.description}</span>
+                            )}
+                            {team.max_budget_usd && (
+                                <Badge variant="outline" className="text-[9px] h-4 font-mono">
+                                    ${parseFloat(team.max_budget_usd).toLocaleString()}/{team.budget_duration || "mo"}
+                                </Badge>
+                            )}
+                            {team.allowed_models && team.allowed_models.length > 0 && (
+                                <Badge variant="secondary" className="text-[9px] h-4">
+                                    {team.allowed_models.length} model{team.allowed_models.length !== 1 ? "s" : ""} allowed
+                                </Badge>
+                            )}
                             <span className="text-[10px] text-muted-foreground/60">
                                 Created {formatDistanceToNow(new Date(team.created_at), { addSuffix: true })}
                             </span>

@@ -19,7 +19,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/rust-1.75+-orange?logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">
-  <img src="https://img.shields.io/badge/tests-1%2C170%20passing-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-1%2C051%20passing-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/latency-%3C1ms%20overhead-purple" alt="Latency">
   <img src="https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white" alt="Docker">
 </p>
@@ -71,6 +71,7 @@ Agent (virtual token) ──▶ AILink Gateway (policy + inject) ──▶ Provi
 
 ### ⚙️ Policy Engine
 - **15+ action types** — deny, throttle, transform, split, shadow, webhook
+- **A/B Traffic Splitting** — weighted variants with per-variant analytics
 - **Nested AND/OR conditions** on method, path, body, headers
 - **Shadow mode** — Test policies without blocking traffic
 - **Async evaluation** — Non-blocking background rule checks
@@ -102,6 +103,9 @@ Agent (virtual token) ──▶ AILink Gateway (policy + inject) ──▶ Provi
 <td>
 
 ### 🤖 AI-Native Features
+- **Prompt Management** — CRUD, versioning, label-based deploy, `{{variable}}` rendering
+- **Client-side prompt caching** — TTL cache in both SDKs (default 60s)
+- **A/B Experiments** — Create/monitor/stop model comparison experiments via API
 - **Universal format translation** — OpenAI ↔ Anthropic ↔ Gemini
 - **SSE streaming** — Word-by-word delta proxying
 - **Tool/function calls** — Cross-provider translation
@@ -195,6 +199,8 @@ print(resp.choices[0].message.content)
 | **OIDC / JWT Native Auth** | ✅ | ❌ | ❌ |
 | **PII Tokenization Vault** | ✅ | ❌ | ❌ |
 | **MCP Server Integration** | ✅ | ❌ | ❌ |
+| **Prompt Management + Versioning** | ✅ | ✅ | ❌ |
+| **A/B Model Experiments** | ✅ | ✅ | ❌ |
 | **Guardrails (100+ patterns)** | ✅ | ✅ | ❌ |
 | **Teams & RBAC** | ✅ | ✅ | ✅ |
 | **Load Balancing** | 5 strategies | ✅ | 5 strategies |
@@ -272,13 +278,12 @@ ailink/
 
 ## 🧪 Test Suite
 
-AILink has **1,170 tests** across three layers — no false positives, no mocks where real assertions belong.
+AILink has **1,051 tests** across two layers — unit tests with zero false positives.
 
 | Layer | Tests | What's Covered |
 |---|---|---|
-| **Rust Unit** | 956 | Policy engine operators, PII regex, cache keys, guardrail patterns, spend caps |
-| **Rust Integration** | 98 | Webhooks via wiremock, adversarial PII, RBAC, teams, load balancer routing |
-| **Python E2E** | 116 | 22 phases against live Docker stack — providers, streaming, guardrails, OIDC, teams, sessions, MCP, anomaly detection |
+| **Rust Unit** | 1,008 | Policy engine, PII regex, guardrail patterns, SSRF validation, header redaction, CC/DL regex, slugify, render_variables, load balancer, model router, spend caps |
+| **Rust Integration** | 43 | Webhook policy tests, security audit fixes, prompt management helpers |
 
 ```bash
 # Run all Rust tests (unit + integration)

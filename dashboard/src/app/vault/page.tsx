@@ -319,13 +319,25 @@ function CreateCredentialModal({ onClose, onSuccess }: { onClose: () => void; on
                     </div>
                     <div className="space-y-2">
                         <Label htmlFor="provider">Provider</Label>
-                        <Input
+                        <select
                             id="provider"
-                            placeholder="e.g. openai"
                             value={provider}
                             onChange={(e) => setProvider(e.target.value)}
                             required
-                        />
+                            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        >
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                            <option value="gemini">Google Gemini</option>
+                            <option value="azure-openai">Azure OpenAI</option>
+                            <option value="bedrock">AWS Bedrock</option>
+                            <option value="groq">Groq</option>
+                            <option value="mistral">Mistral AI</option>
+                            <option value="together-ai">Together AI</option>
+                            <option value="cohere">Cohere</option>
+                            <option value="ollama">Ollama (self-hosted)</option>
+                            <option value="custom">Custom / Other</option>
+                        </select>
                     </div>
                     <div className="space-y-2">
                         <Label htmlFor="secret">API Key / Secret</Label>

@@ -633,6 +633,8 @@ async fn handle_token_command(
                 allowed_models: None,
                 team_id: None,
                 tags: None,
+                mcp_allowed_tools: None,
+                mcp_blocked_tools: None,
             };
 
             state.db.insert_token(&new_token).await?;

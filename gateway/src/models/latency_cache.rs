@@ -59,7 +59,7 @@ async fn fetch_latency_p50(pool: &sqlx::PgPool) -> anyhow::Result<HashMap<String
             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY response_latency_ms)::float8 AS p50
         FROM audit_logs
         WHERE
-            timestamp >= NOW() - INTERVAL '24 hours'
+            created_at >= NOW() - INTERVAL '24 hours'
             AND response_latency_ms IS NOT NULL
             AND response_latency_ms > 0
         GROUP BY COALESCE(response_model, model, 'unknown')

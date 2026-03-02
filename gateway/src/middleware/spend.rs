@@ -134,12 +134,18 @@ pub async fn check_and_increment_spend(
     let mut conn = cache.redis();
     let now = Utc::now();
 
-    // Lua script: unconditionally increment spend and return the new total
-    // KEYS[1] = spend key, ARGV[1] = limit (unused in script, checked in Rust), ARGV[2] = cost, ARGV[3] = TTL
-    // Returns: new_total
+    // SEC-01 FIX: Atomic check-then-increment Lua script.
+    // Checks `current + cost > limit` INSIDE Redis before incrementing.
+    // Returns -1 if the cap would be exceeded (caller should deny).
+    // KEYS[1] = spend key, ARGV[1] = limit, ARGV[2] = cost, ARGV[3] = TTL
     let lua_script = r#"
+        local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+        local limit = tonumber(ARGV[1])
         local cost = tonumber(ARGV[2])
         local ttl = tonumber(ARGV[3])
+        if current + cost > limit then
+            return '-1'
+        end
         local new_val = redis.call('INCRBYFLOAT', KEYS[1], cost)
         redis.call('EXPIRE', KEYS[1], ttl)
         return new_val
@@ -160,7 +166,7 @@ pub async fn check_and_increment_spend(
             .await
             .context("failed to execute daily spend lua script")?;
 
-        if result > daily_limit {
+        if result < 0.0 {
             anyhow::bail!("daily spend cap exceeded during increment");
         }
     } else {
@@ -189,7 +195,7 @@ pub async fn check_and_increment_spend(
             .await
             .context("failed to execute monthly spend lua script")?;
         
-        if result > monthly_limit {
+        if result < 0.0 {
             anyhow::bail!("monthly spend cap exceeded during increment");
         }
     } else {
@@ -218,7 +224,7 @@ pub async fn check_and_increment_spend(
             .await
             .context("failed to execute lifetime spend lua script")?;
         
-        if result > lifetime_limit {
+        if result < 0.0 {
             anyhow::bail!("lifetime spend cap exceeded during increment");
         }
     } else {

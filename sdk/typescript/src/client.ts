@@ -49,6 +49,7 @@ import { RealtimeResource } from "./resources/realtime.js";
 import { BillingResource } from "./resources/billing.js";
 import { ProjectsResource } from "./resources/projects.js";
 import { ExperimentsResource } from "./resources/experiments.js";
+import { PromptsResource } from "./resources/prompts.js";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -204,6 +205,7 @@ export class AILinkClient {
     private _billing?: BillingResource;
     private _projects?: ProjectsResource;
     private _experiments?: ExperimentsResource;
+    private _prompts?: PromptsResource;
 
     /**
      * Create a new AILink client.
@@ -567,8 +569,13 @@ export class AILinkClient {
         return (this._projects ??= new ProjectsResource(this._http));
     }
 
-    /** Experiment tracking (A/B testing) — stub until P4.2 ships. */
+    /** Experiment tracking (A/B testing) — create, monitor, and stop experiments. */
     get experiments(): ExperimentsResource {
-        return (this._experiments ??= new ExperimentsResource());
+        return (this._experiments ??= new ExperimentsResource(this._http));
+    }
+
+    /** Prompt management — CRUD, versioning, deployment, rendering. */
+    get prompts(): PromptsResource {
+        return (this._prompts ??= new PromptsResource(this._http));
     }
 }

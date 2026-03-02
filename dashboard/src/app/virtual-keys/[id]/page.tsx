@@ -324,6 +324,32 @@ export default function TokenDetailPage() {
                                 <p className="text-xs text-muted-foreground mb-1">Created At</p>
                                 <p className="font-mono text-xs">{new Date(token.created_at).toLocaleString()}</p>
                             </div>
+                            {token.team_id && (
+                                <div>
+                                    <p className="text-xs text-muted-foreground mb-1">Team</p>
+                                    <p className="font-mono text-xs text-violet-400">{token.team_id}</p>
+                                </div>
+                            )}
+                            {token.allowed_models && token.allowed_models.length > 0 && (
+                                <div>
+                                    <p className="text-xs text-muted-foreground mb-1">Allowed Models</p>
+                                    <div className="flex flex-wrap gap-1">
+                                        {token.allowed_models.map((m) => (
+                                            <Badge key={m} variant="secondary" className="font-mono text-[10px]">{m}</Badge>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {token.tags && Object.keys(token.tags).length > 0 && (
+                                <div>
+                                    <p className="text-xs text-muted-foreground mb-1">Tags</p>
+                                    <div className="flex flex-wrap gap-1">
+                                        {Object.entries(token.tags).map(([k, v]) => (
+                                            <Badge key={k} variant="outline" className="font-mono text-[10px]">{k}: {v}</Badge>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
                         </CardContent>
                     </Card>
 

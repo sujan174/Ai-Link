@@ -276,6 +276,76 @@ for await (const chunk of streamSSE(response)) {
 
 ---
 
+## Prompt Management
+
+Create, version, deploy, and render prompt templates. Rendered prompts are cached client-side (default 60s) to reduce latency.
+
+```typescript
+const admin = AILinkClient.admin({ adminKey: 'ailink-admin-...' });
+
+// Create and version
+const prompt = await admin.prompts.create({ name: 'Support Agent', folder: '/support' });
+await admin.prompts.createVersion(prompt.id, {
+  model: 'gpt-4o',
+  messages: [
+    { role: 'system', content: 'You help {{user_name}} with {{topic}}.' },
+    { role: 'user',   content: '{{question}}' },
+  ],
+  temperature: 0.7,
+  commitMessage: 'Initial version',
+});
+
+// Deploy to production
+await admin.prompts.deploy(prompt.id, { version: 1, label: 'production' });
+
+// Render — cached for 60s by default
+const payload = await admin.prompts.render('support-agent', {
+  variables: { user_name: 'Alice', topic: 'billing', question: 'Where is my invoice?' },
+  label: 'production',
+});
+// openai.chat.completions.create({ ...payload })
+
+// Cache control
+admin.prompts.invalidate('support-agent'); // clear one slug
+admin.prompts.clearCache();                 // clear all
+```
+
+---
+
+## A/B Experiments
+
+Compare models, prompts, or routing strategies with weighted traffic splitting:
+
+```typescript
+const admin = AILinkClient.admin({ adminKey: 'ailink-admin-...' });
+
+// Create
+const exp = await admin.experiments.create({
+  name: 'gpt4o-vs-claude',
+  variants: [
+    { name: 'control',   weight: 50, model: 'gpt-4o' },
+    { name: 'treatment', weight: 50, model: 'claude-3-5-sonnet-20241022' },
+  ],
+});
+
+// Results
+const results = await admin.experiments.results(exp.id);
+// results.variants → per-variant metrics (requests, latency, cost, error_rate)
+
+// Adjust weights mid-experiment
+await admin.experiments.update(exp.id, {
+  variants: [
+    { name: 'control',   weight: 20, model: 'gpt-4o' },
+    { name: 'treatment', weight: 80, model: 'claude-3-5-sonnet-20241022' },
+  ],
+});
+
+// Stop
+await admin.experiments.stop(exp.id);
+```
+
+---
+
 ## Environment Variables
 
 | Variable | Description | Default |

@@ -138,6 +138,47 @@ for log in admin.audit.list_all():
 pending = admin.approvals.list()       # → List[ApprovalRequest]
 admin.approvals.approve(pending[0].id)
 admin.approvals.reject(pending[1].id)
+
+# Prompt Management
+prompt = admin.prompts.create(name="Customer Support Agent", folder="/support")
+admin.prompts.create_version(
+    prompt["id"],
+    model="gpt-4o",
+    messages=[
+        {"role": "system", "content": "You help {{user_name}} with {{topic}}."},
+        {"role": "user",   "content": "{{question}}"},
+    ],
+    commit_message="Initial version",
+)
+admin.prompts.deploy(prompt["id"], version=1, label="production")
+
+# Render with variable substitution (result is cached client-side for 60s)
+payload = admin.prompts.render(
+    "customer-support-agent",
+    variables={"user_name": "Alice", "topic": "billing", "question": "Where is my invoice?"},
+    label="production",
+)
+# payload is OpenAI-compatible — pass directly to openai.chat.completions.create(**payload)
+
+# Adjust cache TTL or clear it
+custom = admin.prompts  # default 60s TTL, configurable per-resource
+custom.invalidate("customer-support-agent")  # clear one slug
+custom.clear_cache()                          # clear all
+
+# A/B Experiments
+exp = admin.experiments.create(
+    name="gpt4o-vs-claude",
+    variants=[
+        {"name": "control",   "weight": 50, "model": "gpt-4o"},
+        {"name": "treatment", "weight": 50, "model": "claude-3-5-sonnet-20241022"},
+    ],
+)
+results = admin.experiments.results(exp["id"])  # per-variant metrics
+admin.experiments.update(exp["id"], variants=[  # adjust weights mid-experiment
+    {"name": "control",   "weight": 30, "model": "gpt-4o"},
+    {"name": "treatment", "weight": 70, "model": "claude-3-5-sonnet-20241022"},
+])
+admin.experiments.stop(exp["id"])               # done
 ```
 
 ### Async Usage

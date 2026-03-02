@@ -19,7 +19,7 @@ export function PlaygroundClient() {
     const [url, setUrl] = useState("http://localhost:8443/v1/chat/completions");
     const [headers, setHeaders] = useState("Content-Type: application/json");
     const [body, setBody] = useState(`{
-  "model": "gpt-4",
+  "model": "gpt-4.1-mini",
   "messages": [
     {"role": "user", "content": "Hello world"}
   ]

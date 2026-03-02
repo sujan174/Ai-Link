@@ -225,6 +225,77 @@ const yaml = await admin.config.export({ format: "yaml" });
 await admin.config.importConfig(yamlString);
 ```
 
+## Prompt Management
+
+Version, deploy, and render prompt templates with `{{variable}}` substitution:
+
+```typescript
+const admin = AILinkClient.admin({ adminKey: "..." });
+
+// Create
+const prompt = await admin.prompts.create({ name: "Support Agent", folder: "/support" });
+
+// Version
+await admin.prompts.createVersion(prompt.id, {
+  model: "gpt-4o",
+  messages: [
+    { role: "system", content: "You help {{user_name}} with {{topic}}." },
+    { role: "user",   content: "{{question}}" },
+  ],
+  commitMessage: "Initial version",
+});
+
+// Deploy to production
+await admin.prompts.deploy(prompt.id, { version: 1, label: "production" });
+
+// Render — cached client-side for 60s by default
+const payload = await admin.prompts.render("support-agent", {
+  variables: { user_name: "Alice", topic: "billing", question: "Where is my invoice?" },
+  label: "production",
+});
+// spread into OpenAI: openai.chat.completions.create({ ...payload })
+
+// Cache management
+admin.prompts.invalidate("support-agent");  // clear one slug
+admin.prompts.clearCache();                  // clear all
+```
+
+## A/B Experiments
+
+Compare models, prompts, or routing strategies with weighted traffic splitting:
+
+```typescript
+const admin = AILinkClient.admin({ adminKey: "..." });
+
+// Create experiment
+const exp = await admin.experiments.create({
+  name: "gpt4o-vs-claude",
+  variants: [
+    { name: "control",   weight: 50, model: "gpt-4o" },
+    { name: "treatment", weight: 50, model: "claude-3-5-sonnet-20241022" },
+  ],
+});
+
+// Check per-variant results
+const results = await admin.experiments.results(exp.id);
+console.log(results.variants);
+// [
+//   { variant: "control",   total_requests: 1240, avg_latency_ms: 342, error_rate: 0.01 },
+//   { variant: "treatment", total_requests: 1238, avg_latency_ms: 289, error_rate: 0.00 }
+// ]
+
+// Shift traffic mid-experiment
+await admin.experiments.update(exp.id, {
+  variants: [
+    { name: "control",   weight: 20, model: "gpt-4o" },
+    { name: "treatment", weight: 80, model: "claude-3-5-sonnet-20241022" },
+  ],
+});
+
+// Stop when done
+await admin.experiments.stop(exp.id);
+```
+
 ## SSE Streaming
 
 ```typescript

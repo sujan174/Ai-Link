@@ -1,8 +1,9 @@
 //! MCP Server Registry — in-memory registry of active MCP connections
-//! with cached tool schemas.
+//! with cached tool schemas and OAuth 2.0 auto-discovery.
 //!
 //! The registry manages MCP server lifecycles:
 //! - Registration (connect + initialize + cache tools)
+//! - Auto-discovery (probe URL → OAuth discovery → token → connect)
 //! - Tool schema caching and refresh
 //! - Tool execution routing
 
@@ -12,7 +13,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use super::client::McpClient;
+use super::client::{McpAuth, McpClient};
+use super::oauth::OAuthTokenManager;
 use super::types::*;
 
 /// Configuration for registering an MCP server.
@@ -24,6 +26,31 @@ pub struct McpServerConfig {
     pub api_key: Option<String>,
 }
 
+/// Request for auto-discovery registration.
+#[derive(Debug, Clone)]
+pub struct DiscoverRequest {
+    pub endpoint: String,
+    pub name: Option<String>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+}
+
+/// Result of a discovery probe (dry-run).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DiscoveryResult {
+    pub endpoint: String,
+    pub requires_auth: bool,
+    pub auth_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes_supported: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_info: Option<Implementation>,
+    pub tools: Vec<McpToolDef>,
+    pub tool_count: usize,
+}
+
 /// Runtime state for a connected MCP server.
 pub struct McpServerState {
     pub config: McpServerConfig,
@@ -32,6 +59,7 @@ pub struct McpServerState {
     pub last_refreshed: std::time::Instant,
     pub status: McpServerStatus,
     pub server_info: Option<Implementation>,
+    pub auth_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +74,8 @@ pub struct McpRegistry {
     servers: Arc<RwLock<HashMap<Uuid, McpServerState>>>,
     /// Name → ID index for fast lookup by server name.
     name_index: Arc<RwLock<HashMap<String, Uuid>>>,
+    /// Shared OAuth token manager for all OAuth-authed servers.
+    oauth_manager: Arc<OAuthTokenManager>,
 }
 
 impl McpRegistry {
@@ -53,15 +83,206 @@ impl McpRegistry {
         Self {
             servers: Arc::new(RwLock::new(HashMap::new())),
             name_index: Arc::new(RwLock::new(HashMap::new())),
+            oauth_manager: Arc::new(OAuthTokenManager::new()),
         }
     }
 
-    /// Register and connect to an MCP server.
+    /// Get a reference to the shared OAuth token manager.
+    pub fn oauth_manager(&self) -> &Arc<OAuthTokenManager> {
+        &self.oauth_manager
+    }
+
+    /// Register and connect to an MCP server (manual mode with optional API key).
     ///
     /// Performs the initialize handshake and caches the tool list.
     pub async fn register(&self, config: McpServerConfig) -> Result<Vec<McpToolDef>, String> {
         let client = McpClient::new(&config.endpoint, config.api_key.clone());
+        let auth_type = if config.api_key.is_some() {
+            "bearer"
+        } else {
+            "none"
+        };
 
+        self.register_with_client(config, client, auth_type.to_string())
+            .await
+    }
+
+    /// Register via auto-discovery: probe → OAuth discovery → token → initialize → list tools.
+    pub async fn register_with_discovery(
+        &self,
+        req: DiscoverRequest,
+    ) -> Result<(Uuid, Vec<McpToolDef>), String> {
+        let id = Uuid::new_v4();
+
+        // Step 1: Attempt OAuth discovery
+        let discovery = self.oauth_manager.discover(&req.endpoint).await;
+
+        let (client, auth_type, name) = match discovery {
+            Ok(disc) if disc.requires_auth => {
+                // OAuth is required
+                let client_id = req.client_id.ok_or_else(|| {
+                    "Server requires OAuth 2.0 authentication. Please provide client_id and client_secret.".to_string()
+                })?;
+                let client_secret = req.client_secret.ok_or_else(|| {
+                    "Server requires OAuth 2.0 authentication. Please provide client_secret.".to_string()
+                })?;
+
+                // Acquire initial token
+                let scopes = disc
+                    .auth_server
+                    .scopes_supported
+                    .clone();
+
+                let token_resp = self
+                    .oauth_manager
+                    .acquire_token(
+                        &disc.auth_server.token_endpoint,
+                        &client_id,
+                        &client_secret,
+                        &scopes,
+                    )
+                    .await?;
+
+                // Store in token cache
+                self.oauth_manager
+                    .store_token(
+                        id,
+                        &token_resp,
+                        disc.auth_server.token_endpoint.clone(),
+                        client_id,
+                        client_secret,
+                        scopes,
+                    )
+                    .await;
+
+                let auth = McpAuth::OAuth {
+                    manager: self.oauth_manager.clone(),
+                    server_id: id,
+                };
+
+                let client = McpClient::with_auth(&req.endpoint, auth);
+                (client, "oauth2".to_string(), req.name)
+            }
+            Ok(_) => {
+                // No auth required
+                let client = McpClient::new(&req.endpoint, None::<String>);
+                (client, "none".to_string(), req.name)
+            }
+            Err(_) => {
+                // Discovery failed — try connecting without auth
+                // (server might not implement RFC 9728 but still work)
+                let client = McpClient::new(&req.endpoint, None::<String>);
+                (client, "none".to_string(), req.name)
+            }
+        };
+
+        // Step 2: Initialize + list tools
+        let init_result = client.initialize().await.map_err(|e| {
+            format!("Failed to initialize MCP server: {}", e)
+        })?;
+
+        if init_result.capabilities.tools.is_none() {
+            return Err("MCP server does not advertise tools capability".to_string());
+        }
+
+        let tools = client.list_tools().await.map_err(|e| {
+            format!("Failed to list tools: {}", e)
+        })?;
+
+        // Step 3: Derive name from server info if not provided
+        let server_name = name
+            .or_else(|| {
+                init_result
+                    .server_info
+                    .as_ref()
+                    .map(|info| sanitize_server_name(&info.name))
+            })
+            .unwrap_or_else(|| format!("mcp-server-{}", &id.to_string()[..8]));
+
+        tracing::info!(
+            server = %server_name,
+            tool_count = tools.len(),
+            auth_type = %auth_type,
+            tools = ?tools.iter().map(|t| &t.name).collect::<Vec<_>>(),
+            "MCP server auto-discovered and registered"
+        );
+
+        let config = McpServerConfig {
+            id,
+            name: server_name.clone(),
+            endpoint: req.endpoint,
+            api_key: None, // OAuth-managed servers don't use static keys
+        };
+
+        let tools_clone = tools.clone();
+        let state = McpServerState {
+            config,
+            client,
+            tools,
+            last_refreshed: std::time::Instant::now(),
+            status: McpServerStatus::Connected,
+            server_info: init_result.server_info,
+            auth_type,
+        };
+
+        {
+            let mut servers = self.servers.write().await;
+            servers.insert(id, state);
+        }
+        {
+            let mut index = self.name_index.write().await;
+            index.insert(server_name, id);
+        }
+
+        Ok((id, tools_clone))
+    }
+
+    /// Dry-run discovery: probe a URL, return auth requirements + server info without persisting.
+    pub async fn discover_dry_run(&self, endpoint: &str) -> Result<DiscoveryResult, String> {
+        // Try OAuth discovery
+        let discovery = self.oauth_manager.discover(endpoint).await;
+
+        let (auth_type, token_endpoint, scopes) = match &discovery {
+            Ok(disc) if disc.requires_auth => (
+                "oauth2".to_string(),
+                Some(disc.auth_server.token_endpoint.clone()),
+                Some(disc.auth_server.scopes_supported.clone()),
+            ),
+            Ok(_) => ("none".to_string(), None, None),
+            Err(_) => ("unknown".to_string(), None, None),
+        };
+
+        // Try connecting without auth to get server info and tools
+        let client = McpClient::new(endpoint, None::<String>);
+        let (server_info, tools) = match client.initialize().await {
+            Ok(init) => {
+                let tools = client.list_tools().await.unwrap_or_default();
+                (init.server_info, tools)
+            }
+            Err(_) => (None, vec![]),
+        };
+
+        let tool_count = tools.len();
+
+        Ok(DiscoveryResult {
+            endpoint: endpoint.to_string(),
+            requires_auth: auth_type == "oauth2",
+            auth_type,
+            token_endpoint,
+            scopes_supported: scopes,
+            server_info,
+            tools,
+            tool_count,
+        })
+    }
+
+    /// Internal: register a server with an already-constructed client.
+    async fn register_with_client(
+        &self,
+        config: McpServerConfig,
+        client: McpClient,
+        auth_type: String,
+    ) -> Result<Vec<McpToolDef>, String> {
         // Initialize
         let init_result = client.initialize().await.map_err(|e| {
             format!("Failed to initialize MCP server '{}': {}", config.name, e)
@@ -83,6 +304,7 @@ impl McpRegistry {
         tracing::info!(
             server = %config.name,
             tool_count = tools.len(),
+            auth_type = %auth_type,
             tools = ?tools.iter().map(|t| &t.name).collect::<Vec<_>>(),
             "MCP server registered"
         );
@@ -98,6 +320,7 @@ impl McpRegistry {
             last_refreshed: std::time::Instant::now(),
             status: McpServerStatus::Connected,
             server_info: init_result.server_info,
+            auth_type,
         };
 
         {
@@ -118,6 +341,8 @@ impl McpRegistry {
         if let Some(state) = servers.remove(id) {
             let mut index = self.name_index.write().await;
             index.remove(&state.config.name);
+            // Clean up OAuth tokens
+            self.oauth_manager.remove_token(id).await;
             true
         } else {
             false
@@ -219,6 +444,7 @@ impl McpRegistry {
                 name: s.config.name.clone(),
                 endpoint: s.config.endpoint.clone(),
                 status: format!("{:?}", s.status),
+                auth_type: s.auth_type.clone(),
                 tool_count: s.tools.len(),
                 tools: s.tools.iter().map(|t| t.name.clone()).collect(),
                 last_refreshed_secs_ago: s.last_refreshed.elapsed().as_secs(),
@@ -254,6 +480,21 @@ impl McpRegistry {
     }
 }
 
+/// Sanitize a server name from serverInfo to a safe identifier.
+fn sanitize_server_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
 /// Serializable server info for API responses.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct McpServerInfo {
@@ -261,6 +502,7 @@ pub struct McpServerInfo {
     pub name: String,
     pub endpoint: String,
     pub status: String,
+    pub auth_type: String,
     pub tool_count: usize,
     pub tools: Vec<String>,
     pub last_refreshed_secs_ago: u64,
@@ -282,7 +524,9 @@ mod tests {
     #[tokio::test]
     async fn test_empty_tools_by_name() {
         let registry = McpRegistry::new();
-        let tools = registry.get_openai_tools_by_name(&["nonexistent".to_string()]).await;
+        let tools = registry
+            .get_openai_tools_by_name(&["nonexistent".to_string()])
+            .await;
         assert!(tools.is_empty());
     }
 
@@ -306,5 +550,55 @@ mod tests {
         let registry = McpRegistry::new();
         let servers = registry.list_servers().await;
         assert!(servers.is_empty());
+    }
+
+    #[test]
+    fn test_sanitize_server_name() {
+        assert_eq!(sanitize_server_name("Brave Search"), "brave-search");
+        assert_eq!(sanitize_server_name("slack-mcp"), "slack-mcp");
+        assert_eq!(sanitize_server_name("My Server!@#"), "my-server");
+        assert_eq!(sanitize_server_name("GITHUB_Tools"), "github_tools");
+        assert_eq!(sanitize_server_name("---test---"), "test");
+    }
+
+    #[test]
+    fn test_discovery_result_serialization() {
+        let result = DiscoveryResult {
+            endpoint: "https://mcp.example.com".into(),
+            requires_auth: true,
+            auth_type: "oauth2".into(),
+            token_endpoint: Some("https://auth.example.com/token".into()),
+            scopes_supported: Some(vec!["tools:read".into()]),
+            server_info: Some(Implementation {
+                name: "test-server".into(),
+                version: "1.0.0".into(),
+            }),
+            tools: vec![],
+            tool_count: 0,
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["requires_auth"], true);
+        assert_eq!(json["auth_type"], "oauth2");
+        assert!(json["token_endpoint"].is_string());
+    }
+
+    #[test]
+    fn test_discovery_result_omits_none() {
+        let result = DiscoveryResult {
+            endpoint: "http://localhost/mcp".into(),
+            requires_auth: false,
+            auth_type: "none".into(),
+            token_endpoint: None,
+            scopes_supported: None,
+            server_info: None,
+            tools: vec![],
+            tool_count: 0,
+        };
+
+        let json = serde_json::to_value(&result).unwrap();
+        assert!(json.get("token_endpoint").is_none());
+        assert!(json.get("scopes_supported").is_none());
+        assert!(json.get("server_info").is_none());
     }
 }

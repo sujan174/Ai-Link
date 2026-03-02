@@ -48,6 +48,13 @@ export interface Token {
   log_level: number;
   is_active: boolean;
   created_at: string;
+  // Extended fields
+  team_id: string | null;
+  allowed_models: string[] | null;
+  allowed_model_group_ids: string[] | null;
+  tags: Record<string, string> | null;
+  mcp_allowed_tools: string[] | null;
+  mcp_blocked_tools: string[] | null;
 }
 
 export interface ApprovalRequest {
@@ -169,6 +176,13 @@ export interface CreateTokenRequest {
   policy_ids?: string[];
   upstreams?: UpstreamEntry[];
   log_level?: number;
+  // Gateway extended fields
+  team_id?: string;
+  allowed_models?: string[];
+  tags?: Record<string, string>;
+  fallback_url?: string;
+  mcp_allowed_tools?: string[];
+  mcp_blocked_tools?: string[];
 }
 
 export interface CreateTokenResponse {
@@ -969,6 +983,7 @@ export interface McpServerInfo {
   name: string;
   endpoint: string;
   status: string;
+  auth_type: string;
   tool_count: number;
   tools: string[];
   last_refreshed_secs_ago: number;
@@ -978,8 +993,25 @@ export interface McpServerInfo {
 export interface RegisterMcpServerResponse {
   id: string;
   name: string;
+  auth_type: string;
   tool_count: number;
   tools: string[];
+}
+
+export interface McpDiscoveryResult {
+  endpoint: string;
+  requires_auth: boolean;
+  auth_type: string;
+  token_endpoint?: string;
+  scopes_supported?: string[];
+  server_info?: { name: string; version: string };
+  tools: McpToolDef[];
+  tool_count: number;
+}
+
+export interface McpReauthResponse {
+  success: boolean;
+  error?: string;
 }
 
 export interface TestMcpServerResponse {
@@ -992,9 +1024,12 @@ export interface TestMcpServerResponse {
 export const listMcpServers = () => api<McpServerInfo[]>("/mcp/servers");
 
 export const registerMcpServer = (data: {
-  name: string;
+  name?: string;
   endpoint: string;
   api_key?: string;
+  client_id?: string;
+  client_secret?: string;
+  auto_discover?: boolean;
 }) =>
   api<RegisterMcpServerResponse>("/mcp/servers", {
     method: "POST",
@@ -1010,8 +1045,17 @@ export const refreshMcpServer = (id: string) =>
 export const listMcpServerTools = (id: string) =>
   api<McpToolDef[]>(`/mcp/servers/${id}/tools`);
 
+export const discoverMcpServer = (endpoint: string) =>
+  api<McpDiscoveryResult>("/mcp/servers/discover", {
+    method: "POST",
+    body: JSON.stringify({ endpoint }),
+  });
+
+export const reauthMcpServer = (id: string) =>
+  api<McpReauthResponse>(`/mcp/servers/${id}/reauth`, { method: "POST" });
+
 export const testMcpServer = (data: {
-  name: string;
+  name?: string;
   endpoint: string;
   api_key?: string;
 }) =>
@@ -1026,8 +1070,22 @@ export interface Team {
   id: string;
   org_id: string;
   name: string;
+  description: string | null;
+  max_budget_usd: string | null;
+  budget_duration: string | null;
+  allowed_models: string[] | null;
+  tags: Record<string, string> | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface CreateTeamRequest {
+  name: string;
+  description?: string;
+  max_budget_usd?: number | null;
+  budget_duration?: string | null;
+  allowed_models?: string[];
+  tags?: Record<string, string>;
 }
 
 export interface TeamMember {
@@ -1047,11 +1105,17 @@ export interface TeamSpend {
 
 export const listTeams = () => api<Team[]>("/teams");
 
-export const createTeam = (name: string) =>
-  api<Team>("/teams", { method: "POST", body: JSON.stringify({ name }) });
+export const createTeam = (data: CreateTeamRequest | string) =>
+  api<Team>("/teams", {
+    method: "POST",
+    body: JSON.stringify(typeof data === "string" ? { name: data } : data),
+  });
 
-export const updateTeam = (id: string, name: string) =>
-  api<Team>(`/teams/${id}`, { method: "PUT", body: JSON.stringify({ name }) });
+export const updateTeam = (id: string, data: Partial<CreateTeamRequest> | string) =>
+  api<Team>(`/teams/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(typeof data === "string" ? { name: data } : data),
+  });
 
 export const deleteTeam = (id: string) =>
   api<void>(`/teams/${id}`, { method: "DELETE" });
@@ -1180,3 +1244,118 @@ export const rehydratePii = (tokens: string[]) =>
     method: "POST",
     body: JSON.stringify({ tokens }),
   });
+
+// ── Prompt Management ─────────────────────────────────────────
+
+export interface Prompt {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  folder: string;
+  tags: Record<string, string>;
+  created_at: string;
+  updated_at: string;
+  created_by: string;
+  version_count?: number;
+  latest_version?: number;
+  latest_model?: string;
+  labels?: string[];
+}
+
+export interface PromptVersion {
+  id: string;
+  prompt_id: string;
+  version: number;
+  model: string;
+  messages: Array<{ role: string; content: string }>;
+  temperature: number | null;
+  max_tokens: number | null;
+  top_p: number | null;
+  tools: unknown | null;
+  commit_message: string;
+  created_at: string;
+  created_by: string;
+  labels: string[];
+}
+
+export interface CreatePromptRequest {
+  name: string;
+  slug?: string;
+  description?: string;
+  folder?: string;
+  tags?: Record<string, string>;
+}
+
+export interface CreateVersionRequest {
+  model: string;
+  messages: Array<{ role: string; content: string }>;
+  temperature?: number;
+  max_tokens?: number;
+  top_p?: number;
+  tools?: unknown;
+  commit_message?: string;
+}
+
+export interface DeployRequest {
+  version: number;
+  label: string;
+}
+
+export interface RenderResponse {
+  model: string;
+  messages: Array<{ role: string; content: string }>;
+  temperature?: number;
+  max_tokens?: number;
+  top_p?: number;
+  tools?: unknown;
+  version: number;
+  label?: string;
+  prompt_id: string;
+  prompt_slug: string;
+}
+
+export const listPrompts = (folder?: string) =>
+  api<Prompt[]>(`/prompts${folder ? `?folder=${encodeURIComponent(folder)}` : ""}`);
+
+export const getPrompt = (id: string) =>
+  api<{ prompt: Prompt; versions: PromptVersion[]; version_count: number }>(`/prompts/${id}`);
+
+export const createPrompt = (data: CreatePromptRequest) =>
+  api<{ id: string; slug: string }>("/prompts", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const updatePrompt = (id: string, data: Partial<CreatePromptRequest>) =>
+  api<{ message: string }>(`/prompts/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+
+export const deletePrompt = (id: string) =>
+  api<{ message: string }>(`/prompts/${id}`, { method: "DELETE" });
+
+export const createVersion = (promptId: string, data: CreateVersionRequest) =>
+  api<{ id: string; version: number }>(`/prompts/${promptId}/versions`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const listVersions = (promptId: string) =>
+  api<PromptVersion[]>(`/prompts/${promptId}/versions`);
+
+export const deployVersion = (promptId: string, data: DeployRequest) =>
+  api<{ message: string }>(`/prompts/${promptId}/deploy`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+export const renderPrompt = (slug: string, variables?: Record<string, string>, label?: string, version?: number) =>
+  api<RenderResponse>(`/prompts/by-slug/${slug}/render`, {
+    method: "POST",
+    body: JSON.stringify({ variables, label, version }),
+  });
+
+export const listPromptFolders = () =>
+  api<string[]>("/prompts/folders");

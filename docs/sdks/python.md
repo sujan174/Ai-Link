@@ -381,6 +381,93 @@ client = AIlinkClient(
 
 ---
 
+## Prompt Management
+
+Create, version, deploy, and render prompt templates with `{{variable}}` substitution.
+Rendered prompts are cached client-side (default 60s) to reduce latency.
+
+```python
+admin = AIlinkClient.admin(admin_key="ailink_admin_...")
+
+# Create
+prompt = admin.prompts.create(
+    name="Customer Support Agent",
+    folder="/support",
+    description="Handles billing and account queries",
+)
+
+# Publish a version
+admin.prompts.create_version(
+    prompt["id"],
+    model="gpt-4o",
+    messages=[
+        {"role": "system", "content": "You help {{user_name}} with {{topic}}."},
+        {"role": "user",   "content": "{{question}}"},
+    ],
+    temperature=0.7,
+    commit_message="Initial version",
+)
+
+# Deploy to production label
+admin.prompts.deploy(prompt["id"], version=1, label="production")
+
+# Render — result cached for 60s (configurable via cache_ttl=N)
+payload = admin.prompts.render(
+    "customer-support-agent",
+    variables={"user_name": "Alice", "topic": "billing", "question": "Where is my invoice?"},
+    label="production",
+)
+# payload is OpenAI-compatible:
+# {"model": "gpt-4o", "messages": [...], "temperature": 0.7}
+oai.chat.completions.create(**payload)
+
+# List all versions
+versions = admin.prompts.list_versions(prompt["id"])
+
+# Cache management
+admin.prompts.invalidate("customer-support-agent")  # one slug
+admin.prompts.clear_cache()                          # all prompts
+```
+
+---
+
+## A/B Experiments
+
+Compare models, prompts, or routing strategies with weighted traffic splitting.
+
+```python
+admin = AIlinkClient.admin(admin_key="ailink_admin_...")
+
+# Create experiment
+exp = admin.experiments.create(
+    name="gpt4o-vs-claude",
+    variants=[
+        {"name": "control",   "weight": 50, "model": "gpt-4o"},
+        {"name": "treatment", "weight": 50, "model": "claude-3-5-sonnet-20241022"},
+    ],
+)
+
+# Monitor results
+results = admin.experiments.results(exp["id"])
+# {
+#   "variants": [
+#     {"variant": "control",   "total_requests": 1240, "avg_latency_ms": 342, "error_rate": 0.01},
+#     {"variant": "treatment", "total_requests": 1238, "avg_latency_ms": 289, "error_rate": 0.00},
+#   ]
+# }
+
+# Shift weights mid-experiment
+admin.experiments.update(exp["id"], variants=[
+    {"name": "control",   "weight": 20, "model": "gpt-4o"},
+    {"name": "treatment", "weight": 80, "model": "claude-3-5-sonnet-20241022"},
+])
+
+# Stop
+admin.experiments.stop(exp["id"])
+```
+
+---
+
 ## Config-as-Code
 
 ```python

@@ -16,6 +16,8 @@ pub mod config;
 pub mod guardrail_presets;
 pub mod handlers;
 pub mod mcp_handlers;
+pub mod prompt_handlers;
+pub mod experiment_handlers;
 
 // ── Auth Context ─────────────────────────────────────────────
 
@@ -243,9 +245,24 @@ pub fn api_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         // MCP Server Management
         .route("/mcp/servers", get(mcp_handlers::list_mcp_servers).post(mcp_handlers::register_mcp_server))
         .route("/mcp/servers/test", post(mcp_handlers::test_mcp_server))
+        .route("/mcp/servers/discover", post(mcp_handlers::discover_mcp_server))
         .route("/mcp/servers/:id", delete(mcp_handlers::delete_mcp_server))
         .route("/mcp/servers/:id/refresh", post(mcp_handlers::refresh_mcp_server))
         .route("/mcp/servers/:id/tools", get(mcp_handlers::list_mcp_server_tools))
+        .route("/mcp/servers/:id/reauth", post(mcp_handlers::reauth_mcp_server))
+        // Prompt Management
+        .route("/prompts", get(prompt_handlers::list_prompts).post(prompt_handlers::create_prompt))
+        .route("/prompts/folders", get(prompt_handlers::list_folders))
+        .route("/prompts/:id", get(prompt_handlers::get_prompt).put(prompt_handlers::update_prompt).delete(prompt_handlers::delete_prompt))
+        .route("/prompts/:id/versions", get(prompt_handlers::list_versions).post(prompt_handlers::create_version))
+        .route("/prompts/:id/versions/:version", get(prompt_handlers::get_version))
+        .route("/prompts/:id/deploy", post(prompt_handlers::deploy_version))
+        .route("/prompts/by-slug/:slug/render", get(prompt_handlers::render_prompt_get).post(prompt_handlers::render_prompt_post))
+        // Experiment Management (A/B Testing)
+        .route("/experiments", get(experiment_handlers::list_experiments).post(experiment_handlers::create_experiment))
+        .route("/experiments/:id", get(experiment_handlers::get_experiment).put(experiment_handlers::update_experiment))
+        .route("/experiments/:id/results", get(experiment_handlers::get_experiment_results))
+        .route("/experiments/:id/stop", post(experiment_handlers::stop_experiment))
         .layer(middleware::from_fn_with_state(state, admin_auth))
         .layer(TraceLayer::new_for_http())
         .fallback(fallback_404)

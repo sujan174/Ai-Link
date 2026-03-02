@@ -28,16 +28,125 @@ pub fn parse_mcp_header(headers: &axum::http::HeaderMap) -> Vec<String> {
         .unwrap_or_default()
 }
 
+// ── Per-Token MCP Tool Access Control ───────────────────────────
+
+/// Parse a JSONB column (from `TokenRow`) into a `Vec<String>`.
+/// Returns `None` if the column is SQL NULL (meaning "unrestricted").
+/// Returns `Some(vec![])` if the column is `[]` (meaning "deny all").
+pub fn parse_tool_list(val: Option<&serde_json::Value>) -> Option<Vec<String>> {
+    val.map(|v| {
+        v.as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// Check whether a single MCP tool name is permitted by the allow/deny lists.
+///
+/// Rules (evaluated in order):
+/// 1. If `blocked` is `Some` and the tool matches any pattern → DENIED
+/// 2. If `allowed` is `Some([])` (empty list) → DENIED (no tools allowed)
+/// 3. If `allowed` is `Some(patterns)` and tool matches none → DENIED
+/// 4. If `allowed` is `None` → ALLOWED (unrestricted)
+///
+/// Supports glob patterns via `*` and `?` (e.g., `mcp__slack__*`).
+pub fn is_tool_permitted(
+    tool_name: &str,
+    allowed: Option<&[String]>,
+    blocked: Option<&[String]>,
+) -> bool {
+    // 1. Check blocklist first (explicit deny takes priority)
+    if let Some(blocked_list) = blocked {
+        for pattern in blocked_list {
+            if pattern == tool_name || crate::middleware::engine::glob_match(pattern, tool_name) {
+                return false;
+            }
+        }
+    }
+
+    // 2. Check allowlist
+    match allowed {
+        None => true, // NULL = unrestricted
+        Some(allowed_list) if allowed_list.is_empty() => false, // [] = deny all
+        Some(allowed_list) => {
+            // Must match at least one pattern
+            allowed_list.iter().any(|pattern| {
+                pattern == tool_name || crate::middleware::engine::glob_match(pattern, tool_name)
+            })
+        }
+    }
+}
+
+/// Filter an OpenAI-format tools array, keeping only permitted MCP tools.
+/// Non-MCP tools (those without the `mcp__` prefix) are always kept.
+fn filter_openai_tools(
+    tools: Vec<Value>,
+    allowed: Option<&[String]>,
+    blocked: Option<&[String]>,
+) -> Vec<Value> {
+    tools
+        .into_iter()
+        .filter(|tool| {
+            let name = tool
+                .pointer("/function/name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            // Non-MCP tools are always kept
+            if types::parse_mcp_tool_name(name).is_none() {
+                return true;
+            }
+            is_tool_permitted(name, allowed, blocked)
+        })
+        .collect()
+}
+
+/// Filter extracted MCP tool calls, returning (permitted, denied).
+///
+/// Denied calls should be returned to the LLM as error results so it
+/// knows that tool was blocked and can try alternatives.
+pub fn filter_mcp_tool_calls(
+    calls: Vec<PendingMcpCall>,
+    allowed: Option<&[String]>,
+    blocked: Option<&[String]>,
+) -> (Vec<PendingMcpCall>, Vec<PendingMcpCall>) {
+    let mut permitted = Vec::new();
+    let mut denied = Vec::new();
+
+    for call in calls {
+        let full_name = format!("mcp__{}_{}", call.server_name, call.tool_name);
+        // Also check with double underscore (the actual format)
+        let full_name_canonical = format!("mcp__{}__{}", call.server_name, call.tool_name);
+        if is_tool_permitted(&full_name_canonical, allowed, blocked)
+            && is_tool_permitted(&full_name, allowed, blocked)
+        {
+            permitted.push(call);
+        } else {
+            denied.push(call);
+        }
+    }
+
+    (permitted, denied)
+}
+
 /// Pre-LLM: Inject MCP tool schemas into the request body.
 ///
 /// Reads `X-MCP-Servers` header, fetches cached tool schemas from the registry,
 /// converts them to OpenAI function-calling format, and merges into `body.tools[]`.
+///
+/// Per-token tool access control is applied: tools not matching the allow/deny
+/// lists are filtered out before injection.
 ///
 /// Returns the modified body bytes if MCP tools were injected, or None if no changes needed.
 pub async fn inject_mcp_tools(
     registry: &Arc<McpRegistry>,
     server_names: &[String],
     body: &[u8],
+    allowed_tools: Option<&[String]>,
+    blocked_tools: Option<&[String]>,
 ) -> Option<Vec<u8>> {
     if server_names.is_empty() {
         return None;
@@ -51,6 +160,18 @@ pub async fn inject_mcp_tools(
         );
         return None;
     }
+
+    // Apply per-token filtering
+    let filtered_tools = filter_openai_tools(mcp_tools, allowed_tools, blocked_tools);
+    if filtered_tools.is_empty() {
+        tracing::info!(
+            servers = ?server_names,
+            "All MCP tools filtered out by token tool policy"
+        );
+        return None;
+    }
+
+    let filtered_count = filtered_tools.len();
 
     // Parse the request body
     let mut body_json: Value = match serde_json::from_slice(body) {
@@ -66,12 +187,12 @@ pub async fn inject_mcp_tools(
         .unwrap_or_default();
 
     let mut merged = existing_tools;
-    merged.extend(mcp_tools.clone());
+    merged.extend(filtered_tools);
 
     body_json["tools"] = Value::Array(merged);
 
     tracing::info!(
-        mcp_tool_count = mcp_tools.len(),
+        mcp_tool_count = filtered_count,
         servers = ?server_names,
         "Injected MCP tools into request"
     );
@@ -404,5 +525,204 @@ mod tests {
         let parsed: Value = serde_json::from_slice(&result).unwrap();
         let messages = parsed["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 3); // original user + assistant + tool result
+    }
+
+    // ── Per-Token MCP Tool Access Control Tests ──────────────────
+
+    #[test]
+    fn test_parse_tool_list_null_is_none() {
+        assert_eq!(parse_tool_list(None), None);
+    }
+
+    #[test]
+    fn test_parse_tool_list_empty_array() {
+        let val = serde_json::json!([]);
+        let result = parse_tool_list(Some(&val));
+        assert_eq!(result, Some(vec![]));
+    }
+
+    #[test]
+    fn test_parse_tool_list_with_patterns() {
+        let val = serde_json::json!(["mcp__slack__*", "mcp__jira__list_issues"]);
+        let result = parse_tool_list(Some(&val));
+        assert_eq!(
+            result,
+            Some(vec![
+                "mcp__slack__*".to_string(),
+                "mcp__jira__list_issues".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_is_tool_permitted_unrestricted() {
+        // NULL allowed + NULL blocked = everything permitted
+        assert!(is_tool_permitted("mcp__slack__send_message", None, None));
+    }
+
+    #[test]
+    fn test_is_tool_permitted_blocked_exact() {
+        let blocked = vec!["mcp__slack__delete_channel".to_string()];
+        assert!(!is_tool_permitted(
+            "mcp__slack__delete_channel",
+            None,
+            Some(&blocked)
+        ));
+        // Other tools still allowed
+        assert!(is_tool_permitted(
+            "mcp__slack__send_message",
+            None,
+            Some(&blocked)
+        ));
+    }
+
+    #[test]
+    fn test_is_tool_permitted_blocked_glob() {
+        let blocked = vec!["mcp__*__delete_*".to_string()];
+        assert!(!is_tool_permitted(
+            "mcp__slack__delete_channel",
+            None,
+            Some(&blocked)
+        ));
+        assert!(!is_tool_permitted(
+            "mcp__jira__delete_issue",
+            None,
+            Some(&blocked)
+        ));
+        assert!(is_tool_permitted(
+            "mcp__slack__send_message",
+            None,
+            Some(&blocked)
+        ));
+    }
+
+    #[test]
+    fn test_is_tool_permitted_allowed_exact() {
+        let allowed = vec!["mcp__brave__search".to_string()];
+        assert!(is_tool_permitted(
+            "mcp__brave__search",
+            Some(&allowed),
+            None
+        ));
+        assert!(!is_tool_permitted(
+            "mcp__slack__send_message",
+            Some(&allowed),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_is_tool_permitted_allowed_glob() {
+        let allowed = vec!["mcp__slack__*".to_string()];
+        assert!(is_tool_permitted(
+            "mcp__slack__send_message",
+            Some(&allowed),
+            None
+        ));
+        assert!(is_tool_permitted(
+            "mcp__slack__list_channels",
+            Some(&allowed),
+            None
+        ));
+        assert!(!is_tool_permitted(
+            "mcp__jira__list_issues",
+            Some(&allowed),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_is_tool_permitted_empty_allowed_denies_all() {
+        let allowed: Vec<String> = vec![];
+        assert!(!is_tool_permitted(
+            "mcp__slack__send_message",
+            Some(&allowed),
+            None
+        ));
+    }
+
+    #[test]
+    fn test_is_tool_permitted_blocked_takes_priority() {
+        // Tool matches allowlist but also matches blocklist — should be denied
+        let allowed = vec!["mcp__slack__*".to_string()];
+        let blocked = vec!["mcp__slack__delete_channel".to_string()];
+        assert!(!is_tool_permitted(
+            "mcp__slack__delete_channel",
+            Some(&allowed),
+            Some(&blocked)
+        ));
+        // But other slack tools still allowed
+        assert!(is_tool_permitted(
+            "mcp__slack__send_message",
+            Some(&allowed),
+            Some(&blocked)
+        ));
+    }
+
+    #[test]
+    fn test_filter_openai_tools_keeps_non_mcp() {
+        let tools = vec![
+            serde_json::json!({
+                "type": "function",
+                "function": { "name": "get_weather", "parameters": {} }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": { "name": "mcp__slack__send_message", "parameters": {} }
+            }),
+        ];
+
+        // Block all MCP tools
+        let blocked = vec!["mcp__*".to_string()];
+        let filtered = filter_openai_tools(tools, None, Some(&blocked));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].pointer("/function/name").unwrap().as_str().unwrap(),
+            "get_weather"
+        );
+    }
+
+    #[test]
+    fn test_filter_openai_tools_allowlist() {
+        let tools = vec![
+            serde_json::json!({
+                "type": "function",
+                "function": { "name": "mcp__slack__send_message", "parameters": {} }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": { "name": "mcp__slack__delete_channel", "parameters": {} }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": { "name": "mcp__brave__search", "parameters": {} }
+            }),
+        ];
+
+        let allowed = vec!["mcp__brave__*".to_string()];
+        let filtered = filter_openai_tools(tools, Some(&allowed), None);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(
+            filtered[0].pointer("/function/name").unwrap().as_str().unwrap(),
+            "mcp__brave__search"
+        );
+    }
+
+    #[test]
+    fn test_filter_openai_tools_unrestricted() {
+        let tools = vec![
+            serde_json::json!({
+                "type": "function",
+                "function": { "name": "mcp__slack__send_message" }
+            }),
+            serde_json::json!({
+                "type": "function",
+                "function": { "name": "mcp__brave__search" }
+            }),
+        ];
+
+        // NULL allowed + NULL blocked = keep all
+        let filtered = filter_openai_tools(tools.clone(), None, None);
+        assert_eq!(filtered.len(), 2);
     }
 }

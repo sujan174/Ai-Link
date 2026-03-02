@@ -58,6 +58,10 @@ pub struct CreateTokenRequest {
     pub team_id: Option<Uuid>,
     /// Tags for cost attribution and tracking.
     pub tags: Option<serde_json::Value>,
+    /// MCP tool allowlist. NULL=all allowed, []=none, ["mcp__server__*"]=glob.
+    pub mcp_allowed_tools: Option<serde_json::Value>,
+    /// MCP tool blocklist. Takes priority over allowlist.
+    pub mcp_blocked_tools: Option<serde_json::Value>,
 }
 
 impl CreateTokenRequest {
@@ -419,6 +423,8 @@ pub async fn create_token(
         allowed_models: payload.allowed_models,
         team_id: payload.team_id,
         tags: payload.tags,
+        mcp_allowed_tools: payload.mcp_allowed_tools,
+        mcp_blocked_tools: payload.mcp_blocked_tools,
     };
 
     state.db.insert_token(&new_token).await.map_err(|e| {

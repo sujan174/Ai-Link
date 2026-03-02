@@ -7,9 +7,10 @@ static EMAIL_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}").unwrap());
 
 static CREDIT_CARD_REGEX: Lazy<Regex> = Lazy::new(|| {
-    // Basic Luhn-like pattern (13-19 digits, optional spaces/dashes)
-    // Note: This is a loose approximation for MVP.
-    Regex::new(r"\b(?:\d[ -]*?){13,19}\b").unwrap()
+    // BUG-04 FIX: Two alternatives:
+    //   1) Groups of 4 digits with required separators (space or dash)
+    //   2) Exactly 15-16 contiguous digits (Amex=15, Visa/MC=16)
+    Regex::new(r"\b(?:\d{4}[ -]){3}\d{1,7}\b|\b\d{15,16}\b").unwrap()
 });
 
 static SSN_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap());

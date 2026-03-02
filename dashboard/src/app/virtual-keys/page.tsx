@@ -7,7 +7,9 @@ import {
   createToken,
   revokeToken,
   listCredentials,
+  listTeams,
   Token,
+  Team,
   Credential,
   CreateTokenRequest,
   swrFetcher,
@@ -89,6 +91,12 @@ export default function TokensPage() {
       log_level: data.log_level ?? 1,
       is_active: true,
       created_at: new Date().toISOString(),
+      team_id: data.team_id ?? null,
+      allowed_models: data.allowed_models ?? null,
+      allowed_model_group_ids: null,
+      tags: data.tags ?? null,
+      mcp_allowed_tools: data.mcp_allowed_tools ?? null,
+      mcp_blocked_tools: data.mcp_blocked_tools ?? null,
     };
 
     await mutateTokens(
@@ -240,11 +248,21 @@ function CreateTokenForm({ onSuccess, onCreate }: { onSuccess: () => void; onCre
     { url: "https://api.openai.com/v1", weight: "1", priority: "1" },
   ]);
 
+  // Extended fields
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [allowedModelsInput, setAllowedModelsInput] = useState("");
+  const [tagsInput, setTagsInput] = useState(""); // JSON string for tags kv
+  const [mcpAllowedInput, setMcpAllowedInput] = useState("");
+  const [mcpBlockedInput, setMcpBlockedInput] = useState("");
+
   useEffect(() => {
     listCredentials()
       .then(setCredentials)
       .catch(() => toast.error("Failed to load credentials"))
       .finally(() => setFetchingCreds(false));
+    listTeams()
+      .then(setTeams)
+      .catch(() => { }); // teams are optional, soft fail
   }, []);
 
   const addUpstream = () =>
@@ -277,6 +295,27 @@ function CreateTokenForm({ onSuccess, onCreate }: { onSuccess: () => void; onCre
         }));
         // Use first upstream as the primary URL for backward compat
         payload.upstream_url = upstreams[0].url.trim();
+      }
+      // Parse allowed_models from comma-separated input
+      if (allowedModelsInput.trim()) {
+        payload.allowed_models = allowedModelsInput.split(",").map(m => m.trim()).filter(Boolean);
+      }
+      // Parse tags from JSON
+      if (tagsInput.trim()) {
+        try {
+          payload.tags = JSON.parse(tagsInput);
+        } catch {
+          toast.error("Tags must be valid JSON, e.g. {\"team\": \"eng\"}");
+          return;
+        }
+      }
+      // Parse MCP allowed tools
+      if (mcpAllowedInput.trim()) {
+        payload.mcp_allowed_tools = mcpAllowedInput.split(",").map(t => t.trim()).filter(Boolean);
+      }
+      // Parse MCP blocked tools
+      if (mcpBlockedInput.trim()) {
+        payload.mcp_blocked_tools = mcpBlockedInput.split(",").map(t => t.trim()).filter(Boolean);
       }
       await onCreate(payload);
       toast.success("Token created successfully");
@@ -493,6 +532,92 @@ function CreateTokenForm({ onSuccess, onCreate }: { onSuccess: () => void; onCre
             )}
           </div>
         )}
+
+        {/* Advanced Options */}
+        <div className="space-y-3 pt-2 border-t border-border/50">
+          <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Advanced Options</Label>
+
+          {/* Team Assignment */}
+          {teams.length > 0 && (
+            <div className="space-y-1.5">
+              <Label htmlFor="team_id" className="text-xs">Team (optional)</Label>
+              <Select
+                value={formData.team_id || ""}
+                onValueChange={(val) => setFormData({ ...formData, team_id: val || undefined })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="No team assigned" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">No team</SelectItem>
+                  {teams.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          {/* Fallback URL — single upstream only */}
+          {upstreamMode === "single" && (
+            <div className="space-y-1.5">
+              <Label htmlFor="fallback_url" className="text-xs">Fallback URL (optional)</Label>
+              <Input
+                id="fallback_url"
+                value={formData.fallback_url || ""}
+                onChange={(e) => setFormData({ ...formData, fallback_url: e.target.value || undefined })}
+                placeholder="https://api.backup.com/v1"
+              />
+              <p className="text-[10px] text-muted-foreground">Used automatically on upstream failure.</p>
+            </div>
+          )}
+
+          {/* Allowed Models */}
+          <div className="space-y-1.5">
+            <Label htmlFor="allowed_models" className="text-xs">Allowed Models (optional)</Label>
+            <Input
+              id="allowed_models"
+              value={allowedModelsInput}
+              onChange={(e) => setAllowedModelsInput(e.target.value)}
+              placeholder="gpt-4o, claude-3-*, gemini-1.5-pro"
+            />
+            <p className="text-[10px] text-muted-foreground">Comma-separated model names or glob patterns. Leave blank to allow all.</p>
+          </div>
+
+          {/* Tags */}
+          <div className="space-y-1.5">
+            <Label htmlFor="tags" className="text-xs">Tags (optional)</Label>
+            <Input
+              id="tags"
+              value={tagsInput}
+              onChange={(e) => setTagsInput(e.target.value)}
+              placeholder='{"team": "eng", "env": "prod"}'
+            />
+            <p className="text-[10px] text-muted-foreground">JSON object for cost attribution and filtering.</p>
+          </div>
+
+          {/* MCP Tool Access Control */}
+          <div className="space-y-1.5">
+            <Label htmlFor="mcp_allowed_tools" className="text-xs">MCP Allowed Tools (optional)</Label>
+            <Input
+              id="mcp_allowed_tools"
+              value={mcpAllowedInput}
+              onChange={(e) => setMcpAllowedInput(e.target.value)}
+              placeholder="mcp__slack__*, mcp__brave__search"
+            />
+            <p className="text-[10px] text-muted-foreground">Comma-separated. Only these MCP tools will be injected. Glob patterns supported. Leave blank to allow all.</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="mcp_blocked_tools" className="text-xs">MCP Blocked Tools (optional)</Label>
+            <Input
+              id="mcp_blocked_tools"
+              value={mcpBlockedInput}
+              onChange={(e) => setMcpBlockedInput(e.target.value)}
+              placeholder="mcp__*__delete_*, mcp__slack__admin_*"
+            />
+            <p className="text-[10px] text-muted-foreground">Comma-separated. These MCP tools will be blocked even if in the allowed list. Takes priority.</p>
+          </div>
+        </div>
 
         {/* Privacy & Logging */}
         <div className="space-y-1.5 pt-2 border-t border-border/50">

@@ -24,19 +24,28 @@ import {
 import { Plus, Trash2, ShieldCheck, X, Pencil, Loader2, Check } from "lucide-react";
 import { toast } from "sonner";
 
-// Common model suggestions
+// Common model suggestions — keep in sync with pricing-tab.tsx
 const POPULAR_MODELS = [
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
     "gpt-4o",
     "gpt-4o-mini",
-    "gpt-4-turbo",
-    "gpt-3.5-turbo",
-    "claude-3-5-sonnet-20241022",
-    "claude-3-haiku-20240307",
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
-    "llama-3.1-70b",
-    "o1",
+    "o4-mini",
+    "o3",
     "o3-mini",
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-3-7-sonnet-20250219",
+    "claude-3-5-haiku-20241022",
+    "gemini-2.5-pro-preview-06-05",
+    "gemini-2.5-flash-preview-05-20",
+    "gemini-2.0-flash",
+    "deepseek-chat",
+    "deepseek-reasoner",
+    "llama-4-maverick-17b-128e",
+    "llama-4-scout-17b-16e",
+    "mistral-large-latest",
 ];
 
 export default function ModelAccessGroupsPage() {

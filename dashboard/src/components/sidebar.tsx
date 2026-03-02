@@ -19,6 +19,15 @@ import {
     ChevronRight,
     ChevronDown,
     Layers,
+    Users,
+    FlaskRound,
+    Webhook,
+    Wrench,
+    CreditCard,
+    FileCode2,
+    Database,
+    ShieldCheck,
+    MessageSquareText,
 } from "lucide-react";
 import { useEffect, useState, useCallback, useRef } from "react";
 
@@ -101,6 +110,7 @@ export function Sidebar({ className }: SidebarProps) {
                 { href: "/analytics", label: "Analytics", icon: BarChart3 },
                 { href: "/audit", label: "Audit Logs", icon: ClipboardList },
                 { href: "/sessions", label: "Sessions", icon: Layers },
+                { href: "/experiments", label: "Experiments", icon: FlaskRound },
             ]
         },
         {
@@ -111,8 +121,12 @@ export function Sidebar({ className }: SidebarProps) {
                 { href: "/virtual-keys", label: "Agents", icon: Key },
                 { href: "/upstreams", label: "Upstreams", icon: Activity },
                 { href: "/guardrails", label: "Guardrails", icon: ShieldAlert },
+                { href: "/model-access-groups", label: "Model Access", icon: ShieldCheck },
                 { href: "/playground", label: "Playground", icon: FlaskConical },
+                { href: "/prompts", label: "Prompts", icon: MessageSquareText },
                 { href: "/approvals", label: "Approvals", icon: CheckCircle, badge: approvalCount > 0 ? approvalCount : null },
+                { href: "/tools", label: "Tools & MCP", icon: Wrench },
+                { href: "/webhooks", label: "Webhooks", icon: Webhook },
             ]
         },
         {
@@ -121,6 +135,9 @@ export function Sidebar({ className }: SidebarProps) {
             routes: [
                 { href: "/vault", label: "Vault", icon: Fingerprint },
                 { href: "/api-keys", label: "API Keys", icon: LockKeyhole },
+                { href: "/billing", label: "Billing", icon: CreditCard },
+                { href: "/cache", label: "Cache", icon: Database },
+                { href: "/config", label: "Config Export", icon: FileCode2 },
                 { href: "/settings", label: "Settings", icon: Settings },
             ]
         }
@@ -295,7 +312,7 @@ export function Sidebar({ className }: SidebarProps) {
                                 "bg-amber-500 animate-pulse"
                     )} />
                     {!collapsed && (
-                        <span className="font-mono text-[10px] text-muted-foreground/60">v0.6.0</span>
+                        <span className="font-mono text-[10px] text-muted-foreground/60">v0.7.0</span>
                     )}
                 </div>
             </div>

@@ -511,6 +511,12 @@ class AIlinkClient:
         from .resources.fine_tuning import FineTuningResource
         return FineTuningResource(self)
 
+    @cached_property
+    def prompts(self) -> "PromptsResource":
+        """Prompt management — CRUD, versioning, deployment, rendering."""
+        from .resources.prompts import PromptsResource
+        return PromptsResource(self)
+
 
 class AsyncClient:
     """
@@ -868,6 +874,12 @@ class AsyncClient:
         """Feature 10: Async proxy of OpenAI /v1/fine_tuning/jobs through the AILink gateway."""
         from .resources.fine_tuning import AsyncFineTuningResource
         return AsyncFineTuningResource(self)
+
+    @cached_property
+    def prompts(self) -> "AsyncPromptsResource":
+        """Prompt management — CRUD, versioning, deployment, rendering."""
+        from .resources.prompts import AsyncPromptsResource
+        return AsyncPromptsResource(self)
 
 
 # ── Scoped helpers (internal) ─────────────────────────────────────────────────
