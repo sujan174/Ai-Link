@@ -17,15 +17,15 @@ tests/
 │   ├── test_roadmap_features.py  # Framework integrations, spend tracking
 │   └── run_integration.sh     # Shell runner for CI
 │
-├── e2e/                  # Full-stack mock E2E — 116 tests across 22 phases
+├── e2e/                  # Full-stack mock E2E — 176 tests across 34 phases
 │   └── test_mock_suite.py
 │
 ├── realworld/            # Real provider tests — needs live API keys
 │   └── test_realworld_suite.py
 │
-├── mock-upstream/        # FastAPI server that mocks OpenAI/Anthropic/Gemini
-│   ├── server.py         # The mock implementation
-│   ├── Dockerfile        # Built by docker-compose
+├── mock-upstream/        # FastAPI mock server (OpenAI, Anthropic, Gemini, guardrails, OIDC)
+│   ├── server.py         # The mock implementation (~1000 lines)
+│   ├── Dockerfile        # Built by docker-compose.test.yml
 │   └── requirements.txt
 │
 ├── conftest.py           # Shared pytest fixtures (gateway_url, admin_client, etc.)
@@ -46,7 +46,7 @@ python3 -m pytest tests/unit/ -v
 ### 2. Integration tests — requires a running stack
 
 ```bash
-# Start the stack first
+# Start the shipping stack
 docker compose up -d
 
 # Run integration tests
@@ -56,17 +56,61 @@ python3 -m pytest tests/integration/ -v
 bash tests/integration/run_integration.sh
 ```
 
-### 3. E2E mock suite — 116 tests across 22 phases
+### 3. E2E mock suite — 176 tests across 34 phases
 
 The E2E suite uses the `mock-upstream` service (no real API keys needed).
+The mock upstream is defined in a **separate overlay** (`docker-compose.test.yml`).
 
 ```bash
-# Start the required services
-docker compose up -d gateway postgres redis mock-upstream
+# Start the full test stack (shipping + mock upstream)
+docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
 
 # Run the suite
 python3 tests/e2e/test_mock_suite.py
 ```
+
+#### E2E Test Phases
+
+| Phase | Coverage |
+|-------|----------|
+| 1 | Mock sanity & echo verification |
+| 2 | Anthropic translation (system messages, multi-turn) |
+| 3 | Gemini translation & SSE streaming (word-by-word deltas, mid-stream drops) |
+| 4 | Tool / function call translation (OpenAI ↔ Anthropic ↔ Gemini) |
+| 5 | Multimodal inputs (image_url, base64 images) |
+| 6 | ContentFilter (keyword blocking, topic denylist, custom regex) |
+| 7 | External guardrails (Azure Content Safety, AWS Comprehend, LlamaGuard) |
+| 8 | Advanced policies (throttle, A/B split, validate schema, shadow, async) |
+| 9 | Transform operations (append/prepend system, set/remove header/body) |
+| 10 | Webhook actions (fires on policy match) |
+| 11 | Circuit breaker (trip on failures, recovery after timeout) |
+| 12 | Admin API CRUD (tokens, policies, credentials) |
+| 13 | Non-chat passthrough (embeddings, audio, images, models) |
+| 13B | Model access groups RBAC |
+| 14 | Response caching (hit, bypass, opt-out) |
+| 14B | Team CRUD API (create, update, spend, members lifecycle) |
+| 15A | Rate limiting (per-token window, isolation between tokens) |
+| 15B | Team-level model enforcement at proxy |
+| 16A | Retry policy (auto-retry on 500, skip 400) |
+| 16B | Tag attribution & cost tracking via audit logs |
+| 17 | Dynamic routing (round-robin, lowest-cost) & conditional routing |
+| 18 | Tool scope RBAC (blocked/allowed tools, allowlist enforcement) |
+| 19 | Session lifecycle (auto-create, pause/complete rejection) |
+| 20 | Anomaly detection (non-blocking, coexists with sessions) |
+| 21 | OIDC JWT authentication (format detection, expired/bad-sig rejection) |
+| 22 | Cost & token tracking (usage fields, spend caps, lifetime caps) |
+| 23 | HITL approval flow (approve, reject, timeout) |
+| 24 | MCP server management API |
+| 25 | PII redaction (SSN, email, credit card, vault rehydrate) |
+| 26 | Prometheus metrics endpoint |
+| 27 | Scoped tokens RBAC (read-only keys, scope enforcement) |
+| 28 | SSRF protection (private IPs, localhost rejection) |
+| 29 | Additional provider translation (Groq, Mistral, Cohere, unknown models) |
+| 30 | API key lifecycle (whoami, list, revoke) |
+| 31 | Prompt management (CRUD, versioning, labels, render with variables) |
+| 32 | A/B experiments (create, variants, results, traffic split, stop) |
+| 33 | Guardrail presets (list, enable, disable, status) |
+| 34 | Config-as-code (export full config, policies-only, tokens-only) |
 
 ### 4. Real-world suite — requires live API keys
 
@@ -85,13 +129,37 @@ cargo test
 
 ---
 
+## Mock Upstream Server
+
+The mock upstream (`tests/mock-upstream/server.py`) simulates multiple LLM providers and supporting services:
+
+| Endpoint | Simulates |
+|----------|-----------|
+| `POST /v1/chat/completions` | OpenAI chat (streaming + non-streaming, tool calls) |
+| `POST /v1/messages` | Anthropic messages API (tool calls from body detection) |
+| `POST /v1/models/*/generateContent` | Gemini content generation (FUNCTION_CALL finishReason) |
+| `POST /v1/models/*/streamGenerateContent` | Gemini streaming |
+| `POST /v1/embeddings` | OpenAI embeddings (batch support) |
+| `POST /v1/audio/transcriptions` | Whisper audio transcription |
+| `POST /v1/images/generations` | DALL-E image generation |
+| `GET /v1/models` | Model listing |
+| `POST /contentsafety/text:analyze` | Azure Content Safety |
+| `POST /comprehend` | AWS Comprehend |
+| `POST /webhook/receive` | Webhook receiver with history |
+| `GET /.well-known/openid-configuration` | OIDC discovery |
+| `POST /oidc/mint` | JWT token minting (RS256) |
+
+**Control headers** for test scenarios: `x-mock-latency`, `x-mock-flaky`, `x-mock-status`, `x-mock-drop-mid-stream`, `x-mock-tool-call`, `x-mock-content`.
+
+---
+
 ## Test Layers
 
 | Layer | File(s) | Gateway? | API Keys? | Speed |
 |-------|---------|----------|-----------|-------|
 | **Unit** | `tests/unit/` | ❌ | ❌ | ~2s |
 | **Integration** | `tests/integration/` | ✅ Docker | ❌ | ~30s |
-| **E2E (mock)** | `tests/e2e/` | ✅ Docker | ❌ | ~60s |
+| **E2E (mock)** | `tests/e2e/` | ✅ Docker | ❌ | ~90s |
 | **Real-world** | `tests/realworld/` | ✅ Docker | ✅ Required | ~5min |
 | **Rust** | `gateway/` cargo test | ❌ | ❌ | ~10s |
 

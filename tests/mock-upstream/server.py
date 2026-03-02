@@ -148,6 +148,14 @@ async def openai_chat(request: Request):
         request.headers.get("x-mock-tool-call", "").lower() == "true"
         or bool(body.get("tools"))
     )
+    # Echo actual tool name from request (not hardcoded) so tests can detect misrouting
+    req_tool_name = "get_weather"
+    tools_list = body.get("tools", [])
+    if tools_list and isinstance(tools_list, list):
+        try:
+            req_tool_name = tools_list[0]["function"]["name"]
+        except (KeyError, IndexError, TypeError):
+            pass
     drop_mid_stream = request.headers.get("x-mock-drop-mid-stream", "").lower() == "true"
 
     # LlamaGuard detection — if model == llama-guard, delegate
@@ -172,7 +180,7 @@ async def openai_chat(request: Request):
                 "id": f"call_{uuid.uuid4().hex[:8]}",
                 "type": "function",
                 "function": {
-                    "name": "get_weather",
+                    "name": req_tool_name,
                     "arguments": '{"location": "London", "unit": "celsius"}',
                 },
             }],
@@ -289,7 +297,11 @@ async def anthropic_messages(request: Request):
     is_streaming = body.get("stream", False)
     model = body.get("model", "claude-3-5-sonnet-20241022")
     content_override = request.headers.get("x-mock-content")
-    want_tool_call = request.headers.get("x-mock-tool-call", "").lower() == "true"
+    # MU-1 fix: detect tool calls from body (not just header) like real Anthropic
+    want_tool_call = (
+        request.headers.get("x-mock-tool-call", "").lower() == "true"
+        or bool(body.get("tools"))
+    )
     drop_mid_stream = request.headers.get("x-mock-drop-mid-stream", "").lower() == "true"
 
     text = _response_text(body, content_override)
@@ -420,9 +432,18 @@ async def gemini_generate(model_id: str, request: Request):
             prompt_tokens += len(p.get("text", "").split())
     completion_tokens = len(text.split())
 
+    # MU-6 fix: echo actual tool name from request body
+    req_tool_name = "get_weather"
+    tools_list = body.get("tools") or body.get("functionDeclarations") or []
+    if tools_list and isinstance(tools_list, list):
+        try:
+            req_tool_name = tools_list[0].get("function", tools_list[0]).get("name", req_tool_name)
+        except (AttributeError, KeyError):
+            pass
+
     if want_tool_call:
-        parts = [{"functionCall": {"name": "get_weather", "args": {"location": "London"}}}]
-        finish_reason = "STOP"
+        parts = [{"functionCall": {"name": req_tool_name, "args": {"location": "London"}}}]
+        finish_reason = "FUNCTION_CALL"  # MU-3 fix: real Gemini returns FUNCTION_CALL, not STOP
     else:
         parts = [{"text": text}]
         finish_reason = "STOP"
@@ -530,9 +551,10 @@ async def azure_content_safety(request: Request):
     severity = 6 if harmful else 0
     categories = body.get("categories", ["Hate", "Violence", "Sexual", "SelfHarm"])
 
+    # MU-5 fix: flag ALL categories when harmful (not just the first)
     analysis = [
-        {"category": cat, "severity": severity if (harmful and i == 0) else 0}
-        for i, cat in enumerate(categories)
+        {"category": cat, "severity": severity}
+        for cat in categories
     ]
 
     return JSONResponse({
