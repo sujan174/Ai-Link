@@ -7,7 +7,7 @@ Run the full AILink stack (Gateway + Dashboard + PostgreSQL + Redis) with Docker
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose installed
-- At least **2 GB RAM** available for the stack
+- At least **4 GB RAM** available for Docker (Rust gateway build needs ~3 GB)
 - `git` (to clone the repo)
 
 ---
@@ -27,7 +27,7 @@ cd ailink
 docker compose up -d --build
 ```
 
-> First build takes 5–10 minutes (Rust gateway compilation + Next.js dashboard build). Subsequent builds use Docker layer caching.
+> First build takes ~2 minutes (Rust gateway compilation + Next.js dashboard build). Subsequent builds use Docker layer caching and take ~10s.
 
 ### 3. Access the Dashboard
 
@@ -48,115 +48,26 @@ Open **[http://localhost:3000](http://localhost:3000)**
 
 ### Optional Services
 
-| Service | Command to Enable | URL |
-|---------|-------------------|-----|
+| Service | Command | URL |
+|---------|---------|-----|
 | **Jaeger** (Tracing) | `docker compose --profile tracing up -d` | `http://localhost:16686` |
-| **Mock Upstream** (Testing) | `docker compose up mock-upstream -d` | `http://localhost:9000` |
+| **Mock Upstream** (Testing) | `docker compose -f docker-compose.yml -f docker-compose.test.yml up -d` | `http://localhost:9000` |
+
+> **Note:** The mock-upstream is defined in a separate `docker-compose.test.yml` overlay — it is not part of the shipping stack.
 
 ---
 
-## docker-compose.yml
+## File Structure
 
-```yaml
-services:
-  gateway:
-    build:
-      context: ./gateway
-      dockerfile: Dockerfile
-    image: ailink/gateway:latest
-    restart: unless-stopped
-    ports:
-      - "8443:8443"
-    environment:
-      - DATABASE_URL=postgres://postgres:password@postgres:5432/ailink
-      - REDIS_URL=redis://redis:6379
-      - RUST_LOG=info
-      # ⚠️  Change these in production!
-      - AILINK_MASTER_KEY=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
-      - AILINK_ADMIN_KEY=ailink-admin-test
-      - DASHBOARD_ORIGIN=http://localhost:3000
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "cat < /dev/null > /dev/tcp/localhost/8443"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: "2.0"
+| File | Purpose |
+|------|---------|
+| `docker-compose.yml` | **Shipping stack:** gateway, dashboard, postgres, redis, jaeger |
+| `docker-compose.test.yml` | **Test overlay:** mock-upstream server (for E2E tests) |
+| `gateway/Dockerfile` | Multi-stage Rust build (deps cached, ~55s rebuild) |
+| `dashboard/Dockerfile` | Multi-stage Next.js build |
+| `tests/mock-upstream/Dockerfile` | Python mock LLM server |
 
-  dashboard:
-    build:
-      context: ./dashboard
-      dockerfile: Dockerfile
-    image: ailink/dashboard:latest
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      NEXT_PUBLIC_API_URL: "http://localhost:8443/api/v1"
-      API_URL: "http://gateway:8443/api/v1"
-      GATEWAY_INTERNAL_URL: "http://gateway:8443"
-      AILINK_ADMIN_KEY: "ailink-admin-test"
-      DASHBOARD_SECRET: "ailink-dashboard-dev-secret"
-    depends_on:
-      gateway:
-        condition: service_healthy
-
-  postgres:
-    image: postgres:16-alpine
-    restart: always
-    environment:
-      POSTGRES_DB: ailink
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password  # ⚠️  Change in production
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes
-    volumes:
-      - redisdata:/data
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  jaeger:
-    image: jaegertracing/all-in-one:1.50
-    profiles: ["tracing"]
-    ports:
-      - "16686:16686"  # UI
-      - "4317:4317"    # OTLP gRPC
-      - "4318:4318"    # OTLP HTTP
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-
-volumes:
-  pgdata:
-  redisdata:
-```
+> See `docker-compose.yml` for the full configuration. The embedded copy below is omitted to avoid drift — always refer to the actual file.
 
 ---
 
