@@ -37,6 +37,8 @@ Features tested (85+ tests across 25 phases):
   Phase 22 — Token & Cost Tracking (streaming/non-stream usage, spend caps)
   Phase 23 — HITL (Human-in-the-Loop) Approval Flow
   Phase 24 — MCP Server Management API (register, list, delete, validation)
+  Phase 24b— MCP Auto-Discovery + OAuth 2.0 (discover, reauth, refresh, name rules)
+  Phase 24c— MCP Per-Token Tool Allow/Deny Lists (allowed/blocked/null/empty/glob, scope)
   Phase 25 — PII Redaction (redact mode, vault rehydrate)
   Phase 26 — Prometheus Metrics Endpoint
   Phase 27 — Scoped Tokens RBAC Enforcement
@@ -3099,6 +3101,255 @@ test("MCP: register with special chars → 400", t24_mcp_register_special_chars)
 test("MCP: list servers returns list", t24_mcp_list_servers)
 test("MCP: delete nonexistent → 404", t24_mcp_delete_nonexistent)
 test("MCP: tools for nonexistent → 404", t24_mcp_tools_nonexistent)
+
+
+# ── Phase 24b — MCP Auto-Discovery + OAuth 2.0 ────────────────
+section("Phase 24b — MCP Auto-Discovery + OAuth 2.0")
+
+
+def t24b_auto_discover_against_non_mcp():
+    """auto_discover: true against the mock (not an MCP server) → 502."""
+    r = gw("POST", "/api/v1/mcp/servers",
+            headers={"x-admin-key": ADMIN_KEY},
+            json={"endpoint": MOCK_GATEWAY, "auto_discover": True})
+    assert r.status_code == 502, f"Expected 502, got {r.status_code}: {r.text[:200]}"
+    return "Auto-discovery against non-MCP server → HTTP 502 ✓"
+
+
+def t24b_auto_discover_with_oauth_creds():
+    """auto_discover: true with client_id/secret against non-MCP → 502."""
+    r = gw("POST", "/api/v1/mcp/servers",
+            headers={"x-admin-key": ADMIN_KEY},
+            json={"endpoint": MOCK_GATEWAY, "auto_discover": True,
+                  "client_id": "test-client", "client_secret": "test-secret"})
+    assert r.status_code == 502, f"Expected 502, got {r.status_code}: {r.text[:200]}"
+    return "Auto-discovery with OAuth creds against non-MCP → HTTP 502 ✓"
+
+
+def t24b_manual_register_against_mock():
+    """Manual registration (auto_discover: false) against the mock → 502 (not MCP)."""
+    r = gw("POST", "/api/v1/mcp/servers",
+            headers={"x-admin-key": ADMIN_KEY},
+            json={"name": f"mock-mcp-{RUN_ID}", "endpoint": MOCK_GATEWAY,
+                  "auto_discover": False})
+    # The gateway tries initialize + list_tools against endpoint — mock doesn't speak MCP → 502
+    assert r.status_code == 502, f"Expected 502, got {r.status_code}: {r.text[:200]}"
+    return "Manual register against non-MCP → HTTP 502 ✓"
+
+
+def t24b_discover_dryrun_empty_endpoint():
+    """POST /mcp/servers/discover with empty endpoint → 400."""
+    r = gw("POST", "/api/v1/mcp/servers/discover",
+            headers={"x-admin-key": ADMIN_KEY},
+            json={"endpoint": ""})
+    assert r.status_code == 400, f"Expected 400, got {r.status_code}: {r.text[:200]}"
+    return "Discover dry-run with empty endpoint → HTTP 400 ✓"
+
+
+def t24b_discover_dryrun_non_mcp():
+    """POST /mcp/servers/discover against mock → 502 (not an MCP server)."""
+    r = gw("POST", "/api/v1/mcp/servers/discover",
+            headers={"x-admin-key": ADMIN_KEY},
+            json={"endpoint": MOCK_GATEWAY})
+    assert r.status_code == 502, f"Expected 502, got {r.status_code}: {r.text[:200]}"
+    return "Discover dry-run against non-MCP → HTTP 502 ✓"
+
+
+def t24b_reauth_nonexistent():
+    """POST /mcp/servers/:id/reauth with unknown UUID → response has success=false or 404."""
+    fake_id = str(uuid.uuid4())
+    r = gw("POST", f"/api/v1/mcp/servers/{fake_id}/reauth",
+            headers={"x-admin-key": ADMIN_KEY})
+    # The endpoint returns 200 with {success: false} if no token cached,
+    # or may 404 depending on implementation
+    if r.status_code == 200:
+        body = r.json()
+        assert body.get("success") is False, f"Expected success=false, got {body}"
+        return f"Reauth nonexistent → success=false: {body.get('error', '')} ✓"
+    elif r.status_code == 404:
+        return "Reauth nonexistent → HTTP 404 ✓"
+    else:
+        raise AssertionError(f"Unexpected status {r.status_code}: {r.text[:200]}")
+
+
+def t24b_refresh_nonexistent():
+    """POST /mcp/servers/:id/refresh with unknown UUID → 502."""
+    fake_id = str(uuid.uuid4())
+    r = gw("POST", f"/api/v1/mcp/servers/{fake_id}/refresh",
+            headers={"x-admin-key": ADMIN_KEY})
+    assert r.status_code in (404, 502), f"Expected 404 or 502, got {r.status_code}"
+    return f"Refresh nonexistent → HTTP {r.status_code} ✓"
+
+
+def t24b_register_missing_name_manual():
+    """Manual mode without name → 400 (name required)."""
+    r = gw("POST", "/api/v1/mcp/servers",
+            headers={"x-admin-key": ADMIN_KEY},
+            json={"endpoint": "http://localhost:9999", "auto_discover": False})
+    assert r.status_code == 400, f"Expected 400, got {r.status_code}: {r.text[:200]}"
+    assert "name" in r.text.lower() or "Name" in r.text, f"Error should mention 'name': {r.text[:200]}"
+    return "Manual registration without name → HTTP 400 ✓"
+
+
+def t24b_auto_discover_needs_no_name():
+    """auto_discover: true without name → should not 400 for missing name (502 for non-MCP is OK)."""
+    r = gw("POST", "/api/v1/mcp/servers",
+            headers={"x-admin-key": ADMIN_KEY},
+            json={"endpoint": MOCK_GATEWAY, "auto_discover": True})
+    # Should NOT be 400 for missing name — auto-discover derives name from server_info
+    assert r.status_code != 400, f"auto_discover should not require name, got 400: {r.text[:200]}"
+    return f"Auto-discover without name → HTTP {r.status_code} (not 400) ✓"
+
+
+test("MCP: auto_discover against non-MCP → 502", t24b_auto_discover_against_non_mcp)
+test("MCP: auto_discover with OAuth creds → 502", t24b_auto_discover_with_oauth_creds)
+test("MCP: manual register against non-MCP → 502", t24b_manual_register_against_mock)
+test("MCP: discover dry-run empty endpoint → 400", t24b_discover_dryrun_empty_endpoint)
+test("MCP: discover dry-run non-MCP → 502", t24b_discover_dryrun_non_mcp)
+test("MCP: reauth nonexistent server", t24b_reauth_nonexistent)
+test("MCP: refresh nonexistent server", t24b_refresh_nonexistent)
+test("MCP: manual registration without name → 400", t24b_register_missing_name_manual)
+test("MCP: auto_discover does not require name", t24b_auto_discover_needs_no_name)
+
+
+# ── Phase 24c — MCP Per-Token Tool Allow/Deny Lists ────────────
+section("Phase 24c — MCP Per-Token Tool Allow/Deny Lists")
+
+_mcp_tool_token_id = None
+
+
+def t24c_create_token_with_allowed_tools():
+    """Create a token with mcp_allowed_tools and verify it's stored."""
+    global _mcp_tool_token_id
+    r = gw("POST", "/api/v1/tokens",
+            headers={"x-admin-key": ADMIN_KEY},
+            json={
+                "name": f"mcp-allow-{RUN_ID}",
+                "upstream_url": MOCK_GATEWAY,
+                "credential_id": _mock_cred_id,
+                "mcp_allowed_tools": ["mcp__slack__*", "mcp__brave__search"],
+                "mcp_blocked_tools": ["mcp__slack__delete_*"],
+            })
+    assert r.status_code == 201, f"Create token failed: {r.status_code}: {r.text[:200]}"
+    body = r.json()
+    _mcp_tool_token_id = body["token_id"]
+    _cleanup_tokens.append(_mcp_tool_token_id)
+    return f"Token with MCP tool lists created: {_mcp_tool_token_id[:20]}… ✓"
+
+
+def t24c_verify_allowed_tools_stored():
+    """GET the token and verify mcp_allowed_tools is persisted."""
+    assert _mcp_tool_token_id, "Token not created"
+    r = gw("GET", "/api/v1/tokens", headers={"x-admin-key": ADMIN_KEY})
+    assert r.status_code == 200
+    tokens = r.json()
+    tok = next((t for t in tokens if t["id"] == _mcp_tool_token_id), None)
+    assert tok, f"Token {_mcp_tool_token_id} not found in list"
+    assert tok.get("mcp_allowed_tools") == ["mcp__slack__*", "mcp__brave__search"], \
+        f"mcp_allowed_tools mismatch: {tok.get('mcp_allowed_tools')}"
+    assert tok.get("mcp_blocked_tools") == ["mcp__slack__delete_*"], \
+        f"mcp_blocked_tools mismatch: {tok.get('mcp_blocked_tools')}"
+    return f"mcp_allowed_tools={tok['mcp_allowed_tools']}, mcp_blocked_tools={tok['mcp_blocked_tools']} ✓"
+
+
+def t24c_create_token_null_tool_lists():
+    """Create a token with NULL mcp fields (unrestricted) — default behavior."""
+    r = gw("POST", "/api/v1/tokens",
+            headers={"x-admin-key": ADMIN_KEY},
+            json={
+                "name": f"mcp-null-{RUN_ID}",
+                "upstream_url": MOCK_GATEWAY,
+                "credential_id": _mock_cred_id,
+            })
+    assert r.status_code == 201, f"Create token failed: {r.status_code}"
+    tok_id = r.json()["token_id"]
+    _cleanup_tokens.append(tok_id)
+    # Verify the fields are null (unrestricted)
+    r2 = gw("GET", "/api/v1/tokens", headers={"x-admin-key": ADMIN_KEY})
+    tokens = r2.json()
+    tok = next((t for t in tokens if t["id"] == tok_id), None)
+    assert tok, f"Token {tok_id} not found"
+    assert tok.get("mcp_allowed_tools") is None, \
+        f"Expected null mcp_allowed_tools, got {tok.get('mcp_allowed_tools')}"
+    assert tok.get("mcp_blocked_tools") is None, \
+        f"Expected null mcp_blocked_tools, got {tok.get('mcp_blocked_tools')}"
+    return "Token with NULL MCP tool lists (unrestricted) ✓"
+
+
+def t24c_create_token_empty_allowed():
+    """Create a token with mcp_allowed_tools=[] (deny all MCP tools)."""
+    r = gw("POST", "/api/v1/tokens",
+            headers={"x-admin-key": ADMIN_KEY},
+            json={
+                "name": f"mcp-denyall-{RUN_ID}",
+                "upstream_url": MOCK_GATEWAY,
+                "credential_id": _mock_cred_id,
+                "mcp_allowed_tools": [],
+            })
+    assert r.status_code == 201, f"Create token failed: {r.status_code}"
+    tok_id = r.json()["token_id"]
+    _cleanup_tokens.append(tok_id)
+    r2 = gw("GET", "/api/v1/tokens", headers={"x-admin-key": ADMIN_KEY})
+    tokens = r2.json()
+    tok = next((t for t in tokens if t["id"] == tok_id), None)
+    assert tok, f"Token {tok_id} not found"
+    assert tok.get("mcp_allowed_tools") == [], \
+        f"Expected empty mcp_allowed_tools, got {tok.get('mcp_allowed_tools')}"
+    return "Token with empty mcp_allowed_tools (deny all) ✓"
+
+
+def t24c_create_token_glob_patterns():
+    """Create a token with glob patterns in tool lists."""
+    r = gw("POST", "/api/v1/tokens",
+            headers={"x-admin-key": ADMIN_KEY},
+            json={
+                "name": f"mcp-glob-{RUN_ID}",
+                "upstream_url": MOCK_GATEWAY,
+                "credential_id": _mock_cred_id,
+                "mcp_allowed_tools": ["mcp__*__read_*", "mcp__*__list_*"],
+                "mcp_blocked_tools": ["mcp__*__delete_*", "mcp__*__drop_*"],
+            })
+    assert r.status_code == 201, f"Create token failed: {r.status_code}"
+    tok_id = r.json()["token_id"]
+    _cleanup_tokens.append(tok_id)
+    r2 = gw("GET", "/api/v1/tokens", headers={"x-admin-key": ADMIN_KEY})
+    tokens = r2.json()
+    tok = next((t for t in tokens if t["id"] == tok_id), None)
+    assert tok, f"Token {tok_id} not found"
+    assert len(tok.get("mcp_allowed_tools", [])) == 2
+    assert len(tok.get("mcp_blocked_tools", [])) == 2
+    return f"Token with glob patterns: allow={tok['mcp_allowed_tools']}, block={tok['mcp_blocked_tools']} ✓"
+
+
+def t24c_proxy_with_mcp_token():
+    """Token with mcp_allowed_tools can still proxy normal (non-MCP) requests."""
+    assert _mcp_tool_token_id, "Token not created"
+    r = chat(_mcp_tool_token_id, "Hello from MCP-restricted token")
+    assert r.status_code == 200, f"Proxy failed: {r.status_code}: {r.text[:200]}"
+    d = r.json()
+    assert "choices" in d
+    return "MCP-restricted token proxies normal requests ✓"
+
+
+def t24c_mcp_scope_enforcement_read():
+    """Non-admin token cannot access MCP endpoints (scope enforcement)."""
+    # Use the shared openai token (no admin scope) to call MCP endpoints
+    r = gw("GET", "/api/v1/mcp/servers",
+            headers={"Authorization": f"Bearer {_openai_tok}"})
+    # Should fail with 403 (no mcp:read scope) or 401
+    assert r.status_code in (401, 403), \
+        f"Expected 401/403 for non-admin MCP access, got {r.status_code}"
+    return f"MCP scope enforcement: GET /mcp/servers→{r.status_code} ✓"
+
+
+test("MCP: create token with mcp_allowed_tools/mcp_blocked_tools", t24c_create_token_with_allowed_tools)
+test("MCP: verify mcp_allowed_tools persisted on GET", t24c_verify_allowed_tools_stored)
+test("MCP: create token with NULL tool lists (unrestricted)", t24c_create_token_null_tool_lists)
+test("MCP: create token with empty allowed (deny all)", t24c_create_token_empty_allowed)
+test("MCP: create token with glob patterns", t24c_create_token_glob_patterns)
+test("MCP: restricted token proxies normal requests", t24c_proxy_with_mcp_token)
+test("MCP: scope enforcement on /mcp/servers", t24c_mcp_scope_enforcement_read)
+
 
 # ═══════════════════════════════════════════════════════════════
 #  Phase 25 — PII Redaction (redact mode + vault rehydrate)
