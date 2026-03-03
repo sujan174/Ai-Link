@@ -121,9 +121,10 @@ describe("AILinkClient", () => {
 
     // ── Experiments stub ───────────────────────────────────────────────
 
-    it("experiments methods throw NotImplementedError", async () => {
-        const client = new AILinkClient({ apiKey: "test" });
-        await expect(client.experiments.create("test", [])).rejects.toThrow();
+    it("experiments methods reject when gateway is unreachable", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+        const client = new AILinkClient({ apiKey: "test", maxRetries: 0 });
+        await expect(client.experiments.create({ name: "test", variants: [] })).rejects.toThrow();
         await expect(client.experiments.list()).rejects.toThrow();
         await expect(client.experiments.results("id")).rejects.toThrow();
         await expect(client.experiments.stop("id")).rejects.toThrow();

@@ -50,7 +50,7 @@ describe("TokensResource", () => {
             policy_ids: ["pol_a"],
             log_level_name: "redacted",
         }));
-        expect(result.token_id).toBe("ailink_v1_test");
+        expect(result.tokenId).toBe("ailink_v1_test");
     });
 
     it("create handles upstream load balancing config", async () => {
