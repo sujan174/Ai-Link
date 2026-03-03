@@ -217,7 +217,7 @@ function KPIMini({ icon: Icon, value, label, color, loading }: {
                     <Icon className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-0.5">{label}</p>
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">{label}</p>
                     {loading ? (
                         <div className="h-7 w-16 bg-muted/50 rounded shimmer my-0.5" />
                     ) : (
@@ -581,7 +581,7 @@ function PolicyFormDialog({ mode, initialPolicy, onSuccess }: {
                 </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-5 py-4">
+            <div className="space-y-6 py-4">
                 {/* Name + Mode */}
                 <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
@@ -606,11 +606,11 @@ function PolicyFormDialog({ mode, initialPolicy, onSuccess }: {
                 {/* Templates */}
                 {mode === "create" && (
                     <div className="space-y-2 pt-2 border-t">
-                        <Label className="text-xs text-muted-foreground flex items-center gap-1.5"><Zap className="h-3 w-3 text-amber-500" /> Start from a Template</Label>
+                        <Label className="text-xs text-muted-foreground flex items-center gap-2"><Zap className="h-3 w-3 text-amber-500" /> Start from a Template</Label>
                         <div className="flex flex-wrap gap-2">
                             <Button
                                 type="button" variant="outline" size="sm"
-                                className="text-xs h-7 px-2.5 bg-background hover:bg-muted"
+                                className="text-xs h-7 px-3 bg-background hover:bg-muted"
                                 onClick={() => {
                                     setInputMode("json");
                                     setJsonRules(JSON.stringify([{
@@ -628,7 +628,7 @@ function PolicyFormDialog({ mode, initialPolicy, onSuccess }: {
 
                             <Button
                                 type="button" variant="outline" size="sm"
-                                className="text-xs h-7 px-2.5 bg-background hover:bg-muted"
+                                className="text-xs h-7 px-3 bg-background hover:bg-muted"
                                 onClick={() => {
                                     setInputMode("json");
                                     setJsonRules(JSON.stringify([{
@@ -654,7 +654,7 @@ function PolicyFormDialog({ mode, initialPolicy, onSuccess }: {
 
                             <Button
                                 type="button" variant="outline" size="sm"
-                                className="text-xs h-7 px-2.5 bg-background hover:bg-muted"
+                                className="text-xs h-7 px-3 bg-background hover:bg-muted"
                                 onClick={() => {
                                     setInputMode("visual");
                                     setRules([emptyRule()]);
@@ -684,7 +684,7 @@ function PolicyFormDialog({ mode, initialPolicy, onSuccess }: {
                     <button
                         type="button"
                         className={cn(
-                            "px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+                            "px-3 py-2 rounded-md text-xs font-medium transition-all",
                             inputMode === "visual" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
                         )}
                         onClick={() => setInputMode("visual")}
@@ -694,7 +694,7 @@ function PolicyFormDialog({ mode, initialPolicy, onSuccess }: {
                     <button
                         type="button"
                         className={cn(
-                            "px-3 py-1.5 rounded-md text-xs font-medium transition-all",
+                            "px-3 py-2 rounded-md text-xs font-medium transition-all",
                             inputMode === "json" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
                         )}
                         onClick={() => setInputMode("json")}

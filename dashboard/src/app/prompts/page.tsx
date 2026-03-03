@@ -186,11 +186,11 @@ export default function PromptsPage() {
                     />
                 </div>
                 {folders.length > 1 && (
-                    <div className="flex gap-1.5">
+                    <div className="flex gap-2">
                         <button
                             onClick={() => setSelectedFolder(null)}
                             className={cn(
-                                "px-2.5 py-1 rounded-md text-xs font-medium transition-all border",
+                                "px-3 py-1 rounded-md text-xs font-medium transition-all border",
                                 !selectedFolder
                                     ? "border-primary bg-primary/10 text-primary"
                                     : "border-transparent text-muted-foreground hover:text-foreground"
@@ -205,7 +205,7 @@ export default function PromptsPage() {
                                     setSelectedFolder(selectedFolder === f ? null : f)
                                 }
                                 className={cn(
-                                    "px-2.5 py-1 rounded-md text-xs font-medium transition-all border",
+                                    "px-3 py-1 rounded-md text-xs font-medium transition-all border",
                                     selectedFolder === f
                                         ? "border-primary bg-primary/10 text-primary"
                                         : "border-transparent text-muted-foreground hover:text-foreground"

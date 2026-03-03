@@ -153,7 +153,7 @@ export default function ModelAccessGroupsPage() {
                     </Button>
                 </div>
                 {/* Quick-add popular models */}
-                <div className="flex flex-wrap gap-1.5 mt-2">
+                <div className="flex flex-wrap gap-2 mt-2">
                     {POPULAR_MODELS.map(m => (
                         <button
                             key={m}
@@ -167,7 +167,7 @@ export default function ModelAccessGroupsPage() {
                 </div>
                 {/* Selected models */}
                 {models.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 mt-2 p-2 rounded-md bg-muted/30 border border-border/40">
+                    <div className="flex flex-wrap gap-2 mt-2 p-2 rounded-md bg-muted/30 border border-border/40">
                         {models.map(m => (
                             <Badge key={m} variant="secondary" className="gap-1 text-[11px] font-mono pr-1">
                                 {m}

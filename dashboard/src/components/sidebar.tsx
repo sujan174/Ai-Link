@@ -63,7 +63,6 @@ export function Sidebar({ className }: SidebarProps) {
         safety: false,
         prompts: false,
         observe: false,
-        system: false,
     });
 
     const toggleGroup = useCallback((id: string) => {
@@ -139,7 +138,7 @@ export function Sidebar({ className }: SidebarProps) {
         },
         {
             id: "prompts",
-            label: "Prompts & Experiments",
+            label: "Studio",
             routes: [
                 { href: "/prompts", label: "Prompts", icon: MessageSquareText },
                 { href: "/playground", label: "Playground", icon: FlaskConical },
@@ -153,15 +152,8 @@ export function Sidebar({ className }: SidebarProps) {
                 { href: "/audit", label: "Audit Logs", icon: ClipboardList },
                 { href: "/sessions", label: "Sessions", icon: Layers },
                 { href: "/cache", label: "Cache", icon: Database },
-            ]
-        },
-        {
-            id: "system",
-            label: "System",
-            routes: [
                 { href: "/tools", label: "Tools & MCP", icon: Wrench },
                 { href: "/webhooks", label: "Webhooks", icon: Webhook },
-                { href: "/config", label: "Config Export", icon: FileCode2 },
             ]
         }
     ];
@@ -193,7 +185,7 @@ export function Sidebar({ className }: SidebarProps) {
                 aria-label="Toggle Sidebar"
                 className={cn(
                     "absolute -right-3 top-7 z-50",
-                    "flex h-5 w-5 items-center justify-center rounded-full",
+                    "hidden md:flex h-5 w-5 items-center justify-center rounded-full",
                     "border border-[var(--border)] bg-[var(--card)]",
                     "text-muted-foreground hover:text-foreground",
                     "transition-all duration-200",
@@ -211,9 +203,9 @@ export function Sidebar({ className }: SidebarProps) {
                 <Link href="/" className="flex items-center gap-2 group min-w-0">
                     <div className={cn(
                         "flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
-                        "bg-gradient-to-br from-[#8e2137] to-[#49111c]",
+                        "bg-gradient-to-br from-[#6366f1] to-[#4338ca]",
                         "text-white font-bold text-[10px] tracking-tight",
-                        "group-hover:shadow-[0_0_12px_rgba(142,33,55,0.3)] transition-shadow"
+                        "group-hover:shadow-[0_0_12px_rgba(99,102,241,0.3)] transition-shadow"
                     )}>
                         A
                     </div>
@@ -226,19 +218,19 @@ export function Sidebar({ className }: SidebarProps) {
             </div>
 
             {/* Navigation */}
-            <div className="flex-1 overflow-y-auto overflow-x-hidden py-2 scrollbar-none px-2">
+            <div className="flex-1 overflow-y-auto overflow-x-hidden py-2 scrollbar-none px-3">
                 {groups.map((group) => {
                     const isOpen = openGroups[group.id] ?? group.defaultOpen ?? false;
 
                     return (
-                        <div key={group.id} className="mb-0.5">
+                        <div key={group.id} className="mb-1">
                             {/* Group header — clickable to collapse */}
                             {!collapsed ? (
                                 <button
                                     onClick={() => toggleGroup(group.id)}
                                     className={cn(
                                         "w-full flex items-center justify-between",
-                                        "px-2 py-1.5 mt-2 first:mt-0",
+                                        "px-3 py-1 mt-3 first:mt-0",
                                         "text-[10px] font-medium uppercase tracking-[0.08em]",
                                         "text-muted-foreground/50 hover:text-muted-foreground",
                                         "transition-colors rounded-md"
@@ -275,9 +267,9 @@ export function Sidebar({ className }: SidebarProps) {
                                                 href={route.href}
                                                 title={collapsed ? route.label : undefined}
                                                 className={cn(
-                                                    "relative flex items-center gap-2 rounded-md py-1.5 text-[13px] font-medium",
+                                                    "relative flex items-center gap-2 rounded-md py-2 text-[13px] font-medium",
                                                     "transition-all duration-100 group",
-                                                    collapsed ? "justify-center px-2" : "px-2",
+                                                    collapsed ? "justify-center px-3" : "px-3",
                                                     isActive
                                                         ? "text-foreground bg-[var(--primary)]/8 border border-[var(--primary)]/12"
                                                         : "text-muted-foreground hover:text-foreground/80 hover:bg-[var(--card)] border border-transparent"
@@ -321,17 +313,17 @@ export function Sidebar({ className }: SidebarProps) {
 
             {/* Footer — Settings, Account, Health */}
             <div className={cn(
-                "shrink-0 border-t border-[var(--sidebar-border)] py-2",
-                collapsed ? "px-2" : "px-2"
+                "shrink-0 border-t border-[var(--sidebar-border)] py-3",
+                collapsed ? "px-3" : "px-3"
             )}>
                 {/* Settings */}
                 <Link
                     href="/settings"
                     title={collapsed ? "Settings" : undefined}
                     className={cn(
-                        "relative flex items-center gap-2 rounded-md py-1.5 text-[13px] font-medium",
+                        "relative flex items-center gap-2 rounded-md py-2 text-[13px] font-medium",
                         "transition-all duration-100 group",
-                        collapsed ? "justify-center px-2" : "px-2",
+                        collapsed ? "justify-center px-3" : "px-3",
                         pathname.startsWith("/settings")
                             ? "text-foreground bg-[var(--primary)]/8 border border-[var(--primary)]/12"
                             : "text-muted-foreground hover:text-foreground/80 hover:bg-[var(--card)] border border-transparent"
@@ -355,9 +347,40 @@ export function Sidebar({ className }: SidebarProps) {
                     )}
                 </Link>
 
+                {/* Config Export — formerly in SYSTEM group */}
+                <Link
+                    href="/config"
+                    title={collapsed ? "Config Export" : undefined}
+                    className={cn(
+                        "relative flex items-center gap-2 rounded-md py-2 text-[13px] font-medium",
+                        "transition-all duration-100 group",
+                        collapsed ? "justify-center px-3" : "px-3",
+                        pathname.startsWith("/config")
+                            ? "text-foreground bg-[var(--primary)]/8 border border-[var(--primary)]/12"
+                            : "text-muted-foreground hover:text-foreground/80 hover:bg-[var(--card)] border border-transparent"
+                    )}
+                >
+                    {pathname.startsWith("/config") && (
+                        <span className="absolute left-0 top-1/2 -translate-y-1/2 h-3.5 w-[2px] rounded-r-full bg-[var(--primary)]" />
+                    )}
+                    <FileCode2
+                        size={14}
+                        strokeWidth={pathname.startsWith("/config") ? 2 : 1.5}
+                        className={cn(
+                            "shrink-0 transition-colors",
+                            pathname.startsWith("/config") ? "text-[var(--primary)]" : "text-muted-foreground group-hover:text-foreground/60"
+                        )}
+                    />
+                    {!collapsed && (
+                        <span className="flex-1 whitespace-nowrap overflow-hidden text-ellipsis">
+                            Config Export
+                        </span>
+                    )}
+                </Link>
+
                 {/* Account */}
                 {!collapsed ? (
-                    <div className="mt-1.5 rounded-md border border-border/40 bg-muted/20 px-2.5 py-2">
+                    <div className="mt-2 rounded-md border border-border/40 bg-muted/20 px-3 py-2">
                         <div className="flex items-center gap-2 mb-2">
                             <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--primary)]/10">
                                 <User size={12} className="text-[var(--primary)]" />
@@ -367,7 +390,7 @@ export function Sidebar({ className }: SidebarProps) {
                         <button
                             onClick={() => window.location.href = "/login"}
                             className={cn(
-                                "w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-[12px] font-medium",
+                                "w-full flex items-center gap-2 rounded-md px-2 py-2 text-[12px] font-medium",
                                 "text-muted-foreground hover:text-rose-400 hover:bg-rose-500/8",
                                 "transition-colors"
                             )}
@@ -381,7 +404,7 @@ export function Sidebar({ className }: SidebarProps) {
                         onClick={() => window.location.href = "/login"}
                         title="Log out"
                         className={cn(
-                            "flex w-full items-center justify-center rounded-md px-2 py-1.5 mt-1",
+                            "flex w-full items-center justify-center rounded-md px-2 py-2 mt-1",
                             "text-muted-foreground hover:text-rose-400 hover:bg-rose-500/8",
                             "transition-colors"
                         )}
@@ -392,7 +415,7 @@ export function Sidebar({ className }: SidebarProps) {
 
                 {/* Health + Version */}
                 <div className={cn(
-                    "flex items-center text-[11px] text-muted-foreground mt-2",
+                    "flex items-center text-[11px] text-muted-foreground mt-3",
                     collapsed ? "justify-center" : "gap-2 px-2"
                 )}>
                     <div className={cn(

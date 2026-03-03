@@ -328,7 +328,7 @@ export default function PromptDetailPage({ params }: { params: Promise<{ id: str
                                 <p className="text-[10px] font-semibold uppercase text-primary mb-2">
                                     Detected Variables ({detectedVars.length})
                                 </p>
-                                <div className="flex flex-wrap gap-1.5">
+                                <div className="flex flex-wrap gap-2">
                                     {detectedVars.map((v) => (
                                         <Badge
                                             key={v}
@@ -386,7 +386,7 @@ export default function PromptDetailPage({ params }: { params: Promise<{ id: str
                                                     })}
                                                 </span>
                                             </div>
-                                            <div className="flex items-center gap-1.5 mb-1">
+                                            <div className="flex items-center gap-2 mb-1">
                                                 <Badge
                                                     variant="secondary"
                                                     className="text-[9px] font-mono px-1 h-4"

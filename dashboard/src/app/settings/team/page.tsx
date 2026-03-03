@@ -408,7 +408,7 @@ function TeamCard({
                     ) : (
                         <div className="space-y-1">
                             {members.map(m => (
-                                <div key={m.user_id} className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-muted/40 group/m">
+                                <div key={m.user_id} className="flex items-center justify-between py-2 px-2 rounded-md hover:bg-muted/40 group/m">
                                     <div className="flex items-center gap-2">
                                         <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center text-[10px] font-mono">
                                             {m.user_id.slice(0, 2).toUpperCase()}

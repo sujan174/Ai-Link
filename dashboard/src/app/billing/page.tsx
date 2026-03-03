@@ -147,11 +147,11 @@ export default function BillingPage() {
                                 <AreaChart data={spendHistory} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
                                     <defs>
                                         <linearGradient id="spendGrad" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#cf3453" stopOpacity={0.3} />
-                                            <stop offset="95%" stopColor="#cf3453" stopOpacity={0} />
+                                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
                                         </linearGradient>
                                     </defs>
-                                    <CartesianGrid stroke="#2d2520" strokeDasharray="3 3" vertical={false} />
+                                    <CartesianGrid stroke="var(--border, #1e2330)" strokeDasharray="3 3" vertical={false} />
                                     <XAxis
                                         dataKey="day"
                                         {...CHART_AXIS_PROPS}
@@ -171,10 +171,10 @@ export default function BillingPage() {
                                         type="monotone"
                                         dataKey="spend"
                                         name="Spend"
-                                        stroke="#cf3453"
+                                        stroke="#6366f1"
                                         strokeWidth={2}
                                         fill="url(#spendGrad)"
-                                        activeDot={{ r: 4, strokeWidth: 0, fill: '#cf3453' }}
+                                        activeDot={{ r: 4, strokeWidth: 0, fill: '#6366f1' }}
                                     />
                                 </AreaChart>
                             </ResponsiveContainer>
@@ -205,14 +205,14 @@ export default function BillingPage() {
                         </div>
                         <div className="flex justify-between items-center border-b pb-2">
                             <span className="text-[13px] text-muted-foreground">Active Webhooks</span>
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-2">
                                 <Bell className="h-3.5 w-3.5 text-muted-foreground" />
                                 <span className="text-sm">{webhookCount}</span>
                             </div>
                         </div>
                         <div className="flex justify-between items-center">
                             <span className="text-[13px] text-muted-foreground">Tokens with Caps</span>
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-2">
                                 <TrendingUp className="h-3.5 w-3.5 text-violet-500" />
                                 <span className="text-sm">{capsEntries.length}</span>
                             </div>

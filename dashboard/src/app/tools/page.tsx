@@ -288,7 +288,7 @@ function McpTab({
                                 <button
                                     onClick={() => setAutoDiscover(true)}
                                     className={cn(
-                                        "px-2.5 py-1 rounded-md transition-colors border",
+                                        "px-3 py-1 rounded-md transition-colors border",
                                         autoDiscover
                                             ? "bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/20"
                                             : "border-border text-muted-foreground hover:text-foreground"
@@ -300,7 +300,7 @@ function McpTab({
                                 <button
                                     onClick={() => setAutoDiscover(false)}
                                     className={cn(
-                                        "px-2.5 py-1 rounded-md transition-colors border",
+                                        "px-3 py-1 rounded-md transition-colors border",
                                         !autoDiscover
                                             ? "bg-[var(--primary)]/10 text-[var(--primary)] border-[var(--primary)]/20"
                                             : "border-border text-muted-foreground hover:text-foreground"
@@ -418,7 +418,7 @@ function McpTab({
                             {/* OAuth 2.0 Credentials — shown when discovery says OAuth is needed */}
                             {autoDiscover && discoveryResult?.requires_auth && (
                                 <div className="space-y-3 rounded-md border border-blue-500/20 bg-blue-500/5 p-3">
-                                    <div className="flex items-center gap-1.5">
+                                    <div className="flex items-center gap-2">
                                         <ShieldCheck className="h-3.5 w-3.5 text-blue-500" />
                                         <span className="text-xs font-medium text-blue-500">OAuth 2.0 Credentials</span>
                                     </div>
@@ -736,7 +736,7 @@ function ServicesTab({
                         <Card key={svc.id} className="group relative">
                             <CardHeader className="pb-2">
                                 <div className="flex items-center justify-between">
-                                    <CardTitle className="text-sm flex items-center gap-1.5">
+                                    <CardTitle className="text-sm flex items-center gap-2">
                                         <Plug className="h-3.5 w-3.5 text-blue-400" />
                                         {svc.name}
                                     </CardTitle>

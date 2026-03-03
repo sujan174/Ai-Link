@@ -85,7 +85,7 @@ function StepIndicator({
     totalSteps: number;
 }) {
     return (
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
             {Array.from({ length: totalSteps }).map((_, i) => (
                 <div
                     key={i}
@@ -218,7 +218,7 @@ export function OnboardingModal() {
                     {/* Feature list */}
                     <ul className="space-y-2.5">
                         {currentStep.features.map((feature, i) => (
-                            <li key={i} className="flex items-start gap-2.5">
+                            <li key={i} className="flex items-start gap-3">
                                 <div className="mt-0.5 h-5 w-5 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
                                     <Sparkles className="h-3 w-3 text-primary" />
                                 </div>

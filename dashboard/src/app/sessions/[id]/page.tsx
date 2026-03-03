@@ -25,8 +25,8 @@ import { CHART_AXIS_PROPS } from "@/components/ui/chart-utils";
 import { toast } from "sonner";
 
 const MODEL_COLORS = [
-    "#cf3453", "#a9927d", "#d4a574", "#c47a50", "#e85d75",
-    "#06b6d4", "#ec4899", "#84cc16",
+    "#6366f1", "#06b6d4", "#10b981", "#f59e0b", "#818cf8",
+    "#22d3ee", "#ec4899", "#84cc16",
 ];
 
 function getModelColor(model: string | null, modelMap: Map<string, string>): string {
@@ -42,7 +42,7 @@ function StatCard({ icon: Icon, label, value, sub, color }: {
 }) {
     return (
         <Card className="border-border/60 bg-card/50">
-            <CardContent className="p-5 flex items-center gap-4">
+            <CardContent className="p-4 flex items-center gap-4">
                 <div className={cn("p-2.5 rounded-md", color)}>
                     <Icon className="h-5 w-5" />
                 </div>
@@ -93,7 +93,7 @@ function SpendCapDialog({
 
     return (
         <>
-            <Button variant="outline" size="sm" onClick={() => setOpen(true)} className="gap-1.5">
+            <Button variant="outline" size="sm" onClick={() => setOpen(true)} className="gap-2">
                 <Edit2 className="h-3.5 w-3.5" />
                 {currentCap ? `Cap: $${parseFloat(currentCap).toFixed(2)}` : "Set Spend Cap"}
             </Button>
@@ -267,7 +267,7 @@ export default function SessionDetailPage() {
                             variant="outline" size="sm"
                             onClick={() => handleStatusChange("paused")}
                             disabled={actionLoading}
-                            className="gap-1.5 text-amber-500 border-amber-500/30 hover:bg-amber-500/10"
+                            className="gap-2 text-amber-500 border-amber-500/30 hover:bg-amber-500/10"
                         >
                             <PauseCircle className="h-3.5 w-3.5" /> Pause
                         </Button>
@@ -277,7 +277,7 @@ export default function SessionDetailPage() {
                             variant="outline" size="sm"
                             onClick={() => handleStatusChange("active")}
                             disabled={actionLoading}
-                            className="gap-1.5 text-emerald-500 border-emerald-500/30 hover:bg-emerald-500/10"
+                            className="gap-2 text-emerald-500 border-emerald-500/30 hover:bg-emerald-500/10"
                         >
                             <PlayCircle className="h-3.5 w-3.5" /> Resume
                         </Button>
@@ -287,7 +287,7 @@ export default function SessionDetailPage() {
                             variant="outline" size="sm"
                             onClick={() => handleStatusChange("completed")}
                             disabled={actionLoading}
-                            className="gap-1.5 text-muted-foreground"
+                            className="gap-2 text-muted-foreground"
                         >
                             <CheckCircle className="h-3.5 w-3.5" /> Mark Done
                         </Button>
@@ -349,7 +349,7 @@ export default function SessionDetailPage() {
                     <CardContent>
                         <ResponsiveContainer width="100%" height={Math.max(180, chartData.length * 40 + 60)}>
                             <BarChart layout="vertical" data={chartData} margin={{ top: 0, right: 20, bottom: 0, left: -20 }}>
-                                <CartesianGrid stroke="#2d2520" strokeDasharray="3 3" vertical={false} />
+                                <CartesianGrid stroke="var(--border, #1e2330)" strokeDasharray="3 3" vertical={false} />
                                 <XAxis type="number" tickFormatter={(v) => `${v}ms`} {...CHART_AXIS_PROPS} />
                                 <YAxis type="category" dataKey="name" {...CHART_AXIS_PROPS} width={50} />
                                 <Tooltip
@@ -376,7 +376,7 @@ export default function SessionDetailPage() {
                         </ResponsiveContainer>
                         <div className="flex flex-wrap gap-3 mt-3">
                             {Array.from(modelColorMap.entries()).map(([model, color]) => (
-                                <div key={model} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                <div key={model} className="flex items-center gap-2 text-xs text-muted-foreground">
                                     <div className="h-2.5 w-2.5 rounded-sm" style={{ background: color }} />
                                     <span className="font-mono">{model.includes("/") ? model.split("/").pop() : model}</span>
                                 </div>
@@ -428,10 +428,10 @@ export default function SessionDetailPage() {
                                             onClick={() => router.push(`/audit/${r.id}`)}
                                             className="border-b border-border/40 hover:bg-muted/20 cursor-pointer transition-colors group"
                                         >
-                                            <td className="px-4 py-2.5 text-muted-foreground tabular-nums">{i + 1}</td>
-                                            <td className="px-4 py-2.5">
+                                            <td className="px-4 py-3 text-muted-foreground tabular-nums">{i + 1}</td>
+                                            <td className="px-4 py-3">
                                                 {r.model ? (
-                                                    <div className="flex items-center gap-1.5">
+                                                    <div className="flex items-center gap-2">
                                                         <div className="h-2 w-2 rounded-sm flex-shrink-0" style={{ background: color }} />
                                                         <span className="font-mono text-xs">
                                                             {r.model.includes("/") ? r.model.split("/").pop() : r.model}
@@ -439,24 +439,24 @@ export default function SessionDetailPage() {
                                                     </div>
                                                 ) : <span className="text-muted-foreground">—</span>}
                                             </td>
-                                            <td className="px-4 py-2.5 text-right font-mono tabular-nums text-emerald-500 text-xs">${reqCost.toFixed(6)}</td>
-                                            <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground text-xs">
+                                            <td className="px-4 py-3 text-right font-mono tabular-nums text-emerald-500 text-xs">${reqCost.toFixed(6)}</td>
+                                            <td className="px-4 py-3 text-right tabular-nums text-muted-foreground text-xs">
                                                 {latencyMs >= 1000 ? `${(latencyMs / 1000).toFixed(1)}s` : `${latencyMs}ms`}
                                             </td>
-                                            <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground text-xs">
+                                            <td className="px-4 py-3 text-right tabular-nums text-muted-foreground text-xs">
                                                 {tokens > 0 ? tokens.toLocaleString() : "—"}
                                             </td>
-                                            <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground text-xs hidden md:table-cell">
+                                            <td className="px-4 py-3 text-right tabular-nums text-muted-foreground text-xs hidden md:table-cell">
                                                 {r.tool_call_count ?? "—"}
                                             </td>
-                                            <td className="px-4 py-2.5 text-center hidden md:table-cell">
+                                            <td className="px-4 py-3 text-center hidden md:table-cell">
                                                 {r.cache_hit != null && (
                                                     <Badge variant={r.cache_hit ? "default" : "outline"} className="text-xs px-1.5 py-0">
                                                         {r.cache_hit ? "HIT" : "MISS"}
                                                     </Badge>
                                                 )}
                                             </td>
-                                            <td className="px-4 py-2.5 hidden lg:table-cell">
+                                            <td className="px-4 py-3 hidden lg:table-cell">
                                                 {props && Object.keys(props).length > 0 ? (
                                                     <div className="flex flex-wrap gap-1">
                                                         {Object.entries(props).slice(0, 3).map(([k, v]) => (
@@ -471,7 +471,7 @@ export default function SessionDetailPage() {
                                                     </div>
                                                 ) : <span className="text-muted-foreground text-xs">—</span>}
                                             </td>
-                                            <td className="px-4 py-2.5">
+                                            <td className="px-4 py-3">
                                                 <ChevronRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                                             </td>
                                         </tr>

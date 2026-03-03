@@ -56,81 +56,170 @@
 
 /* 
   ┌─────────────────────────────────────────────────────────────┐
-  │  WARM BORDEAUX — AILink Dashboard Design System             │
+  │  COOL INDIGO — AILink Dashboard Design System               │
   │                                                             │
-  │  Philosophy: Premium, warm, luxurious infrastructure.       │
-  │  Inspired by deep wines, warm leather, aged stone.          │
+  │  Philosophy: Clean, confident, developer-grade clarity.     │
+  │  Inspired by deep-space UIs and modern dev tooling.         │
   │                                                             │
-  │  Base:    #0a0908  — Near-black warm charcoal               │
-  │  Surface: #161210  — Dark roasted stone                     │
-  │  Raise:   #1e1916  — Warm char popover                      │
-  │  Border:  #2d2520  — Subtle warm edge                       │
-  │  Primary: #cf3453  — Bordeaux rose — bold, distinctive      │
-  │  Text:    #eee9e5  — Warm white smoke                       │
-  │  Muted:   #a9927d  — Dusty taupe                            │
+  │  Light:                                                     │
+  │    Page:    #f5f6f8  — Soft cool white                      │
+  │    Surface: #ffffff  — Pure white cards                     │
+  │    Primary: #4f46e5  — Deep indigo                          │
+  │    Text:    #0d0f14  — Near black                           │
+  │    Muted:   #6b7280  — Cool gray                            │
+  │                                                             │
+  │  Dark:                                                      │
+  │    Page:    #0d0f14  — Cool near-black                      │
+  │    Surface: #13161e  — Blue-tinted dark                     │
+  │    Primary: #6366f1  — Brighter indigo                      │
+  │    Text:    #e8eaf0  — Cool white smoke                     │
+  │    Muted:   #6b7280  — Same cool gray both modes            │
   └─────────────────────────────────────────────────────────────┘
 */
 
+/* ----------------------------------------------------------
+   LIGHT MODE (default)
+   ---------------------------------------------------------- */
 @layer base {
-
-  :root,
-  .dark {
+  :root {
     /* ── Surfaces ── */
-    --background: #0a0908;
-    --foreground: #eee9e5;
+    --background: #f5f6f8;
+    --foreground: #0d0f14;
 
-    --card: #161210;
-    --card-foreground: #eee9e5;
+    --card: #ffffff;
+    --card-foreground: #0d0f14;
 
-    --popover: #1e1916;
-    --popover-foreground: #eee9e5;
+    --popover: #ffffff;
+    --popover-foreground: #0d0f14;
 
     /* ── Brand ── */
-    --primary: #cf3453;
-    --primary-foreground: #f2f4f3;
+    --primary: #4f46e5;
+    --primary-foreground: #ffffff;
 
     /* ── Neutrals ── */
-    --secondary: #2d2520;
-    --secondary-foreground: #d3cec9;
+    --secondary: #eef2ff;
+    --secondary-foreground: #3730a3;
 
-    --muted: #161210;
-    --muted-foreground: #a9927d;
+    --muted: #f1f3f7;
+    --muted-foreground: #6b7280;
 
-    --accent: #1e1916;
-    --accent-foreground: #d3cec9;
+    --accent: #eef2ff;
+    --accent-foreground: #4f46e5;
 
     /* ── Semantic ── */
-    --destructive: #E11D48;
-    --destructive-foreground: #FAFAFA;
+    --destructive: #dc2626;
+    --destructive-foreground: #ffffff;
 
-    --success: #10B981;
-    --success-foreground: #FFFFFF;
+    --success: #059669;
+    --success-foreground: #ffffff;
 
-    --warning: #F59E0B;
-    --warning-foreground: #FFFBEB;
+    --warning: #d97706;
+    --warning-foreground: #ffffff;
 
     /* ── Input primitives ── */
-    --border: #2d2520;
-    --input: #1e1916;
-    --ring: #cf3453;
+    --border: #e2e5ec;
+    --input: #e2e5ec;
+    --ring: #6366f1;
 
     /* ── Shape ── */
     --radius: 0.5rem;
 
     /* ── Sidebar ── */
-    --sidebar-bg: #0a0908;
-    --sidebar-border: #1e1916;
+    --sidebar-bg: #eef0f5;
+    --sidebar-border: #d8dce6;
 
     /* ── Derived convenience ── */
-    --surface-raised: #1e1916;
-    --accent-glow: rgba(207, 52, 83, 0.15);
-    --accent-glow-sm: rgba(207, 52, 83, 0.06);
+    --surface-raised: #ffffff;
+    --accent-glow: rgba(79, 70, 229, 0.12);
+    --accent-glow-sm: rgba(79, 70, 229, 0.06);
+
+    /* ── Chart palette ── */
+    --chart-1: #4f46e5;
+    --chart-2: #06b6d4;
+    --chart-3: #10b981;
+    --chart-fill: rgba(79, 70, 229, 0.12);
+
+    /* ── Scrollbar ── */
+    --scrollbar-track: #f1f3f7;
+    --scrollbar-thumb: #d1d5db;
+
+    /* ── Status ── */
+    --status-success: #10b981;
+    --status-warning: #f59e0b;
+    --status-error: #ef4444;
+    --status-neutral: #6b7280;
+    --status-info: #6366f1;
+  }
+
+  /* ----------------------------------------------------------
+   DARK MODE
+   ---------------------------------------------------------- */
+  .dark {
+    /* ── Surfaces ── */
+    --background: #0d0f14;
+    --foreground: #e8eaf0;
+
+    --card: #13161e;
+    --card-foreground: #e8eaf0;
+
+    --popover: #1a1d27;
+    --popover-foreground: #e8eaf0;
+
+    /* ── Brand ── */
+    --primary: #6366f1;
+    --primary-foreground: #ffffff;
+
+    /* ── Neutrals ── */
+    --secondary: #1e2035;
+    --secondary-foreground: #a5b4fc;
+
+    --muted: #161923;
+    --muted-foreground: #6b7280;
+
+    --accent: #1e2035;
+    --accent-foreground: #a5b4fc;
+
+    /* ── Semantic ── */
+    --destructive: #ef4444;
+    --destructive-foreground: #ffffff;
+
+    --success: #10b981;
+    --success-foreground: #ffffff;
+
+    --warning: #f59e0b;
+    --warning-foreground: #000000;
+
+    /* ── Input primitives ── */
+    --border: #1e2330;
+    --input: #1e2330;
+    --ring: #6366f1;
+
+    /* ── Sidebar ── */
+    --sidebar-bg: #0a0c12;
+    --sidebar-border: #1e2330;
+
+    /* ── Derived convenience ── */
+    --surface-raised: #1a1d27;
+    --accent-glow: rgba(99, 102, 241, 0.15);
+    --accent-glow-sm: rgba(99, 102, 241, 0.06);
+
+    /* ── Chart palette ── */
+    --chart-1: #818cf8;
+    --chart-2: #22d3ee;
+    --chart-3: #34d399;
+    --chart-fill: rgba(129, 140, 248, 0.15);
+
+    /* ── Scrollbar ── */
+    --scrollbar-track: #13161e;
+    --scrollbar-thumb: #1e2330;
   }
 }
 
 @layer base {
   * {
     @apply border-border;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   }
 
   body {
@@ -139,23 +228,23 @@
     letter-spacing: -0.011em;
   }
 
-  /* Thin scrollbars */
+  /* Themed scrollbars */
   ::-webkit-scrollbar {
-    width: 4px;
-    height: 4px;
+    width: 6px;
+    height: 6px;
   }
 
   ::-webkit-scrollbar-track {
-    background: transparent;
+    background: var(--scrollbar-track);
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #2d2520;
-    border-radius: 99px;
+    background: var(--scrollbar-thumb);
+    border-radius: 3px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: #4c4133;
+    background: var(--muted-foreground);
   }
 
   code,
@@ -165,8 +254,8 @@
   }
 
   ::selection {
-    background: rgba(207, 52, 83, 0.25);
-    color: #eee9e5;
+    background: rgba(99, 102, 241, 0.2);
+    color: inherit;
   }
 }
 
@@ -319,20 +408,32 @@
 
   .hover-lift:hover {
     transform: translateY(-1px);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
-    border-color: #4c4133;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    border-color: var(--border);
   }
 
-  /* ── Gradient Text (bordeaux) ── */
+  /* ── Gradient Text (indigo) ── */
   .gradient-text {
-    background: linear-gradient(135deg, #df788c, #cf3453);
+    background: linear-gradient(135deg, #818cf8, #6366f1);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
   }
 
   .gradient-text-emerald {
-    background: linear-gradient(135deg, #d4a574, #a9927d);
+    background: linear-gradient(135deg, #34d399, #10b981);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* ── Logo Gradient ── */
+  .logo-gradient {
+    background: linear-gradient(135deg, #6366f1, #4338ca);
+  }
+
+  .logo-text-gradient {
+    background: linear-gradient(135deg, #818cf8, #6366f1);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
@@ -350,7 +451,7 @@
 
   /* ── Accent glow ── */
   .accent-glow {
-    box-shadow: 0 0 0 1px rgba(207, 52, 83, 0.3), 0 4px 16px rgba(207, 52, 83, 0.12);
+    box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.3), 0 4px 16px rgba(99, 102, 241, 0.12);
   }
 
   /* ── Glass card (reserved for modals/dropdowns only) ── */
@@ -401,19 +502,19 @@
   }
 
   .dot-success {
-    background-color: #10B981;
+    background-color: var(--status-success, #10b981);
   }
 
   .dot-warning {
-    background-color: #F59E0B;
+    background-color: var(--status-warning, #f59e0b);
   }
 
   .dot-danger {
-    background-color: #E11D48;
+    background-color: var(--status-error, #ef4444);
   }
 
   .dot-neutral {
-    background-color: #64748B;
+    background-color: var(--status-neutral, #64748b);
   }
 
   /* ── Page Transition ── */
@@ -501,9 +602,9 @@
   }
 
   .card-glow:hover {
-    box-shadow: 0 0 0 1px rgba(207, 52, 83, 0.15),
-      0 4px 20px rgba(0, 0, 0, 0.25);
-    border-color: rgba(207, 52, 83, 0.2);
+    box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.15),
+      0 4px 20px rgba(0, 0, 0, 0.15);
+    border-color: rgba(99, 102, 241, 0.2);
   }
 
   /* ── Icon spin on hover ── */
@@ -540,5 +641,18 @@
 
   .hover-lift:hover {
     transform: none;
+  }
+}
+
+/* ═══ Touch Devices: disable hover-only effects ═══ */
+
+@media (hover: none) {
+  .hover-lift:hover {
+    transform: none;
+  }
+
+  .card-glow:hover {
+    box-shadow: none;
+    border-color: inherit;
   }
 }

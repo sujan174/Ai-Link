@@ -66,7 +66,7 @@ function KPICard({
                     <Icon className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-0.5">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
                         {label}
                     </p>
                     {loading ? (
@@ -162,7 +162,7 @@ export default function CacheManagementPage() {
             : 0;
 
     return (
-        <div className="space-y-5 pb-10 animate-fade-in">
+        <div className="space-y-6 pb-10 animate-fade-in">
             {/* Controls */}
             <div className="flex items-center justify-end mb-2 gap-2">
                 <Button
@@ -304,10 +304,10 @@ export default function CacheManagementPage() {
                     <CardContent className="space-y-4">
                         {/* Cached Fields */}
                         <div>
-                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-2">
                                 <CheckCircle className="h-3 w-3 text-emerald-500" /> Key Fields (cache key hash)
                             </p>
-                            <div className="flex flex-wrap gap-1.5">
+                            <div className="flex flex-wrap gap-2">
                                 {(stats?.cached_fields ?? ["model", "messages", "temperature", "max_tokens", "tools", "tool_choice"]).map(f => (
                                     <Badge key={f} variant="secondary" className="font-mono text-[10px]">
                                         {f}
@@ -318,7 +318,7 @@ export default function CacheManagementPage() {
 
                         {/* Skip Conditions */}
                         <div>
-                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
+                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-2">
                                 <XCircle className="h-3 w-3 text-rose-500" /> Skip Conditions (no caching)
                             </p>
                             <div className="space-y-1.5">
@@ -391,17 +391,17 @@ export default function CacheManagementPage() {
                                 <tbody className="divide-y divide-border/30">
                                     {stats.sample_entries.map((entry, i) => (
                                         <tr key={i} className="hover:bg-muted/20 transition-colors group">
-                                            <td className="py-2.5 pr-4">
+                                            <td className="py-3 pr-4">
                                                 <code className="font-mono text-[11px] text-muted-foreground group-hover:text-foreground transition-colors">
                                                     {entry.key}
                                                 </code>
                                             </td>
-                                            <td className="py-2.5 pr-4 text-right">
+                                            <td className="py-3 pr-4 text-right">
                                                 <span className="font-mono text-violet-400">
                                                     {formatBytes(entry.size_bytes)}
                                                 </span>
                                             </td>
-                                            <td className="py-2.5 text-right">
+                                            <td className="py-3 text-right">
                                                 <Badge
                                                     variant="outline"
                                                     className={cn(
@@ -453,7 +453,7 @@ export default function CacheManagementPage() {
                                 <Icon className="h-4 w-4" />
                             </div>
                             <div>
-                                <p className="text-sm font-semibold mb-0.5">{title}</p>
+                                <p className="text-sm font-semibold mb-1">{title}</p>
                                 <p className="text-xs text-muted-foreground leading-relaxed">{desc}</p>
                             </div>
                         </CardContent>

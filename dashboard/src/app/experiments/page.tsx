@@ -30,7 +30,7 @@ import {
 } from 'recharts';
 
 // A refined teal/indigo palette for the variants
-const VARIANT_COLORS = ['#cf3453', '#a9927d', '#d4a574', '#c47a50', '#e85d75'];
+const VARIANT_COLORS = ['#6366f1', '#06b6d4', '#10b981', '#f59e0b', '#818cf8'];
 
 export default function ExperimentsPage() {
     // We pass a very large limit here because the backend aggregates this already
@@ -123,28 +123,28 @@ export default function ExperimentsPage() {
                                                 <CardContent>
                                                     <div className="grid grid-cols-2 gap-y-4 gap-x-2 mt-2">
                                                         <div className="space-y-1">
-                                                            <div className="flex items-center gap-1.5 text-muted-foreground">
+                                                            <div className="flex items-center gap-2 text-muted-foreground">
                                                                 <Clock className="h-3.5 w-3.5" />
                                                                 <span className="text-xs">Avg Latency</span>
                                                             </div>
                                                             <p className="font-semibold text-lg">{Math.round(v.avg_latency_ms)}ms</p>
                                                         </div>
                                                         <div className="space-y-1">
-                                                            <div className="flex items-center gap-1.5 text-muted-foreground">
+                                                            <div className="flex items-center gap-2 text-muted-foreground">
                                                                 <DollarSign className="h-3.5 w-3.5" />
                                                                 <span className="text-xs">Est. Cost</span>
                                                             </div>
                                                             <p className="font-semibold text-lg">${v.total_cost_usd.toFixed(4)}</p>
                                                         </div>
                                                         <div className="space-y-1">
-                                                            <div className="flex items-center gap-1.5 text-muted-foreground">
+                                                            <div className="flex items-center gap-2 text-muted-foreground">
                                                                 <Layers className="h-3.5 w-3.5" />
                                                                 <span className="text-xs">Avg Tokens</span>
                                                             </div>
                                                             <p className="font-semibold text-lg">{Math.round(v.avg_tokens)}</p>
                                                         </div>
                                                         <div className="space-y-1">
-                                                            <div className="flex items-center gap-1.5 text-muted-foreground">
+                                                            <div className="flex items-center gap-2 text-muted-foreground">
                                                                 <AlertTriangle className="h-3.5 w-3.5" />
                                                                 <span className="text-xs">Error Rate</span>
                                                             </div>
@@ -170,7 +170,7 @@ export default function ExperimentsPage() {
                                         <div className="h-[250px] w-full mt-4">
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <BarChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
-                                                    <CartesianGrid stroke="#2d2520" strokeDasharray="3 3" vertical={false} />
+                                                    <CartesianGrid stroke="var(--border, #1e2330)" strokeDasharray="3 3" vertical={false} />
                                                     <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#888' }} />
                                                     <YAxis yAxisId="left" orientation="left" stroke="#888" axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />
                                                     <YAxis yAxisId="right" orientation="right" stroke="#888" axisLine={false} tickLine={false} tick={{ fontSize: 12 }} />

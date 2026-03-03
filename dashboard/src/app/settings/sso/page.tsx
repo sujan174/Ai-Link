@@ -212,7 +212,7 @@ export default function SSOPage() {
             <div className="rounded-md border border-blue-500/20 bg-blue-500/5 px-4 py-3 text-sm text-blue-300/80 flex items-start gap-3">
                 <KeyRound className="h-4 w-4 mt-0.5 shrink-0 text-blue-400" />
                 <div>
-                    <p className="font-medium text-blue-300 mb-0.5">JWT / OIDC Authentication</p>
+                    <p className="font-medium text-blue-300 mb-1">JWT / OIDC Authentication</p>
                     <p className="text-[12px] leading-relaxed">
                         Agents can pass a <code className="font-mono bg-blue-500/10 px-1 rounded">Bearer &lt;JWT&gt;</code> token in their{" "}
                         <code className="font-mono bg-blue-500/10 px-1 rounded">Authorization</code> header.
@@ -244,7 +244,7 @@ export default function SSOPage() {
                             "border-border/60 bg-card/50 transition-opacity",
                             !p.is_active && "opacity-60"
                         )}>
-                            <CardContent className="p-5">
+                            <CardContent className="p-4">
                                 <div className="flex items-start justify-between gap-4">
                                     <div className="flex-1 min-w-0 space-y-2">
                                         {/* Top row */}
@@ -257,25 +257,25 @@ export default function SSOPage() {
                                         {/* Meta grid */}
                                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                                             <div>
-                                                <p className="text-muted-foreground uppercase tracking-wider text-[10px] mb-0.5">Client ID</p>
+                                                <p className="text-muted-foreground uppercase tracking-wider text-[10px] mb-1">Client ID</p>
                                                 <p className="font-mono truncate">{p.client_id}</p>
                                             </div>
                                             <div>
-                                                <p className="text-muted-foreground uppercase tracking-wider text-[10px] mb-0.5">Audience</p>
+                                                <p className="text-muted-foreground uppercase tracking-wider text-[10px] mb-1">Audience</p>
                                                 <p className="font-mono truncate">{p.audience ?? "—"}</p>
                                             </div>
                                             <div>
-                                                <p className="text-muted-foreground uppercase tracking-wider text-[10px] mb-0.5">Claim Mappings</p>
+                                                <p className="text-muted-foreground uppercase tracking-wider text-[10px] mb-1">Claim Mappings</p>
                                                 <p>{p.claim_mappings ? Object.keys(p.claim_mappings).length + " rule(s)" : "None"}</p>
                                             </div>
                                             <div>
-                                                <p className="text-muted-foreground uppercase tracking-wider text-[10px] mb-0.5">Added</p>
+                                                <p className="text-muted-foreground uppercase tracking-wider text-[10px] mb-1">Added</p>
                                                 <p>{formatDistanceToNow(new Date(p.created_at), { addSuffix: true })}</p>
                                             </div>
                                         </div>
                                         {/* Claim mappings preview */}
                                         {p.claim_mappings && Object.keys(p.claim_mappings).length > 0 && (
-                                            <div className="flex flex-wrap gap-1.5">
+                                            <div className="flex flex-wrap gap-2">
                                                 {Object.entries(p.claim_mappings).map(([k, v]) => (
                                                     <span key={k} className="inline-flex items-center gap-1 text-[10px] font-mono bg-muted/50 px-1.5 py-0.5 rounded border border-border/40">
                                                         <span className="text-muted-foreground">{k}</span>

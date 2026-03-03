@@ -2,7 +2,6 @@
 
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import { Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 function GoogleIcon({ className }: { className?: string }) {
@@ -21,12 +20,12 @@ function LoginContent() {
     const error = searchParams.get("error");
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-background p-4">
+        <div className="min-h-screen flex items-center justify-center bg-background p-4 md:p-8">
             <div className="w-full max-w-sm space-y-8">
-                {/* Logo */}
+                {/* Logo — matches sidebar brand mark */}
                 <div className="flex flex-col items-center gap-3">
-                    <div className="p-3 rounded-xl bg-primary/10 border border-primary/20">
-                        <Zap className="h-8 w-8 text-primary" />
+                    <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-[#6366f1] to-[#4338ca] shadow-lg shadow-primary/20">
+                        <span className="text-white font-bold text-xl tracking-tight">A</span>
                     </div>
                     <div className="text-center">
                         <h1 className="text-2xl font-bold tracking-tight">AILink</h1>
@@ -44,12 +43,12 @@ function LoginContent() {
                 )}
 
                 {/* Google Sign In */}
-                <div className="space-y-3">
+                <div className="space-y-4">
                     <a href="/api/auth/google">
                         <Button
                             variant="outline"
                             size="lg"
-                            className="w-full h-11 gap-3 text-sm font-medium"
+                            className="w-full h-12 md:h-11 gap-3 text-sm font-medium"
                         >
                             <GoogleIcon className="h-5 w-5" />
                             Sign in with Google

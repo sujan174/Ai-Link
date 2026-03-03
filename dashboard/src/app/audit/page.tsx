@@ -51,7 +51,7 @@ function StatCard({
                     <Icon className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-0.5">{label}</p>
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">{label}</p>
                     {loading ? (
                         <div className="h-7 w-24 bg-muted/50 rounded shimmer my-0.5" />
                     ) : (

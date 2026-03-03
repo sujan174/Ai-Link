@@ -86,7 +86,7 @@ export default function UpstreamsPage() {
                                     <tr key={`${u.token_id}-${u.url}-${i}`} className="hover:bg-muted/30 transition-colors group">
                                         <td className="px-6 py-4">
                                             {u.is_healthy ? (
-                                                <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 gap-1.5 pl-1.5 pr-2.5">
+                                                <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 gap-2 pl-2 pr-2.5">
                                                     <span className="relative flex h-2 w-2">
                                                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                                                         <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
@@ -94,7 +94,7 @@ export default function UpstreamsPage() {
                                                     Healthy
                                                 </Badge>
                                             ) : (
-                                                <Badge variant="destructive" className="gap-1.5">
+                                                <Badge variant="destructive" className="gap-2">
                                                     <AlertTriangle className="h-3 w-3" />
                                                     Circuit Open
                                                 </Badge>
@@ -152,12 +152,12 @@ function StatCard({ icon: Icon, label, value, color, loading }: {
     };
     return (
         <Card className="glass-card hover-lift">
-            <CardContent className="p-5 flex items-center gap-4">
+            <CardContent className="p-4 flex items-center gap-4">
                 <div className={cn("p-3 rounded-md transition-colors", bgColors[color])}>
                     <Icon className="h-6 w-6" />
                 </div>
                 <div>
-                    <p className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-0.5">{label}</p>
+                    <p className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-1">{label}</p>
                     {loading ? (
                         <div className="h-8 w-16 bg-muted/50 rounded shimmer my-0.5" />
                     ) : (

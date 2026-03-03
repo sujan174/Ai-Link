@@ -203,7 +203,7 @@ export default function ConfigPage() {
                                     <CardTitle className="text-sm">Preview</CardTitle>
                                     <CardDescription className="text-[11px]">{previewTitle}</CardDescription>
                                 </div>
-                                <Button variant="ghost" size="sm" className="gap-1.5" onClick={handleCopyPreview}>
+                                <Button variant="ghost" size="sm" className="gap-2" onClick={handleCopyPreview}>
                                     {copied ? <Check className="h-3.5 w-3.5" /> : <ClipboardCopy className="h-3.5 w-3.5" />}
                                     {copied ? "Copied" : "Copy"}
                                 </Button>

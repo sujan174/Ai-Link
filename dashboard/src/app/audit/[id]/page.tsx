@@ -137,13 +137,13 @@ export default function AuditDetailPage() {
                 {/* KPI Grid for this request */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t border-border/50">
                     <div className="space-y-1">
-                        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                        <p className="text-xs text-muted-foreground flex items-center gap-2">
                             <Clock className="h-3.5 w-3.5" /> Latency
                         </p>
                         <p className="text-lg font-bold font-mono">{log.response_latency_ms}ms</p>
                     </div>
                     <div className="space-y-1">
-                        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                        <p className="text-xs text-muted-foreground flex items-center gap-2">
                             <DollarSign className="h-3.5 w-3.5" /> Cost
                         </p>
                         <p className="text-lg font-bold font-mono text-amber-400">
@@ -151,7 +151,7 @@ export default function AuditDetailPage() {
                         </p>
                     </div>
                     <div className="space-y-1">
-                        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                        <p className="text-xs text-muted-foreground flex items-center gap-2">
                             <Cpu className="h-3.5 w-3.5" /> Tokens
                         </p>
                         <p className="text-lg font-bold font-mono">
@@ -159,7 +159,7 @@ export default function AuditDetailPage() {
                         </p>
                     </div>
                     <div className="space-y-1">
-                        <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                        <p className="text-xs text-muted-foreground flex items-center gap-2">
                             <Shield className="h-3.5 w-3.5" /> Policy
                         </p>
                         <div className="flex items-center gap-2">
@@ -173,7 +173,7 @@ export default function AuditDetailPage() {
                     </div>
                     {log.ttft_ms != null && (
                         <div className="space-y-1">
-                            <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                            <p className="text-xs text-muted-foreground flex items-center gap-2">
                                 <Timer className="h-3.5 w-3.5" /> TTFT
                             </p>
                             <p className="text-lg font-bold font-mono text-cyan-400">{log.ttft_ms}ms</p>
@@ -181,7 +181,7 @@ export default function AuditDetailPage() {
                     )}
                     {log.is_streaming != null && (
                         <div className="space-y-1">
-                            <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                            <p className="text-xs text-muted-foreground flex items-center gap-2">
                                 <Radio className="h-3.5 w-3.5" /> Mode
                             </p>
                             <div className="flex items-center gap-2">
@@ -236,7 +236,7 @@ export default function AuditDetailPage() {
                             {log.session_id && (
                                 <Link
                                     href={`/sessions/${encodeURIComponent(log.session_id)}`}
-                                    className="ml-auto flex items-center gap-1.5 text-xs text-primary hover:underline font-mono bg-primary/10 px-2 py-0.5 rounded"
+                                    className="ml-auto flex items-center gap-2 text-xs text-primary hover:underline font-mono bg-primary/10 px-2 py-0.5 rounded"
                                 >
                                     <span>⬡</span> {log.session_id.length > 30 ? log.session_id.slice(0, 28) + "…" : log.session_id}
                                 </Link>
@@ -248,7 +248,7 @@ export default function AuditDetailPage() {
                             {Object.entries(log.custom_properties).map(([k, v]) => (
                                 <div
                                     key={k}
-                                    className="inline-flex items-center gap-1.5 text-xs bg-muted/60 border border-border/60 px-2.5 py-1 rounded-md font-mono"
+                                    className="inline-flex items-center gap-2 text-xs bg-muted/60 border border-border/60 px-3 py-1 rounded-md font-mono"
                                 >
                                     <span className="text-muted-foreground">{k}:</span>
                                     <span className="font-semibold">{typeof v === "object" ? JSON.stringify(v) : String(v)}</span>
@@ -282,7 +282,7 @@ export default function AuditDetailPage() {
                                 <Terminal className="h-4 w-4 text-blue-400" /> Request Payload
                             </CardTitle>
                             {log.request_body && log.request_body !== "[EXPIRED]" && (
-                                <Button variant="ghost" size="sm" onClick={copyCurl} className="h-7 text-xs gap-1.5">
+                                <Button variant="ghost" size="sm" onClick={copyCurl} className="h-7 text-xs gap-2">
                                     <Copy className="h-3 w-3" />
                                     {copied ? "Copied!" : "Copy cURL"}
                                 </Button>

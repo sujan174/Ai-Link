@@ -65,10 +65,10 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
         // Server returns status code itself.
         // Let's bucket them
         value: d.count,
-        color: d.status >= 200 && d.status < 300 ? "#a9927d" :
+        color: d.status >= 200 && d.status < 300 ? "#818cf8" :
             d.status >= 300 && d.status < 400 ? "#d4a574" :
                 d.status >= 400 && d.status < 500 ? "#c47a50" :
-                    d.status >= 500 ? "#cf3453" : "#5e503f"
+                    d.status >= 500 ? "#6366f1" : "#6b7280"
     }));
     // Aggregate by bucket?
     // Actually server implementation returns distinct status codes? Yes.
@@ -82,10 +82,10 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
     const finalPieData = Object.entries(statusBuckets).map(([name, value]) => ({
         name,
         value,
-        color: name === "2xx" ? "#a9927d" :
+        color: name === "2xx" ? "#818cf8" :
             name === "3xx" ? "#d4a574" :
                 name === "4xx" ? "#c47a50" :
-                    name === "5xx" ? "#cf3453" : "#5e503f"
+                    name === "5xx" ? "#6366f1" : "#6b7280"
     }));
 
     return (
@@ -163,11 +163,11 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                                 <AreaChart data={volume}>
                                     <defs>
                                         <linearGradient id="volGradient" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#cf3453" stopOpacity={0.3} />
-                                            <stop offset="95%" stopColor="#cf3453" stopOpacity={0} />
+                                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
                                         </linearGradient>
                                     </defs>
-                                    <CartesianGrid stroke="#2d2520" strokeDasharray="3 3" vertical={false} />
+                                    <CartesianGrid stroke="var(--border, #1e2330)" strokeDasharray="3 3" vertical={false} />
                                     <XAxis
                                         dataKey="hour"
                                         {...CHART_AXIS_PROPS}
@@ -184,10 +184,10 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                                         type="monotone"
                                         dataKey="count"
                                         name="Requests"
-                                        stroke="#cf3453"
+                                        stroke="#6366f1"
                                         strokeWidth={2}
                                         fill="url(#volGradient)"
-                                        activeDot={{ r: 4, strokeWidth: 0, fill: '#cf3453' }}
+                                        activeDot={{ r: 4, strokeWidth: 0, fill: '#6366f1' }}
                                     />
                                 </AreaChart>
                             </ResponsiveContainer>
@@ -223,7 +223,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                                                 <Cell key={`cell-${index}`} fill={entry.color} />
                                             ))}
                                         </Pie>
-                                        <Tooltip content={<CustomTooltip contentStyle={{ backgroundColor: "#161210", borderColor: "#2d2520", color: "#eee9e5" }} />} />
+                                        <Tooltip content={<CustomTooltip contentStyle={{ backgroundColor: "var(--card, #13161e)", borderColor: "var(--border, #1e2330)", color: "var(--foreground, #e8eaf0)" }} />} />
                                     </PieChart>
                                 </ResponsiveContainer>
                                 <div className="space-y-4">

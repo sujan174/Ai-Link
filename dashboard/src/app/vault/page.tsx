@@ -260,12 +260,12 @@ function StatCard({ icon: Icon, label, value, color, loading }: {
     };
     return (
         <Card className="glass-card hover-lift">
-            <CardContent className="p-5 flex items-center gap-4">
+            <CardContent className="p-4 flex items-center gap-4">
                 <div className={cn("p-3 rounded-md transition-colors", bgColors[color])}>
                     <Icon className="h-6 w-6" />
                 </div>
                 <div>
-                    <p className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-0.5">{label}</p>
+                    <p className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-1">{label}</p>
                     {loading ? (
                         <div className="h-8 w-16 bg-muted/50 rounded shimmer my-0.5" />
                     ) : (

@@ -186,7 +186,7 @@ export default function ModelPricingPage() {
                     <CardContent>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                             <div>
-                                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Provider</label>
+                                <label className="text-xs font-medium text-muted-foreground mb-2 block">Provider</label>
                                 <select
                                     value={editing.provider}
                                     onChange={(e) => setEditing({ ...editing, provider: e.target.value })}
@@ -196,7 +196,7 @@ export default function ModelPricingPage() {
                                 </select>
                             </div>
                             <div>
-                                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Model ID</label>
+                                <label className="text-xs font-medium text-muted-foreground mb-2 block">Model ID</label>
                                 {(MODELS_BY_PROVIDER[editing.provider] || []).length > 0 ? (
                                     <>
                                         <select
@@ -234,7 +234,7 @@ export default function ModelPricingPage() {
                                 )}
                             </div>
                             <div>
-                                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Input ($/1M tokens)</label>
+                                <label className="text-xs font-medium text-muted-foreground mb-2 block">Input ($/1M tokens)</label>
                                 <input
                                     type="number"
                                     step="0.001"
@@ -246,7 +246,7 @@ export default function ModelPricingPage() {
                                 />
                             </div>
                             <div>
-                                <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Output ($/1M tokens)</label>
+                                <label className="text-xs font-medium text-muted-foreground mb-2 block">Output ($/1M tokens)</label>
                                 <input
                                     type="number"
                                     step="0.001"

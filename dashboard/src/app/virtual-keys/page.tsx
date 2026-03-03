@@ -625,7 +625,7 @@ function CreateTokenForm({ onSuccess, onCreate }: { onSuccess: () => void; onCre
 
         {/* Privacy & Logging */}
         <div className="space-y-1.5 pt-2 border-t border-border/50">
-          <Label className="text-xs flex items-center gap-1.5">
+          <Label className="text-xs flex items-center gap-2">
             Privacy & Logging
           </Label>
           <Select

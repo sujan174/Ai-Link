@@ -215,8 +215,8 @@ export default function TokenDetailPage() {
                                 <AreaChart data={usage.hourly}>
                                     <defs>
                                         <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#cf3453" stopOpacity={0.3} />
-                                            <stop offset="95%" stopColor="#cf3453" stopOpacity={0} />
+                                            <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                                            <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
                                         </linearGradient>
                                     </defs>
                                     <XAxis dataKey="bucket" hide />
@@ -228,7 +228,7 @@ export default function TokenDetailPage() {
                                         formatter={(value: any) => [value, "Requests"]}
                                         labelFormatter={(label: any) => new Date(label).toLocaleTimeString()}
                                     />
-                                    <Area type="monotone" dataKey="count" stroke="#cf3453" strokeWidth={2} fillOpacity={1} fill="url(#colorCount)" />
+                                    <Area type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={2} fillOpacity={1} fill="url(#colorCount)" />
                                 </AreaChart>
                             </ResponsiveContainer>
                         </div>
@@ -387,7 +387,7 @@ export default function TokenDetailPage() {
                         </Badge>
                     )}
                 </CardHeader>
-                <CardContent className="space-y-5">
+                <CardContent className="space-y-6">
                     {(["daily", "monthly"] as const).map((period) => {
                         const limit = period === "daily" ? spend?.daily_limit_usd : spend?.monthly_limit_usd;
                         const current = period === "daily" ? (spend?.current_daily_usd ?? 0) : (spend?.current_monthly_usd ?? 0);
@@ -398,7 +398,7 @@ export default function TokenDetailPage() {
                                 <div className="flex items-center justify-between">
                                     <span className="text-xs font-medium capitalize">{period} Cap</span>
                                     {limit != null && (
-                                        <div className="flex items-center gap-1.5">
+                                        <div className="flex items-center gap-2">
                                             <span className={`text-xs font-mono ${pct >= 100 ? "text-rose-500" : pct >= 80 ? "text-amber-500" : "text-emerald-500"
                                                 }`}>
                                                 ${current.toFixed(4)} / ${limit.toFixed(2)}
@@ -430,7 +430,7 @@ export default function TokenDetailPage() {
                                         placeholder={limit != null ? String(limit) : "No cap"}
                                         value={period === "daily" ? capInput.daily : capInput.monthly}
                                         onChange={(e) => setCapInput((prev) => ({ ...prev, [period]: e.target.value }))}
-                                        className="flex-1 rounded-md border border-border bg-background px-2.5 py-1 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                        className="flex-1 rounded-md border border-border bg-background px-3 py-1 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
                                     />
                                     <button
                                         onClick={() => handleSaveCap(period)}
@@ -483,7 +483,7 @@ export default function TokenDetailPage() {
                                         type="number" min={1} max={100}
                                         value={cbEdits.failure_threshold ?? cb.failure_threshold}
                                         onChange={e => setCbEdits(p => ({ ...p, failure_threshold: parseInt(e.target.value) || 1 }))}
-                                        className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
                                     />
                                     <p className="text-[10px] text-muted-foreground">Failures before circuit opens</p>
                                 </div>
@@ -493,7 +493,7 @@ export default function TokenDetailPage() {
                                         type="number" min={1}
                                         value={cbEdits.recovery_cooldown_secs ?? cb.recovery_cooldown_secs}
                                         onChange={e => setCbEdits(p => ({ ...p, recovery_cooldown_secs: parseInt(e.target.value) || 1 }))}
-                                        className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
                                     />
                                     <p className="text-[10px] text-muted-foreground">Wait before half-open try</p>
                                 </div>
@@ -503,7 +503,7 @@ export default function TokenDetailPage() {
                                         type="number" min={1}
                                         value={cbEdits.half_open_max_requests ?? cb.half_open_max_requests}
                                         onChange={e => setCbEdits(p => ({ ...p, half_open_max_requests: parseInt(e.target.value) || 1 }))}
-                                        className="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+                                        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
                                     />
                                     <p className="text-[10px] text-muted-foreground">Probe requests in half-open</p>
                                 </div>
@@ -512,7 +512,7 @@ export default function TokenDetailPage() {
                                 <button
                                     onClick={handleSaveCb}
                                     disabled={savingCb}
-                                    className="rounded-md bg-primary px-4 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                                    className="rounded-md bg-primary px-4 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
                                 >
                                     {savingCb ? "Saving…" : "Save Changes"}
                                 </button>

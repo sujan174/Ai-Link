@@ -22,7 +22,7 @@ export function CustomTooltip({
             <p className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 {labelFormatter ? labelFormatter(label as string) : label}
             </p>
-            <div className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-2">
                 {payload.map((entry: any, index: number) => (
                     <div key={index} className="flex items-center justify-between gap-4">
                         <div className="flex items-center gap-2">
@@ -48,7 +48,7 @@ export function CustomTooltip({
 
 // Chart axis defaults
 export const CHART_AXIS_PROPS = {
-    stroke: "#5e503f",
+    stroke: "#6b7280",
     fontSize: 11,
     tickLine: false,
     axisLine: false,

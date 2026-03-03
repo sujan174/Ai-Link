@@ -64,11 +64,11 @@ export default function AnalyticsPage() {
     const statusChartData = useMemo(() => {
         if (!statusData) return [];
         const groups: Record<string, { count: number; color: string; label: string }> = {
-            "2xx": { count: 0, color: "#a9927d", label: "Success (2xx)" },
+            "2xx": { count: 0, color: "#818cf8", label: "Success (2xx)" },
             "400/404": { count: 0, color: "#d4a574", label: "User Error (400/404)" },
             "429": { count: 0, color: "#c47a50", label: "Rate Limited (429)" },
-            "5xx": { count: 0, color: "#cf3453", label: "Provider Down (5xx)" },
-            "Other": { count: 0, color: "#5e503f", label: "Other" },
+            "5xx": { count: 0, color: "#6366f1", label: "Provider Down (5xx)" },
+            "Other": { count: 0, color: "#6b7280", label: "Other" },
         };
 
         statusData.forEach((s) => {
@@ -204,8 +204,8 @@ export default function AnalyticsPage() {
                                     <AreaChart data={timeseries} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                                         <defs>
                                             <linearGradient id="colorRequests" x1="0" y1="0" x2="0" y2="1">
-                                                <stop offset="5%" stopColor="#cf3453" stopOpacity={0.3} />
-                                                <stop offset="95%" stopColor="#cf3453" stopOpacity={0} />
+                                                <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                                                <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
                                             </linearGradient>
                                             <linearGradient id="colorErrors" x1="0" y1="0" x2="0" y2="1">
                                                 <stop offset="5%" stopColor="#e85d75" stopOpacity={0.3} />
@@ -213,7 +213,7 @@ export default function AnalyticsPage() {
                                             </linearGradient>
                                         </defs>
 
-                                        <CartesianGrid stroke="#2d2520" strokeDasharray="3 3" vertical={false} />
+                                        <CartesianGrid stroke="var(--border, #1e2330)" strokeDasharray="3 3" vertical={false} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}
@@ -231,12 +231,12 @@ export default function AnalyticsPage() {
                                         <Area
                                             type="monotone"
                                             dataKey="request_count"
-                                            stroke="#cf3453"
+                                            stroke="#6366f1"
                                             strokeWidth={2}
                                             fillOpacity={1}
                                             fill="url(#colorRequests)"
                                             name="Requests"
-                                            activeDot={{ r: 4, strokeWidth: 0, fill: '#cf3453' }}
+                                            activeDot={{ r: 4, strokeWidth: 0, fill: '#6366f1' }}
                                         />
                                         <Area
                                             type="monotone"
@@ -274,7 +274,7 @@ export default function AnalyticsPage() {
                             ) : timeseries && timeseries.length > 0 ? (
                                 <ResponsiveContainer width="100%" height="100%">
                                     <LineChart data={timeseries} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                                        <CartesianGrid stroke="#2d2520" strokeDasharray="3 3" vertical={false} />
+                                        <CartesianGrid stroke="var(--border, #1e2330)" strokeDasharray="3 3" vertical={false} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}
@@ -303,11 +303,11 @@ export default function AnalyticsPage() {
                                             yAxisId="left"
                                             type="monotone"
                                             dataKey="lat"
-                                            stroke="#cf3453"
+                                            stroke="#6366f1"
                                             strokeWidth={2}
                                             dot={false}
                                             name="Latency (ms)"
-                                            activeDot={{ r: 4, strokeWidth: 0, fill: '#cf3453' }}
+                                            activeDot={{ r: 4, strokeWidth: 0, fill: '#6366f1' }}
                                         />
                                         <Line
                                             yAxisId="right"
@@ -360,7 +360,7 @@ export default function AnalyticsPage() {
                                                 <Cell key={`cell-${index}`} fill={entry.fill} />
                                             ))}
                                         </Pie>
-                                        <Tooltip content={<CustomTooltip contentStyle={{ backgroundColor: "#161210", borderColor: "#2d2520", color: "#eee9e5" }} />} />
+                                        <Tooltip content={<CustomTooltip contentStyle={{ backgroundColor: "var(--card, #13161e)", borderColor: "var(--border, #1e2330)", color: "var(--foreground, #e8eaf0)" }} />} />
                                         <Legend verticalAlign="bottom" height={36} wrapperStyle={{ fontSize: '12px' }} />
                                     </PieChart>
                                 </ResponsiveContainer>
@@ -388,7 +388,7 @@ export default function AnalyticsPage() {
                             ) : timeseries && timeseries.length > 0 ? (
                                 <ResponsiveContainer width="100%" height="100%">
                                     <BarChart data={timeseries} barCategoryGap="30%" margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                                        <CartesianGrid stroke="#2d2520" strokeDasharray="3 3" vertical={false} />
+                                        <CartesianGrid stroke="var(--border, #1e2330)" strokeDasharray="3 3" vertical={false} />
                                         <XAxis
                                             dataKey="bucket"
                                             tickFormatter={formatDate}
@@ -410,8 +410,8 @@ export default function AnalyticsPage() {
                                             wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
                                             formatter={(v) => v === 'input_tokens' ? 'Prompt Tokens' : 'Completion Tokens'}
                                         />
-                                        <Bar dataKey="input_tokens" name="input_tokens" stackId="a" fill="#cf3453" radius={[0, 0, 0, 0]} />
-                                        <Bar dataKey="output_tokens" name="output_tokens" stackId="a" fill="#a9927d" radius={[4, 4, 0, 0]} />
+                                        <Bar dataKey="input_tokens" name="input_tokens" stackId="a" fill="#6366f1" radius={[0, 0, 0, 0]} />
+                                        <Bar dataKey="output_tokens" name="output_tokens" stackId="a" fill="#818cf8" radius={[4, 4, 0, 0]} />
                                     </BarChart>
                                 </ResponsiveContainer>
                             ) : (
@@ -448,7 +448,7 @@ export default function AnalyticsPage() {
                                         content={<CustomTooltip valueFormatter={(v: any) => typeof v === 'number' ? `$${v.toFixed(4)}` : v} />}
                                         cursor={{ fill: 'var(--border)', opacity: 0.1 }}
                                     />
-                                    <Bar dataKey="cost_usd" name="Cost ($)" fill="#cf3453" radius={[0, 4, 4, 0]}>
+                                    <Bar dataKey="cost_usd" name="Cost ($)" fill="#6366f1" radius={[0, 4, 4, 0]}>
                                         <LabelList dataKey="costFmt" position="right" style={{ fontSize: 10, fill: 'var(--muted-foreground)' }} />
                                     </Bar>
                                 </BarChart>
@@ -483,7 +483,7 @@ export default function AnalyticsPage() {
                                         content={<CustomTooltip valueFormatter={(v: any) => typeof v === 'number' ? `$${v.toFixed(4)}` : v} />}
                                         cursor={{ fill: 'var(--border)', opacity: 0.1 }}
                                     />
-                                    <Bar dataKey="cost_usd" name="Cost ($)" fill="#a9927d" radius={[0, 4, 4, 0]}>
+                                    <Bar dataKey="cost_usd" name="Cost ($)" fill="#818cf8" radius={[0, 4, 4, 0]}>
                                         <LabelList dataKey="costFmt" position="right" style={{ fontSize: 10, fill: 'var(--muted-foreground)' }} />
                                     </Bar>
                                 </BarChart>

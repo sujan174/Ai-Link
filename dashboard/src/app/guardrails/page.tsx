@@ -84,7 +84,7 @@ function KPICard({
                     <Icon className="h-5 w-5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-0.5">
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
                         {label}
                     </p>
                     <p className="text-xl font-bold tabular-nums tracking-tight">{value}</p>
@@ -233,7 +233,7 @@ function TokenSelector({
             <button
                 onClick={() => setOpen(!open)}
                 className={cn(
-                    "w-full flex items-center justify-between gap-2 rounded-md border px-3 py-2.5 text-sm transition-colors",
+                    "w-full flex items-center justify-between gap-2 rounded-md border px-3 py-3 text-sm transition-colors",
                     "hover:border-foreground/30 focus:outline-none focus:ring-2 focus:ring-emerald-500/20",
                     open ? "border-emerald-500/50" : "border-border",
                     !selected && "text-muted-foreground"
@@ -259,7 +259,7 @@ function TokenSelector({
             {open && (
                 <div className="absolute z-50 mt-1 w-full rounded-md border border-border bg-popover shadow-lg animate-fade-in">
                     <div className="p-2 border-b border-border">
-                        <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5">
+                        <div className="flex items-center gap-2 rounded-md border border-border px-2 py-2">
                             <Search className="h-3.5 w-3.5 text-muted-foreground" />
                             <input
                                 type="text"
@@ -407,7 +407,7 @@ export default function GuardrailsPage() {
     const isLoading = presetsLoading || tokensLoading;
 
     return (
-        <div className="space-y-5 pb-10 animate-fade-in">
+        <div className="space-y-6 pb-10 animate-fade-in">
             {/* Header */}
             <div className="flex items-center justify-between">
                 <div>
@@ -479,7 +479,7 @@ export default function GuardrailsPage() {
                         )}
                         {/* Drift warning: guardrails set via SDK */}
                         {tokenStatus?.has_guardrails && tokenStatus.source === "sdk" && !statusLoading && (
-                            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 flex gap-2 text-[11px] text-amber-700 dark:text-amber-400">
+                            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-3 flex gap-2 text-[11px] text-amber-700 dark:text-amber-400">
                                 <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
                                 <div>
                                     <p className="font-semibold">Drift warning</p>

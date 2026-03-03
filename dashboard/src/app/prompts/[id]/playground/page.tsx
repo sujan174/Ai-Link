@@ -280,7 +280,7 @@ export default function PromptPlaygroundPage({
                     <Label className="text-[10px] text-muted-foreground uppercase">
                         Model Override
                     </Label>
-                    <div className="flex gap-1.5">
+                    <div className="flex gap-2">
                         <Button
                             size="sm"
                             className="h-8 flex-1"

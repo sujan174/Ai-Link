@@ -147,7 +147,7 @@ export default function WebhooksPage() {
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div>
-                            <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+                            <label className="text-xs font-medium text-muted-foreground mb-2 block">
                                 Endpoint URL
                             </label>
                             <input
@@ -223,7 +223,7 @@ export default function WebhooksPage() {
                                             )} />
                                             <p className="font-mono text-sm truncate">{webhook.url}</p>
                                         </div>
-                                        <div className="flex flex-wrap items-center gap-1.5">
+                                        <div className="flex flex-wrap items-center gap-2">
                                             {webhook.events.length === 0 ? (
                                                 <span className="text-[10px] text-muted-foreground italic">All events</span>
                                             ) : (
@@ -240,7 +240,7 @@ export default function WebhooksPage() {
                                             size="sm"
                                             onClick={() => handleTest(webhook)}
                                             disabled={testingId === webhook.id}
-                                            className="gap-1.5 text-xs"
+                                            className="gap-2 text-xs"
                                         >
                                             {testingId === webhook.id ? (
                                                 <RefreshCw className="h-3 w-3 animate-spin" />

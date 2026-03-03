@@ -31,11 +31,11 @@ export function VolumeChart() {
                     <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                         <defs>
                             <linearGradient id="colorRequests" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#cf3453" stopOpacity={0.3} />
-                                <stop offset="95%" stopColor="#cf3453" stopOpacity={0} />
+                                <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                                <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
                             </linearGradient>
                         </defs>
-                        <CartesianGrid stroke="#2d2520" strokeDasharray="3 3" vertical={false} />
+                        <CartesianGrid stroke="var(--border, #1e2330)" strokeDasharray="3 3" vertical={false} />
                         <XAxis
                             dataKey="name"
                             {...CHART_AXIS_PROPS}
@@ -44,15 +44,15 @@ export function VolumeChart() {
                             {...CHART_AXIS_PROPS}
                             tickFormatter={(value) => `${value}`}
                         />
-                        <Tooltip content={<CustomTooltip contentStyle={{ backgroundColor: "#161210", borderColor: "#2d2520", color: "#eee9e5" }} />} cursor={{ stroke: 'var(--border)', strokeWidth: 1, strokeDasharray: '4 4' }} />
+                        <Tooltip content={<CustomTooltip contentStyle={{ backgroundColor: "var(--card, #13161e)", borderColor: "var(--border, #1e2330)", color: "var(--foreground, #e8eaf0)" }} />} cursor={{ stroke: 'var(--border)', strokeWidth: 1, strokeDasharray: '4 4' }} />
                         <Area
                             type="monotone"
                             dataKey="requests"
                             name="Requests"
-                            stroke="#cf3453"
+                            stroke="#6366f1"
                             strokeWidth={2}
                             fill="url(#colorRequests)"
-                            activeDot={{ r: 4, strokeWidth: 0, fill: '#cf3453' }}
+                            activeDot={{ r: 4, strokeWidth: 0, fill: '#6366f1' }}
                         />
                     </AreaChart>
                 </ResponsiveContainer>
