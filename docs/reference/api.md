@@ -7,11 +7,34 @@
 Base URL: `http://localhost:8443/api/v1`  
 Auth: `Authorization: Bearer <api_key>` (create keys via `/auth/keys`)
 
+### Authentication & Authorization
+
+Every Management API request requires a valid API key in the `Authorization: Bearer` header (or the `AILINK_ADMIN_KEY` env-var key via `X-Admin-Key`).
+
+Access is controlled by **role + scopes**:
+
+| Role | Scope Behavior | Typical Use |
+|------|---------------|-------------|
+| `admin` | Auto-passes all scope checks | Operators, CI/CD pipelines |
+| `member` | Must have each scope explicitly | Team developers |
+| `read_only` | Must have each scope explicitly | Dashboards, monitoring |
+
+Endpoints below are annotated with: **🔒 admin** (requires admin role) and **📋 scope** (requires specific scope). Admin/SuperAdmin keys bypass all scope checks.
+
+For full RBAC details, see [Security — RBAC](security.md#role-based-access-control-rbac).
+
 ---
 
 ### API Keys (Admin Auth)
 
 Manage programmatic access keys for the Management API.
+
+| Endpoint | Auth |
+|----------|------|
+| `GET /auth/keys` | 📋 `keys:manage` |
+| `POST /auth/keys` | 🔒 admin + 📋 `keys:manage` |
+| `DELETE /auth/keys/{id}` | 🔒 admin + 📋 `keys:manage` |
+| `GET /auth/whoami` | any authenticated key |
 
 #### List API Keys
 `GET /auth/keys`
@@ -36,6 +59,14 @@ Roles: `admin` (full access within org), `member` (read/write, no delete), `read
 ### Projects
 
 Logical groups for tokens and policies.
+
+| Endpoint | Auth |
+|----------|------|
+| `GET /projects` | 📋 `projects:read` |
+| `POST /projects` | 📋 `projects:write` |
+| `PUT /projects/{id}` | 📋 `projects:write` |
+| `DELETE /projects/{id}` | 🔒 admin |
+| `POST /projects/{id}/purge` | 🔒 admin |
 
 #### List Projects
 `GET /projects`
@@ -62,6 +93,13 @@ Permanently erases all audit logs, sessions, and usage data for a project. Irrev
 ### Tokens
 
 Virtual tokens issued to AI agents. Agents use these instead of real API keys.
+
+| Endpoint | Auth |
+|----------|------|
+| `GET /tokens` | 📋 `tokens:read` |
+| `POST /tokens` | 🔒 admin + 📋 `tokens:write` |
+| `DELETE /tokens/{id}` | 🔒 admin + 📋 `tokens:write` |
+| `GET /tokens/{id}/usage` | 📋 `tokens:read` |
 
 #### List Tokens
 `GET /tokens`
@@ -131,6 +169,8 @@ Update at runtime without gateway restart. CB states: `closed` → `open` (after
 
 Monetary limits per token (enforced atomically via Redis Lua scripts).
 
+> **Auth**: These endpoints currently have no scope check — any authenticated key can manage spend caps.
+
 #### Get Spend Caps
 `GET /tokens/{id}/spend`
 
@@ -150,13 +190,21 @@ Monetary limits per token (enforced atomically via Redis Lua scripts).
 ```
 
 #### Remove Spend Cap
-`DELETE /tokens/{id}/spend/{period}` — `period` is `daily` or `monthly`.
+`DELETE /tokens/{id}/spend/{period}` — `period` is `daily`, `monthly`, or `lifetime`.
 
 ---
 
 ### Policies
 
 Traffic control rules. Bind conditions (method, path, spend, time) to actions (deny, rate_limit, redact, webhook, transform).
+
+| Endpoint | Auth |
+|----------|------|
+| `GET /policies` | 📋 `policies:read` |
+| `POST /policies` | 🔒 admin + 📋 `policies:write` |
+| `PUT /policies/{id}` | 🔒 admin + 📋 `policies:write` |
+| `DELETE /policies/{id}` | 🔒 admin + 📋 `policies:write` |
+| `GET /policies/{id}/versions` | 📋 `policies:read` |
 
 #### List Policies
 `GET /policies`
@@ -194,6 +242,12 @@ Modes: `enforce` (blocks/modifies), `shadow` (logs only — safe rollout).
 
 Real API keys stored in the vault (AES-256-GCM envelope encrypted — never returned in plaintext).
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /credentials` | 📋 `credentials:read` |
+| `POST /credentials` | 🔒 admin + 📋 `credentials:write` |
+| `DELETE /credentials/{id}` | 🔒 admin + 📋 `credentials:write` |
+
 #### List Credentials
 `GET /credentials` — Returns metadata only (name, provider, rotation status).
 
@@ -226,6 +280,13 @@ Real API keys stored in the vault (AES-256-GCM envelope encrypted — never retu
 
 One-call safety rule bundles (PII, prompt injection, HIPAA, etc.). Backed by 100+ patterns across 22 preset categories.
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /guardrails/presets` | any authenticated key |
+| `POST /guardrails/enable` | 🔒 admin |
+| `GET /guardrails/status` | any authenticated key |
+| `DELETE /guardrails/disable` | 🔒 admin |
+
 #### List Available Presets
 `GET /guardrails/presets`
 
@@ -254,6 +315,8 @@ Returns active presets and source (sdk/dashboard) for drift detection.
 ### Prompt Management
 
 CRUD for reusable prompt templates with immutable versioning, label-based deployment (`production` / `staging`), folder organisation, and server-side `{{variable}}` rendering.
+
+> **Auth**: All prompt endpoints require only a valid authenticated API key (any role, no specific scope). Prompts are operational resources accessible to all team members.
 
 #### List Prompts
 `GET /prompts?folder=/production` — Filter by folder path (optional).
@@ -322,6 +385,16 @@ Returns an OpenAI-compatible payload ready to pass to any chat completions endpo
 
 Register Model Context Protocol servers. The gateway auto-discovers tools and injects them into LLM requests via the `X-MCP-Servers` header.
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /mcp/servers` | 📋 `mcp:read` |
+| `POST /mcp/servers` | 🔒 admin + 📋 `mcp:write` |
+| `DELETE /mcp/servers/{id}` | 🔒 admin + 📋 `mcp:write` |
+| `POST /mcp/servers/test` | 🔒 admin + 📋 `mcp:write` |
+| `POST /mcp/servers/discover` | 🔒 admin + 📋 `mcp:read` |
+| `POST /mcp/servers/{id}/refresh` | 🔒 admin + 📋 `mcp:write` |
+| `GET /mcp/servers/{id}/tools` | 📋 `mcp:read` |
+
 #### List MCP Servers
 `GET /mcp/servers`
 
@@ -353,6 +426,11 @@ Performs the MCP `initialize` handshake and caches tool schemas. Server names mu
 
 High-stakes operations that pause for manual review.
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /approvals` | 📋 `approvals:read` |
+| `POST /approvals/{id}/decision` | 📋 `approvals:write` |
+
 #### List Pending Approvals
 `GET /approvals`
 
@@ -368,6 +446,14 @@ Values: `approved` (resumes request), `rejected` (agent receives 403).
 ### Sessions
 
 Tracked multi-turn interactions across the gateway.
+
+| Endpoint | Auth |
+|----------|------|
+| `GET /sessions` | 📋 `audit:read` |
+| `GET /sessions/{id}` | 📋 `audit:read` |
+| `PATCH /sessions/{id}/status` | 🔒 admin + 📋 `sessions:write` |
+| `PUT /sessions/{id}/spend-cap` | 🔒 admin + 📋 `sessions:write` |
+| `GET /sessions/{id}/entity` | 📋 `audit:read` |
 
 #### List Sessions
 `GET /sessions?limit=50&offset=0`
@@ -394,6 +480,12 @@ Values: `active`, `paused`, `completed`.
 
 Immutable request audit trail. Partitioned by month in PostgreSQL.
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /audit` | 📋 `audit:read` |
+| `GET /audit/{id}` | 📋 `audit:read` |
+| `GET /audit/stream` | 📋 `audit:read` |
+
 #### Query Audit Logs
 `GET /audit?limit=50&offset=0&token_id={id}`
 
@@ -406,6 +498,18 @@ Immutable request audit trail. Partitioned by month in PostgreSQL.
 ---
 
 ### Analytics
+
+| Endpoint | Auth |
+|----------|------|
+| `GET /analytics/volume` | any authenticated key |
+| `GET /analytics/status` | any authenticated key |
+| `GET /analytics/latency` | any authenticated key |
+| `GET /analytics/summary` | 📋 `analytics:read` |
+| `GET /analytics/timeseries` | 📋 `analytics:read` |
+| `GET /analytics/experiments` | 📋 `analytics:read` |
+| `GET /analytics/tokens` | 📋 `analytics:read` |
+| `GET /analytics/tokens/{id}/*` | 📋 `analytics:read` |
+| `GET /analytics/spend/breakdown` | 📋 `analytics:read` |
 
 #### Request Volume
 `GET /analytics/volume` — Hourly request counts (last 24h).
@@ -446,6 +550,18 @@ Immutable request audit trail. Partitioned by month in PostgreSQL.
 
 Organizational hierarchy for multi-team deployments.
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /teams` | 📋 `tokens:read` |
+| `POST /teams` | 📋 `tokens:write` |
+| `PUT /teams/{id}` | 📋 `tokens:write` |
+| `DELETE /teams/{id}` | 📋 `tokens:write` |
+| `GET /teams/{id}/members` | 📋 `tokens:read` |
+| `POST /teams/{id}/members` | 📋 `tokens:write` |
+| `DELETE /teams/{id}/members/{user_id}` | 📋 `tokens:write` |
+
+> **Note**: Team endpoints currently use `tokens:read/write` scopes rather than dedicated `teams:*` scopes.
+
 #### List Teams
 `GET /teams`
 
@@ -482,6 +598,15 @@ Organizational hierarchy for multi-team deployments.
 
 Fine-grained RBAC — restrict which models a token or team can access.
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /model-access-groups` | 📋 `tokens:read` |
+| `POST /model-access-groups` | 📋 `tokens:write` |
+| `PUT /model-access-groups/{id}` | 📋 `tokens:write` |
+| `DELETE /model-access-groups/{id}` | 📋 `tokens:write` |
+
+> **Note**: Model Access Group endpoints currently use `tokens:read/write` scopes rather than dedicated `model-access:*` scopes.
+
 #### List Groups
 `GET /model-access-groups`
 
@@ -502,6 +627,12 @@ Fine-grained RBAC — restrict which models a token or team can access.
 ### Services (Action Gateway)
 
 Register external APIs for secure, credential-injected proxying.
+
+| Endpoint | Auth |
+|----------|------|
+| `GET /services` | 📋 `services:read` |
+| `POST /services` | 🔒 admin + 📋 `services:write` |
+| `DELETE /services/{id}` | 🔒 admin + 📋 `services:write` |
 
 #### List Services
 `GET /services`
@@ -529,6 +660,13 @@ Register external APIs for secure, credential-injected proxying.
 
 Event-driven notifications for automated workflows.
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /webhooks` | 📋 `webhooks:read` |
+| `POST /webhooks` | 🔒 admin + 📋 `webhooks:write` |
+| `DELETE /webhooks/{id}` | 🔒 admin + 📋 `webhooks:write` |
+| `POST /webhooks/test` | 🔒 admin + 📋 `webhooks:write` |
+
 #### List Webhooks
 `GET /webhooks`
 
@@ -554,6 +692,12 @@ Events: `policy_violation`, `spend_cap_exceeded`, `rate_limit_exceeded`, `hitl_r
 
 Custom cost-per-token overrides for accurate spend tracking.
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /pricing` | 📋 `pricing:read` |
+| `PUT /pricing` | 🔒 admin + 📋 `pricing:write` |
+| `DELETE /pricing/{id}` | 🔒 admin + 📋 `pricing:write` |
+
 #### List Pricing
 `GET /pricing`
 
@@ -573,6 +717,13 @@ Custom cost-per-token overrides for accurate spend tracking.
 
 In-app notifications for alerts and events.
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /notifications` | 📋 `notifications:read` |
+| `GET /notifications/unread` | 📋 `notifications:read` |
+| `POST /notifications/{id}/read` | 📋 `notifications:write` |
+| `POST /notifications/read-all` | 📋 `notifications:write` |
+
 #### List Notifications
 `GET /notifications`
 
@@ -591,6 +742,10 @@ In-app notifications for alerts and events.
 
 Organization-level usage and cost tracking.
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /billing/usage` | 📋 `billing:read` |
+
 #### Get Usage
 `GET /billing/usage?period=2026-02` — Returns total requests, tokens used, and spend for the given month.
 
@@ -599,6 +754,10 @@ Organization-level usage and cost tracking.
 ### Anomaly Detection
 
 Automatic traffic anomaly detection using sigma-based statistical analysis.
+
+| Endpoint | Auth |
+|----------|------|
+| `GET /anomalies` | 🔒 admin |
 
 #### Get Anomaly Events
 `GET /anomalies`
@@ -610,6 +769,8 @@ Returns tokens with anomalous request velocity compared to their baseline. Flags
 ### Experiments (A/B Testing)
 
 Create and monitor A/B experiments to compare models, prompts, or routing strategies. Experiments are a convenience layer over the policy engine's `Action::Split` — creating one auto-generates a weighted Split policy.
+
+> **Auth**: All experiment endpoints require only a valid authenticated API key (any role, no specific scope).
 
 #### Create Experiment
 `POST /experiments`
@@ -653,6 +814,11 @@ Variant selection is deterministic per `request_id` — the same caller always g
 
 ### Settings
 
+| Endpoint | Auth |
+|----------|------|
+| `GET /settings` | 🔒 admin |
+| `PUT /settings` | 🔒 admin |
+
 #### Get Settings
 `GET /settings`
 
@@ -664,6 +830,8 @@ Variant selection is deterministic per `request_id` — the same caller always g
 ### Config-as-Code
 
 Export/import your full gateway configuration as version-controlled YAML or JSON.
+
+> **Auth**: All config export/import endpoints require only a valid authenticated API key (any role, no specific scope).
 
 #### Export Full Config
 `GET /config/export` (YAML default, `?format=json` for JSON)
@@ -680,6 +848,12 @@ Export/import your full gateway configuration as version-controlled YAML or JSON
 ---
 
 ### System
+
+| Endpoint | Auth |
+|----------|------|
+| `GET /system/cache-stats` | 🔒 admin |
+| `POST /system/flush-cache` | 🔒 admin |
+| `POST /pii/rehydrate` | 🔒 admin + 📋 `pii:rehydrate` |
 
 #### Get Cache Statistics
 `GET /system/cache-stats` — Redis hit rates, memory usage, namespace breakdown.
@@ -734,6 +908,8 @@ Exposes:
 ### SSO / OIDC
 
 Register external identity providers for Single Sign-On.
+
+> **Auth**: OIDC management endpoints require only a valid authenticated API key (any role, no specific scope).
 
 #### List OIDC Providers
 `GET /oidc/providers`

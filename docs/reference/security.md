@@ -34,6 +34,102 @@ All agent credentials are virtual tokens (`ailink_v1_...`) that only work throug
 
 ---
 
+## Role-Based Access Control (RBAC)
+
+AIlink enforces a layered authorization model: **Role → Scope → Resource**.
+
+### Roles
+
+| Role | How Assigned | Auto-Passes All Scopes? | Description |
+|------|-------------|-------------------------|-------------|
+| **SuperAdmin** | `AILINK_ADMIN_KEY` env var | ✅ Yes | Full system access. Used for initial setup and break-glass operations |
+| **Admin** | API key with `role: "admin"` | ✅ Yes | Full access within the organization. Can create/delete tokens, policies, credentials |
+| **Member** | API key with `role: "member"` | ❌ No | Read/write access gated by individual scopes. Cannot perform admin-only operations |
+| **ReadOnly** | API key with `role: "read_only"` | ❌ No | Read-only access gated by individual scopes |
+
+> **Key behavior**: Admin and SuperAdmin roles automatically satisfy any scope check. Member and ReadOnly roles must have the specific scope explicitly granted on the API key.
+
+### Scopes
+
+Scopes follow the `resource:action` convention. 16 scope namespaces are available:
+
+| Scope | Description |
+|-------|-------------|
+| `tokens:read` | List tokens, view usage, view circuit breaker config |
+| `tokens:write` | Create and revoke tokens (requires **admin** role) |
+| `policies:read` | List policies and policy versions |
+| `policies:write` | Create, update, delete policies (requires **admin** role) |
+| `credentials:read` | List credential metadata (secrets never returned) |
+| `credentials:write` | Store and delete credentials (requires **admin** role) |
+| `projects:read` | List projects |
+| `projects:write` | Create and update projects |
+| `approvals:read` | List pending HITL approval requests |
+| `approvals:write` | Approve or reject HITL requests |
+| `audit:read` | Query audit logs, stream logs, view sessions |
+| `sessions:write` | Update session status, set session spend caps (requires **admin** role) |
+| `services:read` | List registered services |
+| `services:write` | Register and delete services (requires **admin** role) |
+| `webhooks:read` | List webhooks |
+| `webhooks:write` | Create, delete, and test webhooks (requires **admin** role) |
+| `notifications:read` | List notifications, count unread |
+| `notifications:write` | Mark notifications as read |
+| `pricing:read` | List model pricing entries |
+| `pricing:write` | Create and delete pricing overrides (requires **admin** role) |
+| `billing:read` | View organization-level usage and spend |
+| `analytics:read` | View analytics dashboards, per-token metrics, spend breakdowns |
+| `keys:manage` | List API keys; create and revoke keys (create/revoke require **admin** role) |
+| `mcp:read` | List MCP servers, view cached tools, discover endpoints |
+| `mcp:write` | Register, delete, and refresh MCP servers (requires **admin** role) |
+| `pii:rehydrate` | Decrypt tokenized PII references (requires **admin** role) |
+
+### Default Scopes by Role
+
+When creating an API key, you can specify custom scopes. If omitted, these defaults apply:
+
+| Role | Default Scopes |
+|------|---------------|
+| **Admin** | All scopes (auto-pass) |
+| **Member** | All `*:read` scopes + `approvals:write` + `notifications:write` |
+| **ReadOnly** | All `*:read` scopes only |
+
+### Admin-Required Operations
+
+These operations require `admin` role **in addition to** the relevant scope:
+
+- **Token management**: Create, revoke tokens
+- **Policy management**: Create, update, delete policies
+- **Credential vault**: Store, delete credentials
+- **Project deletion & purge**: Delete projects, GDPR data purge
+- **Session lifecycle**: Update status, set spend caps
+- **Services**: Register, delete services
+- **Webhooks**: Create, delete, test webhooks
+- **Pricing**: Create, delete pricing overrides
+- **API keys**: Create, revoke keys
+- **MCP servers**: Register, delete, refresh, discover
+- **System**: Flush cache, view cache stats, anomaly detection, settings
+- **PII**: Rehydrate tokenized PII
+
+### Unscoped Endpoints
+
+These endpoints require only a valid authenticated API key (any role):
+
+| Endpoints | Rationale |
+|-----------|-----------|
+| `/prompts/*` | Prompts are operational resources used by all team members |
+| `/experiments/*` | Experiments are read/managed as part of normal workflow |
+| `/config/export`, `/config/import` | Config-as-code operations (export is read-only; import is additive) |
+| `/guardrails/presets`, `/guardrails/status` | Listing available presets is informational |
+| `/analytics/volume`, `/analytics/status`, `/analytics/latency` | Basic dashboard metrics |
+| `/auth/whoami` | Self-identification |
+
+### Safety Guards
+
+- **Last admin key protection**: Revoking the last active admin key is blocked to prevent lockout
+- **Constant-time comparison**: All API key and token validations use constant-time string comparison to prevent timing attacks
+- **Scope escalation prevention**: A Member cannot create a key with Admin role or add scopes they don't have
+
+---
+
 ## Encryption Design
 
 ### Envelope Encryption
