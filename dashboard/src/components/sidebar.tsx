@@ -19,7 +19,6 @@ import {
     ChevronRight,
     ChevronDown,
     Layers,
-    Users,
     FlaskRound,
     Webhook,
     Wrench,
@@ -28,6 +27,8 @@ import {
     Database,
     ShieldCheck,
     MessageSquareText,
+    ScrollText,
+    Eye,
 } from "lucide-react";
 import { useEffect, useState, useCallback, useRef } from "react";
 
@@ -55,9 +56,12 @@ export function Sidebar({ className }: SidebarProps) {
     const [health, setHealth] = useState<"online" | "offline" | "checking">("checking");
     const [approvalCount, setApprovalCount] = useState(0);
     const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
-        overview: true,
-        operate: true,
-        configure: false,
+        home: true,
+        agents: false,
+        safety: false,
+        prompts: false,
+        observe: false,
+        system: false,
     });
 
     const toggleGroup = useCallback((id: string) => {
@@ -102,41 +106,59 @@ export function Sidebar({ className }: SidebarProps) {
 
     const groups: Group[] = [
         {
-            id: "overview",
-            label: "Overview",
+            id: "home",
+            label: "Home",
             defaultOpen: true,
             routes: [
                 { href: "/", label: "Dashboard", icon: LayoutDashboard },
                 { href: "/analytics", label: "Analytics", icon: BarChart3 },
-                { href: "/audit", label: "Audit Logs", icon: ClipboardList },
-                { href: "/sessions", label: "Sessions", icon: Layers },
+                { href: "/billing", label: "Billing", icon: CreditCard },
+            ]
+        },
+        {
+            id: "agents",
+            label: "Agents & Keys",
+            routes: [
+                { href: "/virtual-keys", label: "Virtual Keys", icon: Key },
+                { href: "/api-keys", label: "API Keys", icon: LockKeyhole },
+                { href: "/upstreams", label: "Upstreams", icon: Activity },
+                { href: "/vault", label: "Vault", icon: Fingerprint },
+            ]
+        },
+        {
+            id: "safety",
+            label: "Safety & Policies",
+            routes: [
+                { href: "/policies", label: "Policies", icon: ScrollText },
+                { href: "/guardrails", label: "Guardrails", icon: ShieldAlert },
+                { href: "/model-access-groups", label: "Model Access", icon: ShieldCheck },
+                { href: "/approvals", label: "Approvals", icon: CheckCircle, badge: approvalCount > 0 ? approvalCount : null },
+            ]
+        },
+        {
+            id: "prompts",
+            label: "Prompts & Experiments",
+            routes: [
+                { href: "/prompts", label: "Prompts", icon: MessageSquareText },
+                { href: "/playground", label: "Playground", icon: FlaskConical },
                 { href: "/experiments", label: "Experiments", icon: FlaskRound },
             ]
         },
         {
-            id: "operate",
-            label: "Operate",
-            defaultOpen: true,
+            id: "observe",
+            label: "Observe",
             routes: [
-                { href: "/virtual-keys", label: "Agents", icon: Key },
-                { href: "/upstreams", label: "Upstreams", icon: Activity },
-                { href: "/guardrails", label: "Guardrails", icon: ShieldAlert },
-                { href: "/model-access-groups", label: "Model Access", icon: ShieldCheck },
-                { href: "/playground", label: "Playground", icon: FlaskConical },
-                { href: "/prompts", label: "Prompts", icon: MessageSquareText },
-                { href: "/approvals", label: "Approvals", icon: CheckCircle, badge: approvalCount > 0 ? approvalCount : null },
-                { href: "/tools", label: "Tools & MCP", icon: Wrench },
-                { href: "/webhooks", label: "Webhooks", icon: Webhook },
+                { href: "/audit", label: "Audit Logs", icon: ClipboardList },
+                { href: "/sessions", label: "Sessions", icon: Layers },
+                { href: "/cache", label: "Cache", icon: Database },
             ]
         },
         {
-            id: "configure",
-            label: "Configure",
+            id: "system",
+            label: "System",
             routes: [
-                { href: "/vault", label: "Vault", icon: Fingerprint },
-                { href: "/api-keys", label: "API Keys", icon: LockKeyhole },
-                { href: "/billing", label: "Billing", icon: CreditCard },
-                { href: "/cache", label: "Cache", icon: Database },
+                { href: "/tools", label: "Tools & MCP", icon: Wrench },
+                { href: "/webhooks", label: "Webhooks", icon: Webhook },
                 { href: "/config", label: "Config Export", icon: FileCode2 },
                 { href: "/settings", label: "Settings", icon: Settings },
             ]
@@ -188,9 +210,9 @@ export function Sidebar({ className }: SidebarProps) {
                 <Link href="/" className="flex items-center gap-2 group min-w-0">
                     <div className={cn(
                         "flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
-                        "bg-gradient-to-br from-teal-500 to-teal-600",
+                        "bg-gradient-to-br from-[#8e2137] to-[#49111c]",
                         "text-white font-bold text-[10px] tracking-tight",
-                        "group-hover:shadow-[0_0_12px_rgba(20,184,166,0.3)] transition-shadow"
+                        "group-hover:shadow-[0_0_12px_rgba(142,33,55,0.3)] transition-shadow"
                     )}>
                         A
                     </div>
@@ -312,7 +334,7 @@ export function Sidebar({ className }: SidebarProps) {
                                 "bg-amber-500 animate-pulse"
                     )} />
                     {!collapsed && (
-                        <span className="font-mono text-[10px] text-muted-foreground/60">v0.7.0</span>
+                        <span className="font-mono text-[10px] text-muted-foreground/60">v0.8.0</span>
                     )}
                 </div>
             </div>

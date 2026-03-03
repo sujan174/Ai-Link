@@ -21,6 +21,15 @@ import {
     LockKeyhole,
     Settings,
     Layers,
+    FlaskRound,
+    Webhook,
+    Wrench,
+    CreditCard,
+    FileCode2,
+    Database,
+    ShieldCheck,
+    MessageSquareText,
+    ScrollText,
 } from "lucide-react";
 import { ProjectSwitcher } from "@/components/project-switcher";
 import { Button } from "@/components/ui/button";
@@ -47,29 +56,53 @@ export function MobileNav() {
 
     const groups = [
         {
-            label: "Overview",
+            label: "Home",
             routes: [
                 { href: "/", label: "Dashboard", icon: LayoutDashboard },
                 { href: "/analytics", label: "Analytics", icon: BarChart3 },
-                { href: "/audit", label: "Audit Logs", icon: ClipboardList },
-                { href: "/sessions", label: "Sessions", icon: Layers },
+                { href: "/billing", label: "Billing", icon: CreditCard },
             ]
         },
         {
-            label: "Operate",
+            label: "Agents & Keys",
             routes: [
-                { href: "/virtual-keys", label: "Agents", icon: Key },
+                { href: "/virtual-keys", label: "Virtual Keys", icon: Key },
+                { href: "/api-keys", label: "API Keys", icon: LockKeyhole },
                 { href: "/upstreams", label: "Upstreams", icon: Activity },
+                { href: "/vault", label: "Vault", icon: Fingerprint },
+            ]
+        },
+        {
+            label: "Safety & Policies",
+            routes: [
+                { href: "/policies", label: "Policies", icon: ScrollText },
                 { href: "/guardrails", label: "Guardrails", icon: ShieldAlert },
-                { href: "/playground", label: "Playground", icon: FlaskConical },
+                { href: "/model-access-groups", label: "Model Access", icon: ShieldCheck },
                 { href: "/approvals", label: "Approvals", icon: CheckCircle },
             ]
         },
         {
-            label: "Configure",
+            label: "Prompts & Experiments",
             routes: [
-                { href: "/vault", label: "Vault", icon: Fingerprint },
-                { href: "/api-keys", label: "API Keys", icon: LockKeyhole },
+                { href: "/prompts", label: "Prompts", icon: MessageSquareText },
+                { href: "/playground", label: "Playground", icon: FlaskConical },
+                { href: "/experiments", label: "Experiments", icon: FlaskRound },
+            ]
+        },
+        {
+            label: "Observe",
+            routes: [
+                { href: "/audit", label: "Audit Logs", icon: ClipboardList },
+                { href: "/sessions", label: "Sessions", icon: Layers },
+                { href: "/cache", label: "Cache", icon: Database },
+            ]
+        },
+        {
+            label: "System",
+            routes: [
+                { href: "/tools", label: "Tools & MCP", icon: Wrench },
+                { href: "/webhooks", label: "Webhooks", icon: Webhook },
+                { href: "/config", label: "Config Export", icon: FileCode2 },
                 { href: "/settings", label: "Settings", icon: Settings },
             ]
         }
@@ -87,7 +120,7 @@ export function MobileNav() {
                 <div className="flex flex-col gap-3 h-full">
                     {/* Logo */}
                     <div className="flex items-center gap-2 font-bold text-lg">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-teal-500 to-teal-600 text-white text-sm font-black">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-[#8e2137] to-[#49111c] text-white text-sm font-black">
                             A
                         </div>
                         <span className="gradient-text font-semibold">
@@ -139,7 +172,7 @@ export function MobileNav() {
                             </button>
                         )}
                         <div className="mt-4 px-3 text-xs text-muted-foreground">
-                            v0.6.0
+                            v0.8.0
                         </div>
                     </div>
                 </div>
