@@ -31,10 +31,29 @@ export function PlaygroundClient() {
 
     const { data: tokens } = useSWR<Token[]>("/tokens", swrFetcher);
 
+    // SEC-02/09: Gateway URL for validating playground requests.
+    // Only inject token auth for URLs that match the gateway origin.
+    const GATEWAY_URL = process.env.NEXT_PUBLIC_GATEWAY_URL || "http://localhost:8443";
+
+    const isGatewayUrl = (targetUrl: string): boolean => {
+        try {
+            const target = new URL(targetUrl);
+            const gateway = new URL(GATEWAY_URL);
+            return target.origin === gateway.origin;
+        } catch {
+            return false;
+        }
+    };
+
     const handleSend = async () => {
         if (!selectedTokenId) {
             toast.error("Please select a token first");
             return;
+        }
+
+        const sendingToGateway = isGatewayUrl(url);
+        if (!sendingToGateway) {
+            toast.warning("Request is not targeting your gateway — Authorization header will NOT be sent to prevent token leakage.");
         }
 
         setLoading(true);
@@ -49,10 +68,12 @@ export function PlaygroundClient() {
                 if (key && value) headerObj[key] = value;
             });
 
-            // Add Auth
-            const token = tokens?.find(t => t.id === selectedTokenId);
-            if (token) {
-                headerObj["Authorization"] = `Bearer ${token.id}`;
+            // SEC-09: Only inject auth for gateway URLs to prevent token exfiltration
+            if (sendingToGateway) {
+                const token = tokens?.find(t => t.id === selectedTokenId);
+                if (token) {
+                    headerObj["Authorization"] = `Bearer ${token.id}`;
+                }
             }
 
             const res = await fetch(url, {

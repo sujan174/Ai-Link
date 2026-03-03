@@ -8,6 +8,14 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Download, Upload, FileCode, FileJson, Loader2, ClipboardCopy, Check, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
 
 function downloadBlob(content: string, filename: string, type: string) {
     const blob = new Blob([content], { type });
@@ -27,6 +35,8 @@ export default function ConfigPage() {
     const [copied, setCopied] = useState(false);
     const [previewContent, setPreviewContent] = useState<string | null>(null);
     const [previewTitle, setPreviewTitle] = useState("");
+    // SEC-08: Confirmation dialog for config import
+    const [confirmImportOpen, setConfirmImportOpen] = useState(false);
 
     const handleExport = async (type: "full" | "policies" | "tokens", fmt?: "yaml" | "json") => {
         const format = fmt ?? "yaml";
@@ -54,6 +64,7 @@ export default function ConfigPage() {
     };
 
     const handleImport = async () => {
+        setConfirmImportOpen(false);
         if (!importContent.trim()) {
             toast.error("Paste your YAML or JSON config first");
             return;
@@ -237,7 +248,12 @@ export default function ConfigPage() {
                                     {importResult.message}
                                 </div>
                             )}
-                            <Button onClick={handleImport} disabled={importing || !importContent.trim()} className="w-full">
+                            {/* SEC-08: Require confirmation before destructive import */}
+                            <Button
+                                onClick={() => setConfirmImportOpen(true)}
+                                disabled={importing || !importContent.trim()}
+                                className="w-full"
+                            >
                                 {importing ? (
                                     <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Importing…</>
                                 ) : (
@@ -248,6 +264,24 @@ export default function ConfigPage() {
                     </Card>
                 </TabsContent>
             </Tabs>
+
+            {/* SEC-08: Import Confirmation Dialog */}
+            <Dialog open={confirmImportOpen} onOpenChange={setConfirmImportOpen}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-destructive">
+                            <AlertTriangle className="h-5 w-5" /> Confirm Config Import
+                        </DialogTitle>
+                        <DialogDescription>
+                            This will <strong>overwrite existing policies</strong> with matching names and update tokens with matching IDs. This action cannot be undone. Are you sure?
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setConfirmImportOpen(false)}>Cancel</Button>
+                        <Button variant="destructive" onClick={handleImport}>Yes, Import & Overwrite</Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

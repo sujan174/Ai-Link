@@ -23,7 +23,10 @@ export default function Error({
             <div className="space-y-2">
                 <h2 className="text-xl font-semibold tracking-tight">Something went wrong!</h2>
                 <p className="max-w-[500px] text-muted-foreground text-balance">
-                    {error.message || "An unexpected error occurred. We've logged it for our team."}
+                    {/* SEC-05: Don't leak internal error details in production */}
+                    {process.env.NODE_ENV === "development"
+                        ? error.message || "An unexpected error occurred."
+                        : "An unexpected error occurred. We've logged it for our team."}
                 </p>
             </div>
             <div className="flex items-center gap-2">

@@ -24,7 +24,9 @@ export function middleware(request: NextRequest) {
         response.cookies.set("dashboard_token", secret, {
             httpOnly: true,
             sameSite: "strict",
-            secure: process.env.NODE_ENV === "production" && !request.headers.get("host")?.startsWith("localhost"),
+            // SEC-06: Never use client-controlled Host header to decide secure flag.
+            // In production, always require HTTPS. For local dev, NODE_ENV=development.
+            secure: process.env.NODE_ENV === "production",
             path: "/",
             // Session cookie — expires when tab closes. Re-set on next page load.
             maxAge: 60 * 60 * 24, // 24h

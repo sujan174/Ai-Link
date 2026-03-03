@@ -514,6 +514,9 @@ export const deleteService = (id: string) =>
 
 // ── SSE Stream ───────────────────────────────
 
+// SEC-04: EventSource sends cookies automatically for same-origin requests.
+// If the dashboard is ever served from a different origin than the API proxy,
+// SSE will fail silently. In that case, switch to fetch-based polling.
 export const streamAuditLogs = (onEvent: (log: AuditLog) => void) => {
   const projectId = typeof window !== "undefined" ? localStorage.getItem("ailink_project_id") : null;
   const url = `${BASE_URL}/audit/stream${projectId ? `?project_id=${projectId}` : ""}`;
@@ -1193,14 +1196,26 @@ export const updateCircuitBreaker = (
 
 // ── Config-as-Code ────────────────────────────────────────────
 
+// SEC-01: Export functions must check response status to avoid silently
+// downloading 401 HTML pages as "YAML" files when auth fails.
+
+async function checkedProxyFetch(path: string): Promise<Response> {
+  const res = await fetch(`/api/proxy/${path}`, { credentials: "same-origin" });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Export failed (${res.status}): ${body.slice(0, 200)}`);
+  }
+  return res;
+}
+
 export const exportConfig = (format: "yaml" | "json" = "yaml") =>
-  fetch(`/api/proxy/config/export?format=${format}`);
+  checkedProxyFetch(`config/export?format=${format}`);
 
 export const exportPolicies = () =>
-  fetch(`/api/proxy/config/export/policies`);
+  checkedProxyFetch(`config/export/policies`);
 
 export const exportTokens = () =>
-  fetch(`/api/proxy/config/export/tokens`);
+  checkedProxyFetch(`config/export/tokens`);
 
 export const importConfig = (content: string) =>
   api<{ imported: boolean; message: string }>("/config/import", {
