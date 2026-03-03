@@ -96,10 +96,10 @@ export default function SettingsPage() {
     ];
 
     return (
-        <div className="space-y-6 pb-16 animate-fade-in">
-            <div className="space-y-0.5">
-                <h2 className="text-xl font-semibold tracking-tight">Settings</h2>
-                <p className="text-muted-foreground">
+        <div className="space-y-4">
+            <div>
+                <h1 className="text-lg font-semibold tracking-tight">Settings</h1>
+                <p className="text-xs text-muted-foreground mt-0.5">
                     Manage your gateway configuration and workspace preferences.
                 </p>
             </div>

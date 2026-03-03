@@ -131,7 +131,7 @@ export default function ModelAliasesPage() {
             {/* Header */}
             <div className="flex items-center justify-between animate-fade-in">
                 <div className="space-y-1">
-                    <h2 className="text-2xl font-semibold font-bold tracking-tight flex items-center gap-3">
+                    <h2 className="text-lg font-semibold tracking-tight flex items-center gap-3">
                         <div className="flex h-9 w-9 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-violet-600 shadow-lg shadow-blue-500/20">
                             <Map className="h-5 w-5 text-white" />
                         </div>

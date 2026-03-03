@@ -24,7 +24,7 @@ export default function UpstreamsPage() {
         <div className="space-y-6 pt-2 animate-fade-in">
             {/* Header */}
             <div className="space-y-1 animate-fade-in">
-                <h2 className="text-2xl font-semibold font-bold tracking-tight">Upstream Status</h2>
+                <h2 className="text-lg font-semibold tracking-tight">Upstream Status</h2>
                 <p className="text-muted-foreground text-sm">
                     Real-time health monitoring of upstream LLM providers (OpenAI, Anthropic, etc.)
                 </p>

@@ -129,22 +129,21 @@ export default function SessionsPage() {
     ];
 
     return (
-        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
+        <div className="space-y-4">
             {/* Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-center justify-between gap-4">
                 <div>
-                    <div className="flex items-center gap-2 mb-1">
-                        <Layers className="h-5 w-5 text-primary" />
-                        <h1 className="text-xl font-semibold">Sessions</h1>
-                    </div>
-                    <p className="text-[13px] text-muted-foreground">
-                        Agent run lifecycle — track cost, pause, resume, and cap spending per session
+                    <h1 className="text-lg font-semibold tracking-tight">Sessions</h1>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                        Agent run lifecycle — track cost, pause, resume, and cap spending per session.
                     </p>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => load(true)} disabled={refreshing}>
-                    <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", refreshing && "animate-spin")} />
-                    Refresh
-                </Button>
+                <div className="flex items-center gap-2 shrink-0">
+                    <Button variant="outline" size="sm" onClick={() => load(true)} disabled={refreshing}>
+                        <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", refreshing && "animate-spin")} />
+                        Refresh
+                    </Button>
+                </div>
             </div>
 
             {/* Summary Cards */}

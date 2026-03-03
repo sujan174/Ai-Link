@@ -117,10 +117,14 @@ export default function TokensPage() {
   const revokedCount = tokens.length - activeCount;
 
   return (
-    <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
-      {/* Controls */}
-      <div className="flex items-center justify-end animate-fade-in mb-2">
-        <div className="flex items-center gap-2">
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight">Agents</h1>
+          <p className="text-xs text-muted-foreground mt-0.5">Virtual tokens for AI agent authentication.</p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
           <Button variant="outline" size="sm" onClick={() => mutateTokens()} disabled={loading}>
             <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", loading && "animate-spin")} />
             Refresh

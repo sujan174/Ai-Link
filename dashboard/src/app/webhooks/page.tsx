@@ -121,7 +121,7 @@ export default function WebhooksPage() {
     if (loading) return <PageSkeleton />;
 
     return (
-        <div className="p-4 space-y-6 max-w-[1200px] mx-auto">
+        <div className="space-y-4">
             {/* Controls */}
             <div className="flex items-center justify-end animate-fade-in mb-2">
                 <div className="flex items-center gap-2">

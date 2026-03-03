@@ -94,12 +94,12 @@ export default function PromptsPage() {
     };
 
     return (
-        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
+        <div className="space-y-4">
             {/* Header */}
             <div className="flex items-center justify-between animate-fade-in">
                 <div>
-                    <h1 className="text-xl font-semibold tracking-tight">Prompts</h1>
-                    <p className="text-sm text-muted-foreground">
+                    <h1 className="text-lg font-semibold tracking-tight">Prompts</h1>
+                    <p className="text-xs text-muted-foreground mt-0.5">
                         Versioned prompt templates with deployment labels and a render API.
                     </p>
                 </div>

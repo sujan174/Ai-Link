@@ -97,18 +97,18 @@ export default function AnalyticsPage() {
     };
 
     return (
-        <div className="space-y-4 pb-10 animate-fade-in">
+        <div className="space-y-4">
             {/* Header */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div className="space-y-1">
-                    <h2 className="text-2xl font-semibold font-bold tracking-tight">Analytics</h2>
-                    <p className="text-muted-foreground">
+            <div className="flex items-center justify-between gap-4">
+                <div>
+                    <h1 className="text-lg font-semibold tracking-tight">Analytics</h1>
+                    <p className="text-xs text-muted-foreground mt-0.5">
                         Global traffic and performance metrics.
                     </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                     <Select value={range} onValueChange={setRange}>
-                        <SelectTrigger className="w-[180px]">
+                        <SelectTrigger className="w-[160px] h-8 text-xs">
                             <SelectValue placeholder="Select range" />
                         </SelectTrigger>
                         <SelectContent>

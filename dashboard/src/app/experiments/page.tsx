@@ -54,10 +54,10 @@ export default function ExperimentsPage() {
 
     if (experimentNames.length === 0) {
         return (
-            <div className="p-4 max-w-[1600px] mx-auto space-y-6">
+            <div className="space-y-4">
                 <div>
-                    <h2 className="text-2xl font-semibold font-bold tracking-tight">Experiments</h2>
-                    <p className="text-muted-foreground">A/B test traffic splits and compare variant performance.</p>
+                    <h1 className="text-lg font-semibold tracking-tight">Experiments</h1>
+                    <p className="text-xs text-muted-foreground mt-0.5">A/B test traffic splits and compare variant performance.</p>
                 </div>
                 <EmptyState
                     icon={FlaskConical}
@@ -71,13 +71,13 @@ export default function ExperimentsPage() {
     }
 
     return (
-        <div className="p-4 space-y-6 max-w-[1600px] mx-auto">
+        <div className="space-y-4">
             {/* Header */}
-            <div className="space-y-1">
-                <h2 className="text-2xl font-semibold font-bold tracking-tight">
+            <div>
+                <h1 className="text-lg font-semibold tracking-tight">
                     Experiments
-                </h2>
-                <p className="text-muted-foreground">
+                </h1>
+                <p className="text-xs text-muted-foreground mt-0.5">
                     A/B test traffic splits and compare variant performance.
                 </p>
             </div>

@@ -97,7 +97,7 @@ export default function TokenAnalyticsPage({ params }: { params: { id: string } 
                         <Button variant="ghost" size="icon" onClick={() => router.back()}>
                             <ArrowLeft className="h-4 w-4" />
                         </Button>
-                        <h2 className="text-2xl font-semibold font-bold tracking-tight">Token Analytics</h2>
+                        <h2 className="text-lg font-semibold tracking-tight">Token Analytics</h2>
                     </div>
                     <p className="text-muted-foreground ml-10">
                         Performance metrics for <code className="bg-muted px-1.5 py-0.5 rounded text-xs">{params.id}</code>
