@@ -4,21 +4,11 @@
 > **Completed items removed.** See git history for full feature history.
 
 ---
-## 🔴 Priority 1 — Ship Now *(highest competitive impact)*
-
-| # | Gap | Why Critical | Effort |
-|---|-----|-------------|--------|
-| **2** | **MCP Auto-Discovery + OAuth 2.0 token refresh** — when a URL is provided, auto-`initialize` + `list_tools`; store `client_id/secret/token_endpoint`, refresh token when expired | Bifrost has auto-discovery + OAuth 2.0. LiteLLM added native MCP (Nov 2025). Kong ships MCP OAuth2 plugin. Our manual-registration-only approach is falling behind fast. Architecture is ready (`client.rs` + `registry.rs` + `SecretStore` trait). | ~1 week |
-
-
----
-
 ## 🟠 Priority 2 — Ship Within 2 Weeks
 
 | # | Gap | Why Critical | Effort |
 |---|-----|-------------|--------|
 | **5** | **Dashboard SSO** — Okta / Google / GitHub OIDC login for dashboard | Enterprise procurement checklist item. OIDC auth is already in the gateway; apply it to the dashboard. | ~2 days |
-| **6** | **MCP Per-Token Tool Allow/Deny Lists** — policy-engine field restricting which MCP tools a token can invoke | Bifrost has per-key tool filtering + global tool blacklisting. Needed for security-conscious enterprise MCP usage. | ~1 day |
 
 ---
 
