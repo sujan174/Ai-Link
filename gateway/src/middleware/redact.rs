@@ -23,7 +23,15 @@ struct BuiltinPattern {
 static EMAIL_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}").unwrap());
 
-static SSN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap());
+static SSN_RE: Lazy<Regex> = Lazy::new(|| {
+    // SEC 3C-4 FIX: Match both common SSN formats:
+    //   Format 1: 123-45-6789 (dashed — standard)
+    //   Format 2: 123456789   (9 contiguous digits — common in raw exports, forms, databases)
+    // NOTE: The Rust `regex` crate does not support lookaheads, so the no-dash
+    // alternative is a plain \b\d{9}\b. This will produce more false positives
+    // than a lookahead-validated pattern, but the dashed format is the primary match.
+    Regex::new(r"\b\d{3}-\d{2}-\d{4}\b|\b\d{9}\b").unwrap()
+});
 
 static CREDIT_CARD_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:\d{4}[ -]){3}\d{1,7}\b|\b\d{15,16}\b").unwrap());
 
@@ -49,9 +57,14 @@ static IPV4_RE: Lazy<Regex> = Lazy::new(|| {
 
 // Phase 7: Extended PII patterns for enterprise compliance
 static PASSPORT_RE: Lazy<Regex> = Lazy::new(|| {
-    // BUG-05 FIX: Tighter — 2 letters + 7-9 digits (US/UK/EU passports).
-    // Old pattern (1-2 letters + 6-9 digits) matched version codes like V12345678.
-    Regex::new(r"\b[A-Z]{2}\d{7,9}\b").unwrap()
+    // SEC 3C-6 FIX: Expanded to cover common international formats:
+    //   US/UK/EU: 2 uppercase letters + 7-9 digits (AA1234567, AA12345678, AA123456789)
+    //   Chinese/Indian: 1 letter + 7-8 digits (E12345678, B1234567)
+    //   German/Czech: letter + 2 digits + letter + 2 digits + letter + 2 digits (C01X00T47)
+    // Requires all-uppercase to avoid matching model version strings like "v12345678".
+    Regex::new(
+        r"\b[A-Z]{2}\d{7,9}\b|\b[A-Z]\d{7,8}\b|\b[A-Z]\d{2}[A-Z]\d{2}[A-Z]\d{2}\b"
+    ).unwrap()
 });
 
 static AWS_KEY_RE: Lazy<Regex> = Lazy::new(|| {
@@ -461,18 +474,44 @@ fn redact_all_patterns(v: &mut Value) {
     }
 }
 
-/// Append a system message to an OpenAI-format messages array.
+/// Append a system message to the request body.
+///
+/// Supported formats:
+/// - OpenAI: `messages` array → appends `{"role": "system", "content": text}`
+/// - Anthropic: `system` string field → appends `\n{text}`
 fn append_system_prompt(body: &mut Value, text: &str) {
+    // OpenAI format: messages array
     if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
         messages.push(serde_json::json!({
             "role": "system",
             "content": text
         }));
+        return;
+    }
+
+    // Anthropic format: top-level `system` string
+    if let Some(system) = body.get_mut("system") {
+        if let Some(existing) = system.as_str() {
+            *system = Value::String(format!("{}\n{}", existing, text));
+        } else {
+            *system = Value::String(text.to_string());
+        }
+        return;
+    }
+
+    // Anthropic format: no `system` field yet — create it
+    if body.is_object() && body.get("messages").is_none() {
+        body["system"] = Value::String(text.to_string());
     }
 }
 
 /// Prepend text to the first system message, or insert a system message at index 0.
+///
+/// Supported formats:
+/// - OpenAI: `messages` array → prepends to existing system message or inserts at [0]
+/// - Anthropic: `system` string field → prepends `{text}\n`
 fn prepend_system_prompt(body: &mut Value, text: &str) {
+    // OpenAI format: messages array
     if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
         // Find existing system message and prepend
         if let Some(sys_msg) = messages.iter_mut().find(|m| m["role"] == "system") {
@@ -487,6 +526,22 @@ fn prepend_system_prompt(body: &mut Value, text: &str) {
             "role": "system",
             "content": text
         }));
+        return;
+    }
+
+    // Anthropic format: top-level `system` string
+    if let Some(system) = body.get_mut("system") {
+        if let Some(existing) = system.as_str() {
+            *system = Value::String(format!("{}\n{}", text, existing));
+        } else {
+            *system = Value::String(text.to_string());
+        }
+        return;
+    }
+
+    // Anthropic format: no `system` field yet — create it
+    if body.is_object() && body.get("messages").is_none() {
+        body["system"] = Value::String(text.to_string());
     }
 }
 
@@ -1132,5 +1187,52 @@ mod tests {
         );
         assert!(body.get("stream").is_none(), "stream field should be removed");
         assert_eq!(body["model"], "gpt-4", "Other fields must be preserved");
+    }
+
+    // ── Issue 9: Multi-Provider System Prompt ──
+
+    #[test]
+    fn test_append_system_prompt_openai_format() {
+        let mut body = json!({
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "hello"}
+            ]
+        });
+        append_system_prompt(&mut body, "You are helpful.");
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["role"], "system");
+        assert_eq!(messages[1]["content"], "You are helpful.");
+    }
+
+    #[test]
+    fn test_append_system_prompt_anthropic_format() {
+        let mut body = json!({
+            "model": "claude-3-opus-20240229",
+            "system": "Be concise."
+        });
+        append_system_prompt(&mut body, "Always be polite.");
+        assert_eq!(body["system"], "Be concise.\nAlways be polite.");
+    }
+
+    #[test]
+    fn test_prepend_system_prompt_anthropic_format() {
+        let mut body = json!({
+            "model": "claude-3-opus-20240229",
+            "system": "Be concise."
+        });
+        prepend_system_prompt(&mut body, "IMPORTANT:");
+        assert_eq!(body["system"], "IMPORTANT:\nBe concise.");
+    }
+
+    #[test]
+    fn test_append_system_prompt_anthropic_no_existing_system() {
+        let mut body = json!({
+            "model": "claude-3-opus-20240229",
+            "max_tokens": 1024
+        });
+        append_system_prompt(&mut body, "You are helpful.");
+        assert_eq!(body["system"], "You are helpful.");
     }
 }

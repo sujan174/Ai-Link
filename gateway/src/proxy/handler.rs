@@ -423,22 +423,27 @@ pub async fn proxy_handler(
                 max_requests,
                 key,
             } => {
+                let window_secs = middleware::policy::parse_window_secs(window).unwrap_or(60);
+                // SEC: Include policy_id + window in key so each rate_limit policy
+                // gets its own independent counter. Without this, two policies on the
+                // same token share one counter and the stricter window resets the
+                // lenient one — a CLASS A bypass.
+                let policy_prefix = format!("rl:{}:{}s", triggered.policy_id, window_secs);
                 let rl_key = match key {
-                    crate::models::policy::RateLimitKey::PerToken => format!("rl:tok:{}", token.id),
+                    crate::models::policy::RateLimitKey::PerToken => format!("{}:tok:{}", policy_prefix, token.id),
                     crate::models::policy::RateLimitKey::PerAgent => {
-                        format!("rl:agent:{}", agent_name.as_deref().unwrap_or("unknown"))
+                        format!("{}:agent:{}", policy_prefix, agent_name.as_deref().unwrap_or("unknown"))
                     }
                     crate::models::policy::RateLimitKey::PerIp => format!(
-                        "rl:ip:{}",
-                        client_ip_str.as_deref().unwrap_or("unknown")
+                        "{}:ip:{}",
+                        policy_prefix, client_ip_str.as_deref().unwrap_or("unknown")
                     ),
                     crate::models::policy::RateLimitKey::PerUser => format!(
-                        "rl:user:{}",
-                        user_id.as_deref().unwrap_or(&token.id)
+                        "{}:user:{}",
+                        policy_prefix, user_id.as_deref().unwrap_or(&token.id)
                     ),
-                    crate::models::policy::RateLimitKey::Global => "rl:global".to_string(),
+                    crate::models::policy::RateLimitKey::Global => format!("{}:global", policy_prefix),
                 };
-                let window_secs = middleware::policy::parse_window_secs(window).unwrap_or(60);
                 let count = state
                     .cache
                     .increment(&rl_key, window_secs)
@@ -643,8 +648,8 @@ pub async fn proxy_handler(
             Action::Webhook {
                 url, timeout_ms, ..
             } => {
-                // SEC: SSRF validation for policy-defined webhook URLs
-                if !is_safe_webhook_url(url) {
+                // SEC: SSRF validation for policy-defined webhook URLs (async DNS resolution)
+                if !is_safe_webhook_url(url).await {
                     tracing::warn!(
                         policy = %triggered.policy_name,
                         url = %url,
@@ -1060,6 +1065,37 @@ pub async fn proxy_handler(
     if hitl_required {
         let hitl_start = Instant::now();
 
+        // ── HITL Concurrency Cap ──
+        // Prevent unbounded pending approval requests from blocking handler threads.
+        let hitl_max_pending: i64 = std::env::var("HITL_MAX_PENDING_PER_TOKEN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10);
+
+        match state.db.count_pending_approvals_for_token(&token.id).await {
+            Ok(pending_count) if pending_count >= hitl_max_pending => {
+                tracing::warn!(
+                    token_id = %token.id,
+                    pending = pending_count,
+                    max = hitl_max_pending,
+                    "HITL concurrency cap exceeded — rejecting request"
+                );
+                return Err(AppError::Forbidden(format!(
+                    "HITL concurrency cap exceeded: {} pending approval requests (max {}). \
+                     Approve or reject existing requests before submitting new ones.",
+                    pending_count, hitl_max_pending
+                )));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to check HITL pending count — proceeding with caution"
+                );
+                // Proceed anyway — fail-open to avoid blocking legitimate requests
+            }
+            _ => {} // Under cap, proceed normally
+        }
+
         // Create approval request
         let summary = serde_json::json!({
             "method": method.to_string(),
@@ -1232,6 +1268,47 @@ pub async fn proxy_handler(
 
         match decision.as_str() {
             "approved" => {
+                // 6B-4 FIX: Re-validate token is still active after HITL wait.
+                // Prevents revoked tokens from executing approved requests.
+                match state.db.get_token(&token.id).await {
+                    Ok(Some(fresh_token)) if fresh_token.is_active => {
+                        // Token still valid — proceed
+                    }
+                    Ok(Some(_not_active)) => {
+                        tracing::warn!(
+                            token_id = %token.id,
+                            approval_id = %approval_id,
+                            "HITL approved but token was revoked during wait — rejecting"
+                        );
+                        let mut audit = base_audit(
+                            request_id, token.project_id, &token.id, agent_name, method.as_str(), &path,
+                            &token.upstream_url, &policies, true, Some("approved_but_revoked".to_string()),
+                            Some(hitl_start.elapsed().as_millis() as i32),
+                            user_id.clone(), tenant_id.clone(), external_request_id.clone(),
+                            session_id.clone(), parent_span_id.clone(),
+                            custom_properties.clone(),
+                        );
+                        audit.policy_result = Some(crate::models::audit::PolicyResult::HitlRejected);
+                        audit.response_latency_ms = start.elapsed().as_millis() as u64;
+                        audit.emit(&state);
+                        return Err(AppError::TokenRevoked);
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            token_id = %token.id,
+                            "HITL approved but token no longer exists — rejecting"
+                        );
+                        return Err(AppError::TokenRevoked);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            token_id = %token.id,
+                            error = %e,
+                            "HITL post-approval token re-validation failed — rejecting (fail-closed)"
+                        );
+                        return Err(AppError::Internal(e));
+                    }
+                }
                 hitl_decision = Some("approved".to_string());
             }
             "rejected" => {
@@ -1353,7 +1430,15 @@ pub async fn proxy_handler(
     let upstream_url = proxy::transform::rewrite_url(&effective_upstream_url, &effective_path);
 
     // ── Response Cache: check for cache hit BEFORE upstream call ──
-    let skip_cache = proxy::response_cache::should_skip_cache(&headers, parsed_body.as_ref())
+    let token_scopes: Vec<String> = token.scopes
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let skip_cache = proxy::response_cache::should_skip_cache(
+            &headers,
+            parsed_body.as_ref(),
+            Some(&token_scopes),
+        )
         || is_streaming_req
         || method != Method::POST;
     let cache_key = if !skip_cache {
@@ -1407,7 +1492,7 @@ pub async fn proxy_handler(
     if !detected_model.is_empty() {
         let group_models = if let Some(ref group_ids) = token.allowed_model_group_ids {
             if !group_ids.is_empty() {
-                middleware::model_access::resolve_group_models(state.db.pool(), group_ids).await
+                middleware::model_access::resolve_group_models(state.db.pool(), group_ids, token.project_id).await
             } else {
                 Vec::new()
             }
@@ -1841,7 +1926,14 @@ pub async fn proxy_handler(
         .await
         {
             Ok(Ok(res)) => {
-                state.lb.mark_healthy(&token.id, &final_upstream_url);
+                // FIX 4A-1: Only mark healthy if upstream DID NOT return 5xx.
+                // 5xx = upstream is broken → open the circuit.
+                // 4xx = upstream is alive (client error) → keep circuit closed.
+                if res.status().is_server_error() {
+                    state.lb.mark_failed(&token.id, &final_upstream_url, &cb_config);
+                } else {
+                    state.lb.mark_healthy(&token.id, &final_upstream_url);
+                }
                 state.lb.decrement_in_flight(&final_upstream_url);
                 res
             }
@@ -1894,8 +1986,14 @@ pub async fn proxy_handler(
         .await
         {
             Ok(Ok(res)) => {
-                // Loadbalancer: mark upstream as healthy
-                state.lb.mark_healthy(&token.id, &final_upstream_url);
+                // FIX 4A-1: Only mark healthy if upstream DID NOT return 5xx.
+                // 5xx = upstream is broken → open the circuit.
+                // 4xx = upstream is alive (client error) → keep circuit closed.
+                if res.status().is_server_error() {
+                    state.lb.mark_failed(&token.id, &final_upstream_url, &cb_config);
+                } else {
+                    state.lb.mark_healthy(&token.id, &final_upstream_url);
+                }
                 state.lb.decrement_in_flight(&final_upstream_url);
                 res
             }
@@ -1962,7 +2060,7 @@ pub async fn proxy_handler(
         // - Anthropic: Anthropic SSE → OpenAI SSE (per-chunk translation)
         // - Gemini: Gemini SSE → OpenAI SSE (per-chunk translation)
         // - All others: OpenAI-compatible, passthrough SSE unchanged
-        let (stream_body, result_slot) = match detected_provider {
+        let (stream_body, result_slot, stream_notify) = match detected_provider {
             proxy::model_router::Provider::Bedrock => {
                 proxy::stream_bridge::tee_bedrock_stream(upstream_resp, start, detected_model.clone())
             }
@@ -2026,6 +2124,7 @@ pub async fn proxy_handler(
             // Wait up to 5 minutes for the stream to complete
             let sr = proxy::stream_bridge::wait_for_stream_result(
                 &result_slot,
+                &stream_notify,
                 Duration::from_secs(300),
             ).await;
 
@@ -2403,8 +2502,8 @@ pub async fn proxy_handler(
                 Action::Webhook {
                     url, timeout_ms, ..
                 } => {
-                    // SEC: SSRF validation for policy-defined webhook URLs
-                    if !is_safe_webhook_url(url) {
+                    // SEC: SSRF validation for policy-defined webhook URLs (async DNS resolution)
+                    if !is_safe_webhook_url(url).await {
                         tracing::warn!(
                             policy = %triggered.policy_name,
                             url = %url,
@@ -2948,9 +3047,9 @@ pub async fn proxy_handler(
                         }
                     }
                     crate::models::policy::Action::Webhook { url, timeout_ms, .. } => {
-                        // SEC-04 FIX: Validate webhook URL before async fire
+                        // SEC-04 FIX: Validate webhook URL before async fire (async DNS resolution)
                         let w_url = url.clone();
-                        if !is_safe_webhook_url(&w_url) {
+                        if !is_safe_webhook_url(&w_url).await {
                             tracing::warn!(
                                 token_id = %token_id_async,
                                 policy = %triggered.policy_name,
@@ -3198,7 +3297,46 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, AppError> {
 
 /// SEC: Validate that a webhook URL from a policy definition is safe to call.
 /// Blocks private IPs (v4 + v6), cloud metadata endpoints, and non-HTTP(S) schemes.
-fn is_safe_webhook_url(url_str: &str) -> bool {
+/// Returns `true` if `ip` is a public, routable IP address.
+/// Returns `false` for loopback, private, link-local, unspecified, and cloud-metadata ranges.
+fn is_public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !v4.is_loopback()
+                && !v4.is_private()
+                && !v4.is_link_local()
+                && !v4.is_unspecified()
+                && !(v4.octets()[0] == 169 && v4.octets()[1] == 254)
+                // Alibaba Cloud ECS metadata service
+                && !(v4.octets() == [100, 100, 100, 200])
+        }
+        std::net::IpAddr::V6(v6) => {
+            !v6.is_loopback()
+                && !v6.is_unspecified()
+                // Full unique-local fc00::/7 (covers both fc00::/8 and fd00::/8)
+                && (v6.segments()[0] & 0xfe00) != 0xfc00
+                // Link-local fe80::/10
+                && (v6.segments()[0] & 0xffc0) != 0xfe80
+                // IPv4-mapped ::ffff:x.x.x.x — validate the embedded v4
+                && !v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| !is_public_ip(std::net::IpAddr::V4(v4)))
+        }
+    }
+}
+
+/// SEC: SSRF protection for policy-defined webhook URLs.
+///
+/// Two-stage check:
+/// 1. Scheme must be http or https.
+/// 2. If the host is a literal IP → validate it immediately.
+/// 3. If the host is a domain name → resolve ALL returned A/AAAA records via DNS
+///    and validate each IP. This prevents DNS-rebinding attacks where a domain
+///    initially points to a public IP (passes a static check) and is later
+///    rebound to 169.254.169.254 (metadata service) before the actual HTTP call.
+///
+/// Fails closed on DNS failure (no resolution → blocked).
+pub(crate) async fn is_safe_webhook_url(url_str: &str) -> bool {
     let parsed = match reqwest::Url::parse(url_str) {
         Ok(u) => u,
         Err(_) => return false,
@@ -3214,53 +3352,60 @@ fn is_safe_webhook_url(url_str: &str) -> bool {
         None => return false,
     };
 
-    // Block known cloud metadata endpoints and localhost hostnames
+    // Block cloud metadata hostnames and localhost by literal name
     let blocked_hosts = [
         "169.254.169.254",
         "metadata.google.internal",
         "metadata.internal",
         "0.0.0.0",
         "localhost",
-        "[::1]",
+        "ip6-localhost",
+        "ip6-loopback",
         // AWS IMDSv2 IPv6
+        "fd00:ec2::254",
         "[fd00:ec2::254]",
+        "[::1]",
     ];
     if blocked_hosts.contains(&host) {
         return false;
     }
 
-    // SEC-02 FIX: Block private/reserved IP ranges (IPv4 + full IPv6 coverage)
+    // If host is a literal IP address, validate immediately (no DNS lookup needed)
     if let Ok(ip) = host.trim_matches(|c| c == '[' || c == ']').parse::<std::net::IpAddr>() {
-        let is_private = match ip {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.octets()[0] == 169 && v4.octets()[1] == 254
-                    || v4.is_unspecified()
-            }
-            std::net::IpAddr::V6(v6) => {
-                v6.is_loopback()       // ::1
-                    || v6.is_unspecified()  // ::
-                    // Unique local (fd00::/8)
-                    || (v6.segments()[0] & 0xff00) == 0xfd00
-                    // Link-local (fe80::/10)
-                    || (v6.segments()[0] & 0xffc0) == 0xfe80
-                    // IPv4-mapped (::ffff:x.x.x.x) — check the embedded v4
-                    || v6.to_ipv4_mapped().is_some_and(|v4| {
-                        v4.is_loopback() || v4.is_private() || v4.is_link_local()
-                            || v4.is_unspecified()
-                            || (v4.octets()[0] == 169 && v4.octets()[1] == 254)
-                    })
-            }
-        };
-        if is_private {
-            return false;
-        }
+        return is_public_ip(ip);
     }
 
-    true
+    // Host is a domain name — resolve ALL addresses and validate each one.
+    // Using port 443 as the lookup port (any port works for DNS resolution).
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    match tokio::net::lookup_host(format!("{}:{}", host, port)).await {
+        Ok(addrs) => {
+            let addrs: Vec<_> = addrs.collect();
+            if addrs.is_empty() {
+                // DNS resolution returned no addresses — fail closed
+                tracing::warn!(host = %host, "SSRF check: DNS returned no addresses, blocking");
+                return false;
+            }
+            // ALL resolved IPs must be public — a single private IP in the list blocks it.
+            // This prevents multi-A-record tricks (one public + one private IP).
+            let all_public = addrs.iter().all(|addr| is_public_ip(addr.ip()));
+            if !all_public {
+                tracing::warn!(
+                    host = %host,
+                    "SSRF check: DNS resolved to private/reserved IP, blocking"
+                );
+            }
+            all_public
+        }
+        Err(e) => {
+            // DNS failure — fail closed (prevents TOCTOU via intermittent resolution)
+            tracing::warn!(host = %host, error = %e, "SSRF check: DNS lookup failed, blocking");
+            false
+        }
+    }
 }
+
+
 
 // ── Unit Tests ──────────────────────────────────────────────────────────
 #[cfg(test)]
@@ -3268,46 +3413,47 @@ mod tests {
     use super::*;
 
     // ── SSRF: is_safe_webhook_url ──────────────────────────────────────
+    // NOTE: is_safe_webhook_url is async (DNS-resolving). Literal-IP tests complete
+    // instantly (no DNS); domain tests resolve via the system resolver.
 
-    #[test]
-    fn test_ssrf_blocks_ipv4_private() {
-        assert!(!is_safe_webhook_url("http://127.0.0.1/callback"));
-        assert!(!is_safe_webhook_url("http://10.0.0.1/hook"));
-        assert!(!is_safe_webhook_url("http://192.168.1.1:8080/hook"));
-        assert!(!is_safe_webhook_url("http://172.16.0.1/hook"));
-        assert!(!is_safe_webhook_url("http://169.254.169.254/latest/meta-data/"));
-        assert!(!is_safe_webhook_url("http://0.0.0.0/hook"));
+    #[tokio::test]
+    async fn test_ssrf_blocks_ipv4_private() {
+        assert!(!is_safe_webhook_url("http://127.0.0.1/callback").await);
+        assert!(!is_safe_webhook_url("http://10.0.0.1/hook").await);
+        assert!(!is_safe_webhook_url("http://192.168.1.1:8080/hook").await);
+        assert!(!is_safe_webhook_url("http://172.16.0.1/hook").await);
+        assert!(!is_safe_webhook_url("http://169.254.169.254/latest/meta-data/").await);
+        assert!(!is_safe_webhook_url("http://0.0.0.0/hook").await);
     }
 
-    #[test]
-    fn test_ssrf_blocks_ipv6_private() {
-        assert!(!is_safe_webhook_url("http://[::1]/callback"));
-        assert!(!is_safe_webhook_url("http://[fd00::1]/hook"));
-        assert!(!is_safe_webhook_url("http://[fe80::1]/hook"));
+    #[tokio::test]
+    async fn test_ssrf_blocks_ipv6_private() {
+        assert!(!is_safe_webhook_url("http://[::1]/callback").await);
+        assert!(!is_safe_webhook_url("http://[fd00::1]/hook").await);
+        assert!(!is_safe_webhook_url("http://[fe80::1]/hook").await);
         // IPv4-mapped IPv6 — loopback
-        assert!(!is_safe_webhook_url("http://[::ffff:127.0.0.1]/hook"));
+        assert!(!is_safe_webhook_url("http://[::ffff:127.0.0.1]/hook").await);
         // IPv4-mapped IPv6 — private
-        assert!(!is_safe_webhook_url("http://[::ffff:10.0.0.1]/hook"));
+        assert!(!is_safe_webhook_url("http://[::ffff:10.0.0.1]/hook").await);
     }
 
-    #[test]
-    fn test_ssrf_blocks_localhost() {
-        assert!(!is_safe_webhook_url("http://localhost/hook"));
-        assert!(!is_safe_webhook_url("http://localhost:3000/callback"));
+    #[tokio::test]
+    async fn test_ssrf_blocks_localhost() {
+        assert!(!is_safe_webhook_url("http://localhost/hook").await);
+        assert!(!is_safe_webhook_url("http://localhost:3000/callback").await);
     }
 
-    #[test]
-    fn test_ssrf_allows_public_urls() {
-        assert!(is_safe_webhook_url("https://hooks.slack.com/services/T00/B00/xxx"));
-        assert!(is_safe_webhook_url("https://api.example.com/webhook"));
-        assert!(is_safe_webhook_url("http://203.0.113.1/hook")); // TEST-NET, but not private
+    #[tokio::test]
+    async fn test_ssrf_allows_public_literal_ip() {
+        // Literal public IP — no DNS lookup needed; resolves instantly
+        assert!(is_safe_webhook_url("http://203.0.113.1/hook").await); // TEST-NET, not private
     }
 
-    #[test]
-    fn test_ssrf_blocks_ftp_scheme() {
-        assert!(!is_safe_webhook_url("ftp://evil.com/payload"));
-        assert!(!is_safe_webhook_url("file:///etc/passwd"));
-        assert!(!is_safe_webhook_url("gopher://evil.com"));
+    #[tokio::test]
+    async fn test_ssrf_blocks_ftp_scheme() {
+        assert!(!is_safe_webhook_url("ftp://evil.com/payload").await);
+        assert!(!is_safe_webhook_url("file:///etc/passwd").await);
+        assert!(!is_safe_webhook_url("gopher://evil.com").await);
     }
 
     // ── Header redaction: is_sensitive_header ──────────────────────────

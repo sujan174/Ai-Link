@@ -361,6 +361,7 @@ async fn import_document(
                 .db
                 .update_token_config(
                     &existing.id,
+                    project_id,
                     policy_ids,
                     log_level,
                     &token_export.upstream_url,

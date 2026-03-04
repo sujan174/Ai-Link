@@ -12,7 +12,7 @@
 //! | `pii_block`          | Block requests containing PII (reject with 400)                 |
 //! | `prompt_injection`   | Block jailbreak + harmful content with a strict 0.3 threshold   |
 //! | `hipaa`              | PII redaction tailored for healthcare: SSN, phone, DOB, email   |
-//! | `pci`                | Redact credit card + API key patterns for payment compliance     |
+//! | `pci_pan_only`       | Redact credit card + API key patterns (PAN only, not full PCI)   |
 //! | `topic_fence`        | Allowlist-based topic restrictor (requires custom config)        |
 //! | `toxicity`           | Block profanity + bias + hate speech (strict)                   |
 //! | `profanity_filter`   | Block profanity/slurs only (lighter)                            |
@@ -144,13 +144,20 @@ fn expand_preset(name: &str, topic_allowlist: &[String], topic_denylist: &[Strin
             "then": {
                 "action": "redact",
                 "direction": "both",
-                "patterns": ["ssn", "email", "phone", "dob", "mrn"],
+                // SEC 3C-1 FIX: Added `ipv4` (HIPAA PHI category 15) and `iban`.
+                // NOTE: HIPAA Safe Harbor has 18 identifier categories. This preset
+                // covers: SSN, email, phone/fax, DOB, MRN, IP addresses, IBANs.
+                // STILL NOT COVERED by pattern matching (requires custom fields config):
+                // geographic sub-state data, non-DOB dates, account numbers,
+                // certificate/license numbers, vehicle/device identifiers,
+                // biometrics, health plan numbers.
+                "patterns": ["ssn", "email", "phone", "dob", "mrn", "ipv4", "iban"],
                 "fields": [],
                 "on_match": "redact"
             }
         })],
 
-        "pci" => vec![json!({
+        "pci_pan_only" => vec![json!({
             "when": {"always": true},
             "then": {
                 "action": "redact",
@@ -601,7 +608,7 @@ pub async fn enable_guardrails(
 
     state
         .db
-        .set_token_policy_ids(&payload.token_id, &policy_ids)
+        .set_token_policy_ids(&payload.token_id, project_id, &policy_ids)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "guardrails/enable: failed to attach policy to token");
@@ -687,7 +694,7 @@ pub async fn disable_guardrails(
 
     state
         .db
-        .set_token_policy_ids(&payload.token_id, &remaining_ids)
+        .set_token_policy_ids(&payload.token_id, project_id, &remaining_ids)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "guardrails/disable: failed to update token");
@@ -820,7 +827,7 @@ fn extract_preset_hints(rules: &serde_json::Value) -> Vec<String> {
                             // Could be hipaa or pii_redaction
                             hints.push("pii_redaction".to_string());
                         } else {
-                            hints.push("pci".to_string());
+                            hints.push("pci_pan_only".to_string());
                         }
                     }
                     _ => {}
@@ -913,15 +920,17 @@ pub async fn list_presets() -> Json<serde_json::Value> {
             // ── Compliance ──
             {
                 "name": "hipaa",
-                "description": "Healthcare-focused PII redaction: SSN, email, phone, date-of-birth, MRN.",
+                "description": "Healthcare-focused PII redaction: SSN, email, phone, date-of-birth, MRN, IP addresses, IBANs.",
                 "category": "compliance",
-                "patterns": ["ssn", "email", "phone", "dob", "mrn"]
+                "patterns": ["ssn", "email", "phone", "dob", "mrn", "ipv4", "iban"],
+                "warning": "Covers 7 of 18 HIPAA Safe Harbor identifiers. Missing: geographic data, non-DOB dates, account numbers, URLs, biometrics. Does not constitute HIPAA compliance without supplemental field-based configuration."
             },
             {
-                "name": "pci",
-                "description": "Payment Card Industry compliance: redact credit card numbers and API keys.",
+                "name": "pci_pan_only",
+                "description": "Redact credit card numbers (PAN) and API keys. Does NOT cover CVV, expiry, or cardholder name.",
                 "category": "compliance",
-                "patterns": ["credit_card", "api_key"]
+                "patterns": ["credit_card", "api_key"],
+                "warning": "Redacts PAN only. CVV, expiry, cardholder name cannot be reliably regex-detected. This preset does not constitute PCI-DSS compliance."
             },
             // ── Enterprise ──
             {
@@ -1109,5 +1118,59 @@ mod tests {
         assert!(is_output_preset("output_toxicity"));
         assert!(!is_output_preset("toxicity"));
         assert!(!is_output_preset("strict_enterprise"));
+    }
+
+    // ── Issue 1: PCI Preset Rename ──
+
+    #[test]
+    fn test_expand_pci_pan_only() {
+        let rules = expand_preset("pci_pan_only", &[], &[]).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0]["then"]["action"], "redact");
+        let patterns = rules[0]["then"]["patterns"].as_array().unwrap();
+        assert!(patterns.iter().any(|p| p == "credit_card"));
+        assert!(patterns.iter().any(|p| p == "api_key"));
+    }
+
+    #[test]
+    fn test_old_pci_name_returns_none() {
+        // After the rename, the old "pci" name must not resolve.
+        // This is a breaking change — callers using "pci" will get it in `skipped`.
+        let result = expand_preset("pci", &[], &[]);
+        assert!(result.is_none(), "old 'pci' name should return None after rename");
+    }
+
+    #[tokio::test]
+    async fn test_list_presets_pci_pan_only_has_warning() {
+        let response = list_presets().await.0;
+        let presets = response["presets"].as_array().unwrap();
+        let pci_preset = presets.iter().find(|p| p["name"] == "pci_pan_only");
+        assert!(pci_preset.is_some(), "pci_pan_only must appear in preset list");
+        let pci = pci_preset.unwrap();
+        assert!(
+            pci["warning"].is_string(),
+            "pci_pan_only preset must include a warning field"
+        );
+        let warning = pci["warning"].as_str().unwrap();
+        assert!(warning.contains("PAN only"), "warning must mention PAN only");
+        assert!(warning.contains("PCI-DSS"), "warning must mention PCI-DSS");
+    }
+
+    // ── Issue 2: HIPAA Preset Warning ──
+
+    #[tokio::test]
+    async fn test_list_presets_hipaa_has_warning() {
+        let response = list_presets().await.0;
+        let presets = response["presets"].as_array().unwrap();
+        let hipaa_preset = presets.iter().find(|p| p["name"] == "hipaa");
+        assert!(hipaa_preset.is_some(), "hipaa must appear in preset list");
+        let hipaa = hipaa_preset.unwrap();
+        assert!(
+            hipaa["warning"].is_string(),
+            "hipaa preset must include a warning field"
+        );
+        let warning = hipaa["warning"].as_str().unwrap();
+        assert!(warning.contains("7 of 18"), "warning must mention 7 of 18 identifiers");
+        assert!(warning.contains("HIPAA"), "warning must mention HIPAA");
     }
 }

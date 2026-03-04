@@ -5,7 +5,14 @@ use crate::cache::TieredCache;
 
 /// Fields from the request body that form the cache key.
 /// We normalize and hash these so identical prompts always hit cache.
-const CACHE_KEY_FIELDS: &[&str] = &["model", "messages", "temperature", "max_tokens", "tools", "tool_choice"];
+/// FIX 4C-1: Added top_p, response_format, seed, frequency_penalty, presence_penalty.
+/// Missing any of these meant different requests could get the same cached response.
+const CACHE_KEY_FIELDS: &[&str] = &[
+    "model", "messages", "temperature", "max_tokens",
+    "tools", "tool_choice",
+    "top_p", "response_format", "seed",
+    "frequency_penalty", "presence_penalty",
+];
 
 /// Default cache TTL: 5 minutes.
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 300;
@@ -97,19 +104,30 @@ pub async fn set_cached(
 /// Check if caching should be skipped for this request.
 ///
 /// Skips caching when:
-/// - `x-trueflow-no-cache: true` header is present (explicit opt-out)
+/// - `x-trueflow-no-cache: true` header is present AND caller has `cache:bypass` scope
 /// - `Cache-Control: no-cache` / `no-store` header is present
 /// - `temperature > 0.1` in the request body (non-deterministic — caching is misleading)
 /// - `stream: true` in the request body (streaming responses cannot be cached)
-pub fn should_skip_cache(headers: &axum::http::HeaderMap, body: Option<&serde_json::Value>) -> bool {
-    // Explicit opt-out
-    if headers
+pub fn should_skip_cache(
+    headers: &axum::http::HeaderMap,
+    body: Option<&serde_json::Value>,
+    scopes: Option<&[String]>,
+) -> bool {
+    // Explicit opt-out — only honoured with `cache:bypass` scope
+    let has_no_cache_header = headers
         .get("x-trueflow-no-cache")
         .and_then(|v| v.to_str().ok())
         .map(|v| v == "true" || v == "1")
-        .unwrap_or(false)
-    {
-        return true;
+        .unwrap_or(false);
+
+    if has_no_cache_header {
+        let has_bypass_scope = scopes
+            .map(|s| s.iter().any(|scope| scope == "cache:bypass"))
+            .unwrap_or(false);
+        if has_bypass_scope {
+            return true;
+        }
+        tracing::debug!("x-trueflow-no-cache header ignored: caller lacks cache:bypass scope");
     }
 
     // Standard Cache-Control: no-cache / no-store
@@ -209,43 +227,61 @@ mod tests {
     }
 
     #[test]
-    fn test_should_skip_cache_header() {
+    fn test_should_skip_cache_header_without_scope() {
         let mut headers = axum::http::HeaderMap::new();
-        assert!(!should_skip_cache(&headers, None));
+        assert!(!should_skip_cache(&headers, None, None));
 
+        // Header present but NO cache:bypass scope → header ignored
         headers.insert("x-trueflow-no-cache", "true".parse().unwrap());
-        assert!(should_skip_cache(&headers, None));
+        assert!(!should_skip_cache(&headers, None, None));
+        assert!(!should_skip_cache(&headers, None, Some(&[])));
+        assert!(!should_skip_cache(
+            &headers,
+            None,
+            Some(&["read".to_string(), "write".to_string()]),
+        ));
+    }
+
+    #[test]
+    fn test_should_skip_cache_header_with_scope() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-trueflow-no-cache", "true".parse().unwrap());
+
+        // With cache:bypass scope → header honoured
+        let scopes = vec!["cache:bypass".to_string()];
+        assert!(should_skip_cache(&headers, None, Some(&scopes)));
+
+        // cache:bypass among other scopes → still honoured
+        let scopes2 = vec!["read".to_string(), "cache:bypass".to_string()];
+        assert!(should_skip_cache(&headers, None, Some(&scopes2)));
     }
 
     #[test]
     fn test_should_skip_cache_control() {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("cache-control", "no-cache".parse().unwrap());
-        assert!(should_skip_cache(&headers, None));
+        assert!(should_skip_cache(&headers, None, None));
 
         let mut headers2 = axum::http::HeaderMap::new();
         headers2.insert("cache-control", "no-store".parse().unwrap());
-        assert!(should_skip_cache(&headers2, None));
+        assert!(should_skip_cache(&headers2, None, None));
     }
 
     #[test]
     fn test_should_skip_cache_high_temperature() {
         let headers = axum::http::HeaderMap::new();
-        // temperature > 0.1 should skip
         let body = serde_json::json!({"temperature": 0.9, "model": "gpt-4o"});
-        assert!(should_skip_cache(&headers, Some(&body)));
-        // temperature == 0.0 should cache
+        assert!(should_skip_cache(&headers, Some(&body), None));
         let body2 = serde_json::json!({"temperature": 0.0, "model": "gpt-4o"});
-        assert!(!should_skip_cache(&headers, Some(&body2)));
-        // temperature == 0.1 is at the edge — should NOT skip
+        assert!(!should_skip_cache(&headers, Some(&body2), None));
         let body3 = serde_json::json!({"temperature": 0.1, "model": "gpt-4o"});
-        assert!(!should_skip_cache(&headers, Some(&body3)));
+        assert!(!should_skip_cache(&headers, Some(&body3), None));
     }
 
     #[test]
     fn test_should_skip_cache_streaming() {
         let headers = axum::http::HeaderMap::new();
         let body = serde_json::json!({"stream": true, "model": "gpt-4o"});
-        assert!(should_skip_cache(&headers, Some(&body)));
+        assert!(should_skip_cache(&headers, Some(&body), None));
     }
 }

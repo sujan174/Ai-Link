@@ -13,7 +13,13 @@ static CREDIT_CARD_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\b(?:\d{4}[ -]){3}\d{1,7}\b|\b\d{15,16}\b").unwrap()
 });
 
-static SSN_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap());
+static SSN_REGEX: Lazy<Regex> = Lazy::new(|| {
+    // SEC 3C-4 FIX: Match both common SSN formats:
+    //   Format 1: 123-45-6789 (dashed — standard)
+    //   Format 2: 123456789   (9 contiguous digits — common in exports/forms)
+    // NOTE: The Rust `regex` crate does not support lookaheads — plain \b\d{9}\b used.
+    Regex::new(r"\b\d{3}-\d{2}-\d{4}\b|\b\d{9}\b").unwrap()
+});
 
 static API_KEY_REGEX: Lazy<Regex> = Lazy::new(|| {
     // Matches common sk- patterns (OpenAI, Stripe, etc)
@@ -43,6 +49,69 @@ pub fn sanitize_stream_content(content: &str) -> SanitizationResult {
         body: sanitized.into_bytes(),
         redacted_types: redacted.into_iter().collect(),
     }
+}
+
+/// Redact PII in a raw SSE text chunk before it reaches the client.
+///
+/// Processes the chunk line-by-line. Only lines starting with `data: ` are
+/// scanned for PII — SSE framing lines (`event:`, empty lines, `data: [DONE]`)
+/// pass through unchanged.
+///
+/// Returns `(output, did_redact)`:
+/// - `output`: the (possibly redacted) chunk text
+/// - `did_redact`: true if any PII was found and replaced
+///
+/// **Performance:** On the happy path (no PII), each `data:` line pays only
+/// the cost of four `is_match()` calls which short-circuit on non-match.
+/// No allocations occur until a match is found.
+pub fn redact_sse_chunk(chunk: &str) -> (String, bool) {
+    let mut redacted_any = false;
+    let mut output = String::with_capacity(chunk.len());
+    let mut first = true;
+
+    for line in chunk.split('\n') {
+        // Preserve original newline structure
+        if !first {
+            output.push('\n');
+        }
+        first = false;
+
+        // Only scan `data: ` lines (not `event:`, `id:`, empty, or `data: [DONE]`)
+        if let Some(payload) = line.strip_prefix("data: ") {
+            // Skip the [DONE] sentinel — never contains PII
+            if payload == "[DONE]" {
+                output.push_str(line);
+                continue;
+            }
+
+            // Try to parse as JSON and redact string values within
+            if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(payload) {
+                let mut types = HashSet::new();
+                sanitize_json_value(&mut json_val, &mut types);
+                if !types.is_empty() {
+                    redacted_any = true;
+                    output.push_str("data: ");
+                    output.push_str(&serde_json::to_string(&json_val).unwrap_or_else(|_| payload.to_string()));
+                    continue;
+                }
+            }
+
+            // Fallback: plain text data line (rare in SSE, but handle it)
+            let mut types = HashSet::new();
+            let sanitized = sanitize_text(payload, &mut types);
+            if !types.is_empty() {
+                redacted_any = true;
+                output.push_str("data: ");
+                output.push_str(&sanitized);
+                continue;
+            }
+        }
+
+        // No redaction needed — pass line through unchanged
+        output.push_str(line);
+    }
+
+    (output, redacted_any)
 }
 
 /// Streaming-aware response sanitization.
@@ -169,5 +238,74 @@ mod tests {
             "Payment: [REDACTED_CC]"
         );
         assert!(res.redacted_types.contains(&"credit_card".to_string()));
+    }
+
+    // ── Streaming PII redaction (redact_sse_chunk) ──────────────
+
+    #[test]
+    fn test_sse_redact_ssn_in_json_data_line() {
+        // Simulates SSE chunk: data: {"choices":[{"delta":{"content":"SSN: 123-45-6789"}}]}
+        let chunk = r#"data: {"choices":[{"delta":{"content":"SSN: 123-45-6789"}}]}"#;
+        let (output, did_redact) = redact_sse_chunk(chunk);
+        assert!(did_redact, "Should detect SSN in SSE data line");
+        assert!(
+            !output.contains("123-45-6789"),
+            "SSN should be redacted in output: '{}'", output
+        );
+        assert!(
+            output.contains("[REDACTED_SSN]"),
+            "Should contain redaction marker: '{}'", output
+        );
+        assert!(output.starts_with("data: "), "Should preserve data: prefix");
+    }
+
+    #[test]
+    fn test_sse_redact_clean_passthrough() {
+        let chunk = r#"data: {"choices":[{"delta":{"content":"Hello world"}}]}"#;
+        let (output, did_redact) = redact_sse_chunk(chunk);
+        assert!(!did_redact, "No PII present — should not redact");
+        assert_eq!(output, chunk, "Clean chunk should pass through unchanged");
+    }
+
+    #[test]
+    fn test_sse_redact_multiline_mixed() {
+        // Two SSE events in one chunk — only the one with PII should be modified
+        let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"email: user@test.com\"}}]}\n\n";
+        let (output, did_redact) = redact_sse_chunk(chunk);
+        assert!(did_redact, "Should detect email in second data line");
+        assert!(
+            output.contains("Hello"),
+            "First data line should be preserved: '{}'", output
+        );
+        assert!(
+            !output.contains("user@test.com"),
+            "Email should be redacted: '{}'", output
+        );
+        assert!(
+            output.contains("[REDACTED_EMAIL]"),
+            "Should contain email redaction marker"
+        );
+    }
+
+    #[test]
+    fn test_sse_redact_framing_untouched() {
+        // SSE framing lines and [DONE] should never be modified
+        let chunk = "event: message\ndata: {\"choices\":[]}\n\ndata: [DONE]\n\n";
+        let (output, did_redact) = redact_sse_chunk(chunk);
+        assert!(!did_redact, "No PII in framing lines");
+        assert_eq!(output, chunk, "Framing should pass through unchanged");
+    }
+
+    #[test]
+    fn test_sse_redact_credit_card_in_content() {
+        // Credit card number in LLM response content
+        let chunk = r#"data: {"choices":[{"delta":{"content":"Card: 4111 1111 1111 1111"}}]}"#;
+        let (output, did_redact) = redact_sse_chunk(chunk);
+        assert!(did_redact, "Should detect credit card");
+        assert!(
+            !output.contains("4111 1111 1111 1111"),
+            "CC should be redacted: '{}'", output
+        );
+        assert!(output.contains("[REDACTED_CC]"));
     }
 }

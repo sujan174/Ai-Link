@@ -8,6 +8,8 @@ use tokio::time::sleep;
 use tracing::{debug, warn};
 
 /// Execute a request with configurable retries, backoff, jitter, and Retry-After support.
+/// When `config.max_total_timeout_ms` is set, the total retry budget is enforced:
+/// the function returns an error if the deadline is exceeded, even if retries remain.
 pub async fn robust_request(
     client: &Client,
     method: Method,
@@ -17,9 +19,32 @@ pub async fn robust_request(
     config: &RetryConfig,
 ) -> Result<Response> {
     let mut attempt = 0;
+    let start = std::time::Instant::now();
+    let deadline = config
+        .max_total_timeout_ms
+        .map(|ms| start + Duration::from_millis(ms));
 
     loop {
         attempt += 1;
+
+        // Check deadline before attempting (skip first attempt — always try at least once)
+        if attempt > 1 {
+            if let Some(dl) = deadline {
+                if std::time::Instant::now() >= dl {
+                    let elapsed = start.elapsed();
+                    warn!(
+                        "Retry time budget exhausted after {:?} ({} attempts) for {} {}",
+                        elapsed, attempt - 1, method, url
+                    );
+                    anyhow::bail!(
+                        "Retry time budget of {}ms exceeded after {} attempts (elapsed: {:?})",
+                        config.max_total_timeout_ms.unwrap_or(0),
+                        attempt - 1,
+                        elapsed
+                    );
+                }
+            }
+        }
 
         // Clone headers and body for this attempt
         let req_builder = client
@@ -47,6 +72,18 @@ pub async fn robust_request(
 
                 // Calculate wait time
                 let wait_duration = calculate_wait_time(&response, config, attempt);
+
+                // Check if sleeping would exceed deadline
+                if let Some(dl) = deadline {
+                    if std::time::Instant::now() + wait_duration > dl {
+                        let remaining = dl.saturating_duration_since(std::time::Instant::now());
+                        warn!(
+                            "Retry sleep of {:?} would exceed time budget. Remaining: {:?}. Returning last response.",
+                            wait_duration, remaining
+                        );
+                        return Ok(response);
+                    }
+                }
                 
                 warn!(
                     "Attempt {}/{} failed with status {}. Retrying in {:?}...",
@@ -59,12 +96,24 @@ pub async fn robust_request(
                 sleep(wait_duration).await;
             }
             Err(e) => {
-                // Network errors (DNS, connection refined) are always retryable
+                // Network errors (DNS, connection refused) are always retryable
                 if attempt > config.max_retries {
                     return Err(e).context(format!("Request failed after {} attempts", attempt));
                 }
 
                 let wait_duration = calculate_backoff(config, attempt);
+
+                // Check if sleeping would exceed deadline
+                if let Some(dl) = deadline {
+                    if std::time::Instant::now() + wait_duration > dl {
+                        return Err(e).context(format!(
+                            "Retry time budget of {}ms exceeded after {} attempts",
+                            config.max_total_timeout_ms.unwrap_or(0),
+                            attempt
+                        ));
+                    }
+                }
+
                 warn!(
                     "Attempt {}/{} failed with error: {}. Retrying in {:?}...",
                     attempt,
@@ -84,17 +133,25 @@ async fn execute_attempt(builder: RequestBuilder) -> Result<Response> {
 }
 
 fn calculate_wait_time(response: &Response, config: &RetryConfig, attempt: u32) -> Duration {
-    // 1. Check Retry-After header
+    // 1. Check Retry-After header (RFC 7231 §7.1.3)
     if let Some(retry_after) = response.headers().get(reqwest::header::RETRY_AFTER) {
         if let Ok(retry_after_str) = retry_after.to_str() {
-            // Try parsing as seconds
+            // Try parsing as delta-seconds (e.g. "120")
             if let Ok(seconds) = retry_after_str.parse::<u64>() {
                 return Duration::from_secs(seconds);
             }
-            // Try parsing as HTTP Date
-            // if let Ok(date) = humantime::parse_rfc3339(retry_after_str) {
-                 // For simplicity in this v1, fallback to backoff if date parsing fails/is complex
-            // }
+            // FIX 4B-2: Try parsing as HTTP-date (IMF-fixdate per RFC 2616)
+            // e.g. "Fri, 31 Dec 1999 23:59:59 GMT"
+            if let Ok(date) = chrono::DateTime::parse_from_rfc2822(retry_after_str) {
+                let now = chrono::Utc::now();
+                let target = date.with_timezone(&chrono::Utc);
+                if target > now {
+                    let delta = (target - now).num_seconds().max(0) as u64;
+                    return Duration::from_secs(delta);
+                }
+                // Date is in the past → retry immediately (0-second wait)
+                return Duration::from_secs(0);
+            }
         }
     }
 
@@ -110,10 +167,17 @@ fn calculate_backoff(config: &RetryConfig, attempt: u32) -> Duration {
     let raw_backoff = base * 2_f64.powi((attempt as i32) - 1);
     let capped_backoff = raw_backoff.min(max);
 
-    // Jitter: random between 0 and jitter_ms
-    let jitter = rand::thread_rng().gen_range(0..=config.jitter_ms);
+    // FIX 4B-1: Full jitter prevents thundering herds.
+    // Old: sleep = backoff + random(0, jitter_ms) — all clients cluster near backoff.
+    // New: sleep = random(0, backoff) — fully decorrelates retry timing.
+    // Reference: AWS Architecture Blog "Exponential Backoff And Jitter"
+    let capped_ms = capped_backoff as u64;
+    if capped_ms == 0 {
+        return Duration::from_millis(0);
+    }
+    let jittered = rand::thread_rng().gen_range(0..=capped_ms);
     
-    Duration::from_millis((capped_backoff as u64) + jitter)
+    Duration::from_millis(jittered)
 }
 
 #[cfg(test)]
@@ -192,6 +256,7 @@ mod tests {
             base_backoff_ms: 100,
             max_backoff_ms: 5000,
             jitter_ms: 0,
+            max_total_timeout_ms: None,
         };
 
         let start = std::time::Instant::now();
@@ -238,6 +303,7 @@ mod tests {
             max_retries: 3,
             status_codes: vec![429, 500, 502, 503],
             base_backoff_ms: 10, max_backoff_ms: 100, jitter_ms: 0,
+            max_total_timeout_ms: None,
         };
 
         let resp = robust_request(
@@ -266,6 +332,7 @@ mod tests {
             max_retries: 2,
             status_codes: vec![429],
             base_backoff_ms: 10, max_backoff_ms: 50, jitter_ms: 0,
+            max_total_timeout_ms: None,
         };
 
         let resp = robust_request(

@@ -300,8 +300,8 @@ fn test_token_empty_value() {
     let project = Uuid::nil();
     let token = pii_vault::generate_token(project, "email", "");
     assert!(token.starts_with("tok_pii_email_"));
-    // Even empty strings produce valid tokens
-    assert_eq!(token.len(), "tok_pii_email_".len() + 16);
+    // Even empty strings produce valid tokens (3B-1 FIX: 32-char hash)
+    assert_eq!(token.len(), "tok_pii_email_".len() + 32);
 }
 
 #[test]
@@ -319,8 +319,8 @@ fn test_token_very_long_value() {
     let long_value = "x".repeat(100_000);
     let token = pii_vault::generate_token(project, "custom", &long_value);
     assert!(token.starts_with("tok_pii_custom_"));
-    // Token length must be fixed regardless of input length
-    assert_eq!(token.len(), "tok_pii_custom_".len() + 16);
+    // Token length must be fixed regardless of input length (3B-1 FIX: 32-char hash)
+    assert_eq!(token.len(), "tok_pii_custom_".len() + 32);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

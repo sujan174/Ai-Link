@@ -149,15 +149,20 @@ fn bucket_velocities(
     buckets.into_iter().filter(|&count| count > 0.0).collect()
 }
 
-/// Calculate mean and standard deviation of a sample.
+/// Calculate mean and sample standard deviation (Bessel's correction, N-1).
+///
+/// 5E-1 FIX: Uses N-1 denominator for variance so we don't underestimate
+/// stddev at small sample sizes (min_datapoints = 12 → ~4.2% correction).
 fn mean_stddev(values: &[f64]) -> (f64, f64) {
     let n = values.len() as f64;
-    if n == 0.0 {
-        return (0.0, 0.0);
+    if n <= 1.0 {
+        // With 0 or 1 data points, stddev is undefined / zero
+        let mean = if n == 1.0 { values[0] } else { 0.0 };
+        return (mean, 0.0);
     }
 
     let mean = values.iter().sum::<f64>() / n;
-    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1.0);
     let stddev = variance.sqrt();
 
     (mean, stddev)

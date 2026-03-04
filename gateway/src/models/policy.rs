@@ -57,6 +57,11 @@ pub struct RetryConfig {
     pub jitter_ms: u64,
     #[serde(default = "default_retry_status_codes")]
     pub status_codes: Vec<u16>,
+    /// Maximum total time (in milliseconds) for all retry attempts combined.
+    /// When set, the retry loop aborts once the deadline is exceeded, even if
+    /// max_retries has not been reached. None = no deadline (existing behaviour).
+    #[serde(default)]
+    pub max_total_timeout_ms: Option<u64>,
 }
 
 impl Default for RetryConfig {
@@ -67,6 +72,7 @@ impl Default for RetryConfig {
             max_backoff_ms: default_max_backoff(),
             jitter_ms: default_jitter(),
             status_codes: default_retry_status_codes(),
+            max_total_timeout_ms: None,
         }
     }
 }

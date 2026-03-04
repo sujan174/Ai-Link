@@ -144,9 +144,11 @@ pub fn model_matches(model: &str, pattern: &str) -> bool {
 }
 
 /// Resolve model patterns from a list of group IDs by querying the database.
+/// 6C-3 FIX: Scoped by project_id to prevent cross-tenant group resolution.
 pub async fn resolve_group_models(
     pool: &sqlx::PgPool,
     group_ids: &[Uuid],
+    project_id: Uuid,
 ) -> Vec<String> {
     if group_ids.is_empty() {
         return Vec::new();
@@ -158,9 +160,10 @@ pub async fn resolve_group_models(
     }
 
     let rows = match sqlx::query_as::<_, ModelsRow>(
-        "SELECT models FROM model_access_groups WHERE id = ANY($1)"
+        "SELECT models FROM model_access_groups WHERE id = ANY($1) AND project_id = $2"
     )
     .bind(group_ids)
+    .bind(project_id)
     .fetch_all(pool)
     .await
     {

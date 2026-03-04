@@ -61,8 +61,9 @@ impl VaultCrypto {
             .encrypt(dek_nonce, dek.as_ref())
             .map_err(|e| anyhow::anyhow!("DEK encryption failed: {}", e))?;
 
-        // 4. Zero the plaintext DEK
-        dek.fill(0);
+        // 4. Zero the plaintext DEK (zeroize prevents optimizer dead-store elimination)
+        use zeroize::Zeroize;
+        dek.zeroize();
 
         Ok((
             encrypted_dek,
@@ -91,6 +92,13 @@ impl VaultCrypto {
         let mut dek = [0u8; 32];
         dek.copy_from_slice(&dek_bytes);
 
+        // Zero the intermediate Vec<u8> that held the plaintext DEK.
+        // zeroize::Zeroize for Vec<u8> zeroes all bytes via write_volatile,
+        // then truncates to length 0, before the Vec is dropped.
+        use zeroize::Zeroize;
+        let mut dek_bytes = dek_bytes; // rebind as mutable
+        dek_bytes.zeroize();
+
         // 2. Decrypt secret with DEK
         let secret_cipher = Aes256Gcm::new_from_slice(&dek)
             .map_err(|e| anyhow::anyhow!("invalid key length: {:?}", e))?;
@@ -99,8 +107,8 @@ impl VaultCrypto {
             .decrypt(s_nonce, encrypted_secret)
             .map_err(|e| anyhow::anyhow!("secret decryption failed: {}", e))?;
 
-        // Zero the DEK
-        dek.fill(0);
+        // Zero the DEK (zeroize prevents optimizer dead-store elimination)
+        dek.zeroize();
 
         Ok(String::from_utf8(plaintext_bytes)?)
     }

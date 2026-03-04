@@ -239,10 +239,11 @@ impl PgStore {
         Ok(rows)
     }
 
-    pub async fn revoke_token(&self, token_id: &str) -> anyhow::Result<bool> {
+    pub async fn revoke_token(&self, token_id: &str, project_id: Uuid) -> anyhow::Result<bool> {
         let result =
-            sqlx::query("UPDATE tokens SET is_active = false, updated_at = NOW() WHERE id = $1")
+            sqlx::query("UPDATE tokens SET is_active = false, updated_at = NOW() WHERE id = $1 AND project_id = $2")
                 .bind(token_id)
+                .bind(project_id)
                 .execute(&self.pool)
                 .await?;
 
@@ -254,13 +255,15 @@ impl PgStore {
     pub async fn update_circuit_breaker(
         &self,
         token_id: &str,
+        project_id: Uuid,
         config: serde_json::Value,
     ) -> anyhow::Result<bool> {
         let result = sqlx::query(
-            "UPDATE tokens SET circuit_breaker = $1 WHERE id = $2 AND is_active = true"
+            "UPDATE tokens SET circuit_breaker = $1 WHERE id = $2 AND project_id = $3 AND is_active = true"
         )
         .bind(&config)
         .bind(token_id)
+        .bind(project_id)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
@@ -271,13 +274,15 @@ impl PgStore {
     pub async fn set_token_policy_ids(
         &self,
         token_id: &str,
+        project_id: Uuid,
         policy_ids: &[Uuid],
     ) -> anyhow::Result<bool> {
         let result = sqlx::query(
-            "UPDATE tokens SET policy_ids = $1 WHERE id = $2 AND is_active = true"
+            "UPDATE tokens SET policy_ids = $1 WHERE id = $2 AND project_id = $3 AND is_active = true"
         )
         .bind(policy_ids)
         .bind(token_id)
+        .bind(project_id)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
@@ -288,17 +293,19 @@ impl PgStore {
     pub async fn update_token_config(
         &self,
         token_id: &str,
+        project_id: Uuid,
         policy_ids: Vec<Uuid>,
         log_level: i16,
         upstream_url: &str,
     ) -> anyhow::Result<bool> {
         let result = sqlx::query(
-            "UPDATE tokens SET policy_ids = $1, log_level = $2, upstream_url = $3, updated_at = NOW() WHERE id = $4 AND is_active = true"
+            "UPDATE tokens SET policy_ids = $1, log_level = $2, upstream_url = $3, updated_at = NOW() WHERE id = $4 AND project_id = $5 AND is_active = true"
         )
         .bind(&policy_ids)
         .bind(log_level)
         .bind(upstream_url)
         .bind(token_id)
+        .bind(project_id)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
@@ -559,6 +566,21 @@ impl PgStore {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Count pending approval requests for a specific token.
+    /// Used to enforce HITL concurrency cap before creating new approvals.
+    pub async fn count_pending_approvals_for_token(
+        &self,
+        token_id: &str,
+    ) -> anyhow::Result<i64> {
+        let count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM approval_requests WHERE token_id = $1 AND status = 'pending'"
+        )
+        .bind(token_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count.0)
     }
 
     pub async fn update_approval_status(

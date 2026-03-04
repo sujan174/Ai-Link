@@ -459,7 +459,7 @@ pub async fn revoke_token(
         verify_project_ownership(&state, auth.org_id, t.project_id).await?;
     }
 
-    let revoked = state.db.revoke_token(&id).await.map_err(|e| {
+    let revoked = state.db.revoke_token(&id, token.as_ref().map(|t| t.project_id).unwrap_or_default()).await.map_err(|e| {
         tracing::error!("revoke_token failed: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -1826,7 +1826,7 @@ pub async fn update_circuit_breaker(
         })?
         .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({ "error": { "code": "not_found", "message": "Token not found" } }))))?;
 
-    let updated = state.db.update_circuit_breaker(&token_id, payload.clone()).await
+    let updated = state.db.update_circuit_breaker(&token_id, _token.project_id, payload.clone()).await
         .map_err(|e| {
             tracing::error!("update_circuit_breaker: update failed: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": { "code": "internal_server_error", "message": "Failed to update circuit breaker config" } })))
@@ -1969,7 +1969,7 @@ pub async fn upsert_spend_cap(
     }
     let project_id = auth.default_project_id();
 
-    crate::middleware::spend::upsert_spend_cap(state.db.pool(), &token_id, project_id, &payload.period, limit)
+    crate::middleware::spend::upsert_spend_cap(&state.cache, state.db.pool(), &token_id, project_id, &payload.period, limit)
         .await
         .map(|_| StatusCode::NO_CONTENT)
         .map_err(|e| {
@@ -1990,7 +1990,7 @@ pub async fn delete_spend_cap(
     // SEC-05: ownership check
     verify_token_ownership(&state, &token_id, &auth).await?;
 
-    crate::middleware::spend::delete_spend_cap(state.db.pool(), &token_id, &period)
+    crate::middleware::spend::delete_spend_cap(&state.cache, state.db.pool(), &token_id, &period)
         .await
         .map(|_| StatusCode::NO_CONTENT)
         .map_err(|e| {

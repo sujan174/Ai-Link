@@ -231,17 +231,41 @@ pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
 
 /// Regex matching against a string value.
 /// SEC: all user-supplied patterns compiled with a 1MB size limit to prevent ReDoS.
+/// PERF: compiled regexes are cached in a thread-local map (max 256 entries)
+///       to avoid per-request recompilation.
 fn check_regex(actual: &Value, pattern: &Value) -> bool {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    thread_local! {
+        /// Thread-local cache: pattern string → compiled Regex (None = invalid/too-complex).
+        /// Bounded at 256 entries to prevent unbounded memory growth from malicious policies.
+        static REGEX_CACHE: RefCell<HashMap<String, Option<Regex>>> =
+            RefCell::new(HashMap::with_capacity(64));
+    }
+
+    /// Compile a regex with caching and size limit.
+    fn compile_cached(pat: &str) -> Option<Regex> {
+        REGEX_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if let Some(cached) = cache.get(pat) {
+                return cached.clone();
+            }
+            let compiled = regex::RegexBuilder::new(pat)
+                .size_limit(1_000_000) // 1MB limit prevents catastrophic backtracking
+                .build()
+                .ok();
+            // Bound cache size: clear if over limit (simple eviction strategy)
+            if cache.len() >= 256 {
+                cache.clear();
+            }
+            cache.insert(pat.to_string(), compiled.clone());
+            compiled
+        })
+    }
+
     let actual_str = value_as_str(actual);
     let pattern_str = value_as_str(pattern);
-
-    /// Compile a regex with a size limit. Returns None on invalid/too-complex patterns.
-    fn compile_safe(pat: &str) -> Option<Regex> {
-        regex::RegexBuilder::new(pat)
-            .size_limit(1_000_000) // 1MB limit prevents catastrophic backtracking
-            .build()
-            .ok()
-    }
 
     match (actual_str, pattern_str) {
         (Some(text), Some(pat)) => {
@@ -249,11 +273,11 @@ fn check_regex(actual: &Value, pattern: &Value) -> bool {
             if let Value::Array(arr) = actual {
                 return arr.iter().any(|elem| {
                     value_as_str(elem)
-                        .and_then(|s| compile_safe(&pat).map(|re| re.is_match(&s)))
+                        .and_then(|s| compile_cached(&pat).map(|re| re.is_match(&s)))
                         .unwrap_or(false)
                 });
             }
-            compile_safe(&pat)
+            compile_cached(&pat)
                 .map(|re| re.is_match(&text))
                 .unwrap_or(false)
         }
@@ -263,7 +287,7 @@ fn check_regex(actual: &Value, pattern: &Value) -> bool {
                 if let Some(pat) = value_as_str(pattern) {
                     return arr.iter().any(|elem| {
                         value_as_str(elem)
-                            .and_then(|s| compile_safe(&pat).map(|re| re.is_match(&s)))
+                            .and_then(|s| compile_cached(&pat).map(|re| re.is_match(&s)))
                             .unwrap_or(false)
                     });
                 }

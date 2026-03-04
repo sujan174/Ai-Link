@@ -54,6 +54,10 @@ pub struct TeamSpend {
 
 /// Check if a team's budget has been exceeded for the current period.
 ///
+/// 5D-3 FIX: Uses `SELECT ... FOR UPDATE` to serialize concurrent budget
+/// checks. Without this, N concurrent requests could all read the same
+/// spend value and all pass the check, allowing N× budget overrun.
+///
 /// Returns `Ok(())` if within budget or no budget set,
 /// or `Err(reason)` if budget exceeded.
 pub async fn check_team_budget(
@@ -85,9 +89,11 @@ pub async fn check_team_budget(
         _ => return Ok(()), // Unknown duration, allow
     };
 
-    // Query current spend for this period
+    // 5D-3 FIX: Use FOR UPDATE to serialize concurrent budget checks.
+    // This acquires a row-level lock so only one request at a time can
+    // read/compare the spend value, preventing the TOCTOU race.
     let spend: Option<TeamSpend> = sqlx::query_as(
-        "SELECT * FROM team_spend WHERE team_id = $1 AND period = $2"
+        "SELECT * FROM team_spend WHERE team_id = $1 AND period = $2 FOR UPDATE"
     )
     .bind(team.id)
     .bind(period_start)

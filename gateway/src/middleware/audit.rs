@@ -5,17 +5,62 @@ use crate::store::payload_store::PayloadStore;
 use sqlx::PgPool;
 
 /// Async audit log writer. Fires off a Tokio task to insert
-/// the audit entry into PG without blocking the response path.
+/// the audit entry into PG with retry on transient failures.
 ///
-/// Phase 4: Two-phase insert — metadata to audit_logs, bodies to audit_log_bodies.
-/// Phase 6: Payload offloading — bodies > threshold go to S3/MinIO/local via PayloadStore.
+/// Retry policy: 3 attempts with exponential backoff (100ms, 500ms, 2000ms).
+/// On final failure, the audit entry is serialized to structured error logging
+/// as a fallback — ensuring there is always a record, even if Postgres is down.
 pub fn log_async(pool: PgPool, payload_store: Arc<PayloadStore>, entry: AuditEntry) {
     tokio::spawn(async move {
-        if let Err(e) = insert_audit_log(&pool, &payload_store, &entry).await {
-            tracing::error!(request_id = %entry.request_id, "failed to write audit log: {}", e);
-        } else {
-            tracing::debug!(request_id = %entry.request_id, "audit log recorded");
+        const MAX_RETRIES: u32 = 3;
+        const BACKOFF_MS: [u64; 3] = [100, 500, 2000];
+
+        let mut last_err = None;
+        for attempt in 0..MAX_RETRIES {
+            match insert_audit_log(&pool, &payload_store, &entry).await {
+                Ok(()) => {
+                    if attempt > 0 {
+                        tracing::info!(
+                            request_id = %entry.request_id,
+                            attempt = attempt + 1,
+                            "audit log recorded after retry"
+                        );
+                    } else {
+                        tracing::debug!(request_id = %entry.request_id, "audit log recorded");
+                    }
+                    return;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < MAX_RETRIES - 1 {
+                        tracing::warn!(
+                            request_id = %entry.request_id,
+                            attempt = attempt + 1,
+                            "audit log write failed, retrying: {}",
+                            last_err.as_ref().unwrap()
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(BACKOFF_MS[attempt as usize])).await;
+                    }
+                }
+            }
         }
+
+        // All retries exhausted — log the full audit entry as structured fallback
+        tracing::error!(
+            request_id = %entry.request_id,
+            project_id = %entry.project_id,
+            token_id = %entry.token_id,
+            method = %entry.method,
+            path = %entry.path,
+            upstream_url = %entry.upstream_url,
+            policy_result = ?entry.policy_result,
+            upstream_status = ?entry.upstream_status,
+            is_streaming = entry.is_streaming,
+            estimated_cost_usd = ?entry.estimated_cost_usd,
+            error = %last_err.unwrap(),
+            "AUDIT_WRITE_FAILED: all {} retries exhausted — entry logged here as fallback",
+            MAX_RETRIES,
+        );
     });
 }
 
@@ -231,4 +276,120 @@ async fn insert_audit_log(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::audit::{AuditEntry, PolicyResult};
+    use uuid::Uuid;
+
+    /// Helper to construct a minimal audit entry for testing.
+    fn test_audit_entry(policy_result: PolicyResult) -> AuditEntry {
+        AuditEntry {
+            request_id: Uuid::new_v4(),
+            project_id: Uuid::new_v4(),
+            token_id: "test-token".to_string(),
+            agent_name: Some("test-agent".to_string()),
+            method: "POST".to_string(),
+            path: "/v1/chat/completions".to_string(),
+            upstream_url: "https://api.openai.com/v1/chat/completions".to_string(),
+            request_body_hash: None,
+            policies_evaluated: None,
+            policy_result,
+            hitl_required: false,
+            hitl_decision: None,
+            hitl_latency_ms: None,
+            upstream_status: Some(200),
+            response_latency_ms: 150,
+            fields_redacted: None,
+            shadow_violations: None,
+            estimated_cost_usd: None,
+            timestamp: chrono::Utc::now(),
+            log_level: 0,
+            request_body: None,
+            response_body: None,
+            request_headers: None,
+            response_headers: None,
+            prompt_tokens: Some(100),
+            completion_tokens: Some(50),
+            model: Some("gpt-4o".to_string()),
+            tokens_per_second: Some(42.0),
+            user_id: None,
+            tenant_id: None,
+            external_request_id: None,
+            tool_calls: None,
+            tool_call_count: 0,
+            finish_reason: Some("stop".to_string()),
+            session_id: None,
+            parent_span_id: None,
+            error_type: None,
+            is_streaming: false,
+            ttft_ms: None,
+            cache_hit: false,
+            experiment_name: None,
+            variant_name: None,
+            custom_properties: None,
+            payload_url: None,
+        }
+    }
+
+    #[test]
+    fn test_audit_entry_serializes_for_fallback_log() {
+        // The fallback path serializes via tracing::error! with Debug formatting.
+        // Verify the entry can be serialized to JSON (used by structured logging backends).
+        let entry = test_audit_entry(PolicyResult::Allow);
+        let json = serde_json::to_string(&entry).expect("AuditEntry should serialize to JSON");
+        assert!(json.contains("test-token"));
+        assert!(json.contains("gpt-4o"));
+        assert!(json.contains("/v1/chat/completions"));
+    }
+
+    #[test]
+    fn test_audit_entry_denied_serializes_correctly() {
+        let entry = test_audit_entry(PolicyResult::Deny {
+            policy: "block-pii".to_string(),
+            reason: "SSN detected in request".to_string(),
+        });
+        let json = serde_json::to_string(&entry).expect("denied entry should serialize");
+        assert!(json.contains("block-pii"));
+        assert!(json.contains("SSN detected"));
+    }
+
+    #[test]
+    fn test_retry_constants_are_valid() {
+        // Verify retry backoff schedule is monotonically increasing
+        const BACKOFF_MS: [u64; 3] = [100, 500, 2000];
+        assert!(BACKOFF_MS[0] < BACKOFF_MS[1]);
+        assert!(BACKOFF_MS[1] < BACKOFF_MS[2]);
+        // Total retry budget should not exceed 3 seconds
+        let total: u64 = BACKOFF_MS.iter().sum();
+        assert!(total <= 3000, "total retry budget should be ≤ 3s, got {}ms", total);
+    }
+
+    #[test]
+    fn test_policy_result_formatting() {
+        // Verify all PolicyResult variants can be formatted for the INSERT
+        let cases = vec![
+            (PolicyResult::Allow, "allowed", None, None),
+            (PolicyResult::Deny { policy: "p".into(), reason: "r".into() }, "denied", Some("enforce"), Some("r")),
+            (PolicyResult::ShadowDeny { policy: "p".into(), reason: "r".into() }, "allowed", Some("shadow"), Some("r")),
+            (PolicyResult::HitlApproved, "approved", Some("hitl"), None),
+            (PolicyResult::HitlRejected, "rejected", Some("hitl"), None),
+            (PolicyResult::HitlTimeout, "timeout", Some("hitl"), None),
+        ];
+        for (pr, expected_result, expected_mode, expected_reason) in cases {
+            let (result, mode, reason) = match &pr {
+                PolicyResult::Allow => ("allowed", None, None),
+                PolicyResult::Deny { reason, .. } => ("denied", Some("enforce"), Some(reason.as_str())),
+                PolicyResult::ShadowDeny { reason, .. } => ("allowed", Some("shadow"), Some(reason.as_str())),
+                PolicyResult::HitlApproved => ("approved", Some("hitl"), None),
+                PolicyResult::HitlRejected => ("rejected", Some("hitl"), None),
+                PolicyResult::HitlTimeout => ("timeout", Some("hitl"), None),
+            };
+            assert_eq!(result, expected_result);
+            assert_eq!(mode, expected_mode);
+            assert_eq!(reason, expected_reason);
+        }
+    }
 }

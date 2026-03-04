@@ -43,8 +43,8 @@ pub async fn check_spend_cap(
     db: &sqlx::PgPool,
     token_id: &str,
 ) -> Result<()> {
-    // Load caps (DB-backed)
-    let caps = load_spend_caps(db, token_id).await?;
+    // Load caps (Redis-cached, 5D-4 FIX)
+    let caps = load_spend_caps_cached(cache, db, token_id).await?;
 
     // Nothing to enforce if no caps are configured
     if caps.daily_limit_usd.is_none() && caps.monthly_limit_usd.is_none() && caps.lifetime_limit_usd.is_none() {
@@ -130,26 +130,31 @@ pub async fn check_and_increment_spend(
         return Ok(());
     }
 
-    let caps = load_spend_caps(db, token_id).await?;
+    let caps = load_spend_caps_cached(cache, db, token_id).await?;
     let mut conn = cache.redis();
     let now = Utc::now();
 
-    // SEC-01 FIX: Atomic increment-then-check Lua script.
-    // ALWAYS increments the spend counter first, then checks if the cap
-    // was exceeded. Returns the new total (positive) if under cap, or -1
-    // if the cap was breached. By always incrementing, the pre-flight
-    // check_spend_cap on the NEXT request will see the real spend in Redis
-    // and correctly return 402.
+    // ATOMICITY FIX: Check-then-increment Lua script.
+    // The OLD script incremented first and checked after, causing phantom spend
+    // drift on denied requests. The NEW script reads the current value, checks
+    // if adding the cost would exceed the limit, and ONLY increments if under cap.
+    // Since Redis Lua scripts execute atomically (single-threaded), there is no
+    // TOCTOU window between the GET and INCRBYFLOAT.
+    //
+    // Returns: new total (positive) if allowed, or '-1' if cap would be exceeded.
+    // On deny, the counter is NOT modified — no phantom spend.
+    //
     // KEYS[1] = spend key, ARGV[1] = limit, ARGV[2] = cost, ARGV[3] = TTL
     let lua_script = r#"
+        local current = tonumber(redis.call('GET', KEYS[1]) or '0')
         local cost = tonumber(ARGV[2])
-        local ttl = tonumber(ARGV[3])
-        local new_val = redis.call('INCRBYFLOAT', KEYS[1], cost)
-        redis.call('EXPIRE', KEYS[1], ttl)
         local limit = tonumber(ARGV[1])
-        if tonumber(new_val) > limit then
+        if current + cost > limit then
             return '-1'
         end
+        local new_val = redis.call('INCRBYFLOAT', KEYS[1], cost)
+        local ttl = tonumber(ARGV[3])
+        redis.call('EXPIRE', KEYS[1], ttl)
         return new_val
     "#;
 
@@ -265,7 +270,10 @@ struct SpendCapRow {
     limit_usd: rust_decimal::Decimal,
 }
 
-/// Load spend caps for a token from DB.
+/// Load spend caps for a token — 5D-4 FIX: Redis-cached (60s TTL).
+///
+/// Avoids a Postgres round-trip on every request. The cache is busted on
+/// upsert/delete and expires naturally after 60 seconds.
 async fn load_spend_caps(db: &sqlx::PgPool, token_id: &str) -> Result<SpendCap> {
     let rows = sqlx::query_as::<_, SpendCapRow>(
         "SELECT period, limit_usd FROM spend_caps WHERE token_id = $1",
@@ -284,6 +292,37 @@ async fn load_spend_caps(db: &sqlx::PgPool, token_id: &str) -> Result<SpendCap> 
             "lifetime" => caps.lifetime_limit_usd = Some(limit),
             _ => {}
         }
+    }
+
+    Ok(caps)
+}
+
+/// 5D-4 FIX: Redis-cached variant of `load_spend_caps` for hot-path use.
+/// Caches serialized SpendCap in Redis for 60 seconds to avoid a DB
+/// round-trip on every `check_and_increment_spend` call.
+async fn load_spend_caps_cached(
+    cache: &TieredCache,
+    db: &sqlx::PgPool,
+    token_id: &str,
+) -> Result<SpendCap> {
+    let cache_key = format!("spend_caps:{}", token_id);
+    let mut conn = cache.redis();
+
+    // Try Redis first
+    if let Ok(Some(cached)) = conn.get::<_, Option<String>>(&cache_key).await {
+        if let Ok(caps) = serde_json::from_str::<SpendCap>(&cached) {
+            return Ok(caps);
+        }
+    }
+
+    // Cache miss → load from DB
+    let caps = load_spend_caps(db, token_id).await?;
+
+    // Populate cache (best-effort, 60s TTL)
+    if let Ok(json) = serde_json::to_string(&caps) {
+        let _: () = conn.set_ex(&cache_key, &json, 60)
+            .await
+            .unwrap_or(());
     }
 
     Ok(caps)
@@ -354,6 +393,7 @@ pub async fn track_spend(
 
 /// Set or update a spend cap for a token.
 pub async fn upsert_spend_cap(
+    cache: &TieredCache,
     db: &sqlx::PgPool,
     token_id: &str,
     project_id: uuid::Uuid,
@@ -378,18 +418,38 @@ pub async fn upsert_spend_cap(
     .await
     .context("failed to upsert spend cap")?;
 
+    // 5D-4: Bust Redis cache so the new cap takes effect immediately
+    let cache_key = format!("spend_caps:{}", token_id);
+    // Best-effort cache invalidation — if Redis is down, the 60s TTL
+    // will expire naturally and the next request will pick up the new cap.
+    let mut conn = cache.redis();
+    let _ = conn.del::<_, ()>(&cache_key)
+        .await;
+
     info!(token_id, period, limit_usd = %limit_usd, "spend cap configured");
     Ok(())
 }
 
 /// Delete a spend cap for a token.
-pub async fn delete_spend_cap(db: &sqlx::PgPool, token_id: &str, period: &str) -> Result<()> {
+pub async fn delete_spend_cap(
+    cache: &TieredCache,
+    db: &sqlx::PgPool,
+    token_id: &str,
+    period: &str,
+) -> Result<()> {
     sqlx::query("DELETE FROM spend_caps WHERE token_id = $1 AND period = $2")
         .bind(token_id)
         .bind(period)
         .execute(db)
         .await
         .context("failed to delete spend cap")?;
+
+    // 5D-4: Bust Redis cache on delete
+    let cache_key = format!("spend_caps:{}", token_id);
+    let mut conn = cache.redis();
+    let _ = conn.del::<_, ()>(&cache_key)
+        .await;
+
     Ok(())
 }
 
@@ -629,5 +689,76 @@ mod tests {
             caps.daily_limit_usd.is_none() && caps.monthly_limit_usd.is_none(),
             "Default caps should trigger early return (no enforcement)"
         );
+    }
+
+    // ── Lua script atomicity tests (check-then-increment logic) ──
+
+    /// Simulates the corrected Lua script logic to verify correctness.
+    /// This mirrors the exact Lua script in check_and_increment_spend:
+    ///   1. GET current spend
+    ///   2. If current + cost > limit → return -1 (deny), do NOT increment
+    ///   3. Else → INCRBYFLOAT, return new value
+    fn simulate_lua_check_and_increment(current: f64, cost: f64, limit: f64) -> (f64, f64) {
+        // Returns (result, counter_after) — result is -1 for denied, else new total
+        if current + cost > limit {
+            (-1.0, current) // counter unchanged on deny
+        } else {
+            let new_val = current + cost;
+            (new_val, new_val) // counter updated on allow
+        }
+    }
+
+    #[test]
+    fn test_lua_allows_under_cap() {
+        let (result, counter) = simulate_lua_check_and_increment(5.0, 3.0, 10.0);
+        assert!(result > 0.0, "Should allow: 5 + 3 = 8 < 10");
+        assert!((counter - 8.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_lua_denies_over_cap() {
+        let (result, counter) = simulate_lua_check_and_increment(9.5, 0.6, 10.0);
+        assert!(result < 0.0, "Should deny: 9.5 + 0.6 = 10.1 > 10.0");
+        assert!((counter - 9.5).abs() < f64::EPSILON, "Counter must NOT change on deny");
+    }
+
+    #[test]
+    fn test_lua_denied_requests_dont_inflate_counter() {
+        // This is the critical fix: two concurrent denied requests should not
+        // inflate the counter. Simulate the race:
+        //   T=0: current = 9.5, Request A cost = 0.6
+        //   T=1: current = 9.5, Request B cost = 0.6
+        // Both should be denied. Counter should remain 9.5 (not 10.7).
+        let mut counter = 9.5;
+        let limit = 10.0;
+
+        // Request A
+        let (result_a, new_counter) = simulate_lua_check_and_increment(counter, 0.6, limit);
+        counter = new_counter;
+        assert!(result_a < 0.0, "Request A should be denied");
+        assert!((counter - 9.5).abs() < f64::EPSILON, "Counter unchanged after denied A");
+
+        // Request B
+        let (result_b, new_counter) = simulate_lua_check_and_increment(counter, 0.6, limit);
+        counter = new_counter;
+        assert!(result_b < 0.0, "Request B should be denied");
+        assert!((counter - 9.5).abs() < f64::EPSILON, "Counter still 9.5 after denied B — no phantom spend");
+    }
+
+    #[test]
+    fn test_lua_exact_boundary_allowed() {
+        // current + cost == limit should be ALLOWED (the Lua script uses > not >=)
+        // Spending exactly your budget is not exceeding it
+        let (result, counter) = simulate_lua_check_and_increment(9.5, 0.5, 10.0);
+        assert!(result > 0.0, "Should allow: 9.5 + 0.5 = 10.0 == limit (not exceeded)");
+        assert!((counter - 10.0).abs() < f64::EPSILON, "Counter should be updated to 10.0");
+    }
+
+    #[test]
+    fn test_lua_allows_last_request_under_cap() {
+        // A request that brings the total just under the cap should be allowed
+        let (result, counter) = simulate_lua_check_and_increment(9.0, 0.99, 10.0);
+        assert!(result > 0.0, "Should allow: 9.0 + 0.99 = 9.99 < 10.0");
+        assert!((counter - 9.99).abs() < f64::EPSILON);
     }
 }

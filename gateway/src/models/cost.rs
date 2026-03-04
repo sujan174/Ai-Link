@@ -198,9 +198,90 @@ pub fn get_model_pricing_fallback(provider: &str, model: &str) -> ModelPricing {
             output_cost_per_m: d("2.19"),
         },
 
-        _ => ModelPricing {
-            input_cost_per_m: zero,
-            output_cost_per_m: zero,
+        // ── Groq (hosted inference) ──────────────────────────────
+        ("groq", m) if m.contains("llama-3.1-70b") => ModelPricing {
+            input_cost_per_m: d("0.59"),
+            output_cost_per_m: d("0.79"),
+        },
+        ("groq", m) if m.contains("llama-3.1-8b") => ModelPricing {
+            input_cost_per_m: d("0.05"),
+            output_cost_per_m: d("0.08"),
+        },
+        ("groq", m) if m.contains("mixtral-8x7b") => ModelPricing {
+            input_cost_per_m: d("0.24"),
+            output_cost_per_m: d("0.24"),
+        },
+        ("groq", m) if m.contains("gemma") => ModelPricing {
+            input_cost_per_m: d("0.15"),
+            output_cost_per_m: d("0.15"),
+        },
+
+        // ── Cohere ───────────────────────────────────────────────
+        ("cohere", m) if m.contains("command-r-plus") => ModelPricing {
+            input_cost_per_m: d("2.50"),
+            output_cost_per_m: d("10.00"),
+        },
+        ("cohere", m) if m.contains("command-r") => ModelPricing {
+            input_cost_per_m: d("0.15"),
+            output_cost_per_m: d("0.60"),
+        },
+
+        // ── Together AI ──────────────────────────────────────────
+        ("together", m) if m.contains("llama-3.1-405b") => ModelPricing {
+            input_cost_per_m: d("3.50"),
+            output_cost_per_m: d("3.50"),
+        },
+        ("together", m) if m.contains("llama-3.1-70b") => ModelPricing {
+            input_cost_per_m: d("0.88"),
+            output_cost_per_m: d("0.88"),
+        },
+        ("together", m) if m.contains("llama-3.1-8b") => ModelPricing {
+            input_cost_per_m: d("0.18"),
+            output_cost_per_m: d("0.18"),
+        },
+
+        // ── Bedrock (facade — map to underlying model pricing) ───
+        // Bedrock models use provider-prefixed names like anthropic.claude-*
+        ("bedrock", m) if m.contains("claude-3-5-sonnet") || m.contains("claude-3-7-sonnet") => ModelPricing {
+            input_cost_per_m: d("3.00"),
+            output_cost_per_m: d("15.00"),
+        },
+        ("bedrock", m) if m.contains("claude-3-5-haiku") => ModelPricing {
+            input_cost_per_m: d("0.80"),
+            output_cost_per_m: d("4.00"),
+        },
+        ("bedrock", m) if m.contains("claude-3-opus") => ModelPricing {
+            input_cost_per_m: d("15.00"),
+            output_cost_per_m: d("75.00"),
+        },
+        ("bedrock", m) if m.contains("claude-3-haiku") => ModelPricing {
+            input_cost_per_m: d("0.25"),
+            output_cost_per_m: d("1.25"),
+        },
+        ("bedrock", m) if m.contains("llama") => ModelPricing {
+            input_cost_per_m: d("0.88"),
+            output_cost_per_m: d("0.88"),
+        },
+        ("bedrock", m) if m.contains("titan") => ModelPricing {
+            input_cost_per_m: d("0.80"),
+            output_cost_per_m: d("1.00"),
+        },
+
+        // 5A-2 FIX: Unknown models get a non-zero default to prevent silent
+        // under-counting. $1.00/$3.00 per 1M is a conservative mid-range estimate.
+        // Operators should add proper pricing via the DB pricing cache; this
+        // warning log alerts them to missing model entries.
+        _ => {
+            tracing::warn!(
+                provider = %provider,
+                model = %model,
+                "Unknown model — using fallback pricing ($1.00/$3.00 per 1M). \
+                 Add this model to the pricing table to avoid inaccurate billing."
+            );
+            ModelPricing {
+                input_cost_per_m: d("1.00"),
+                output_cost_per_m: d("3.00"),
+            }
         },
     }
 }
@@ -340,10 +421,11 @@ mod tests {
     // ── Unknown model → zero ─────────────────────────────────
 
     #[test]
-    fn test_unknown_model_zero() {
+    fn test_unknown_model_nonzero_fallback() {
+        // 5A-2: Unknown models should get a non-zero fallback (not $0.00)
         let p = get_model_pricing_fallback("custom", "my-fine-tune");
-        assert_eq!(p.input_cost_per_m, Decimal::ZERO);
-        assert_eq!(p.output_cost_per_m, Decimal::ZERO);
+        assert_eq!(p.input_cost_per_m, Decimal::from_str("1.00").unwrap());
+        assert_eq!(p.output_cost_per_m, Decimal::from_str("3.00").unwrap());
     }
 
     // ── extract_usage ────────────────────────────────────────

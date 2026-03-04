@@ -1,5 +1,8 @@
 use dashmap::DashMap;
+use redis::aio::ConnectionManager;
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -28,7 +31,7 @@ pub struct CircuitBreakerConfig {
     /// Master toggle — when false, all health checks are skipped (simple round-robin).
     #[serde(default = "default_cb_enabled")]
     pub enabled: bool,
-    /// Number of consecutive failures before the circuit opens.
+    /// Number of consecutive failures before the circuit opens (count-based mode).
     #[serde(default = "default_failure_threshold")]
     pub failure_threshold: u32,
     /// Seconds to wait before trying an unhealthy upstream again (half-open state).
@@ -37,6 +40,15 @@ pub struct CircuitBreakerConfig {
     /// Max requests to allow through in half-open state before deciding recovery.
     #[serde(default = "default_half_open_max")]
     pub half_open_max_requests: u32,
+    /// Optional: failure rate threshold (0.0–1.0). When set, the circuit opens when
+    /// the failure rate exceeds this threshold over the last `min_sample_size` requests.
+    /// Takes precedence over `failure_threshold` when both are set.
+    #[serde(default)]
+    pub failure_rate_threshold: Option<f64>,
+    /// Minimum number of requests before rate-based tripping is active.
+    /// Prevents tripping on 1-of-1 failures. Default: 10 when rate mode is enabled.
+    #[serde(default)]
+    pub min_sample_size: Option<u32>,
 }
 
 fn default_cb_enabled() -> bool { true }
@@ -51,6 +63,8 @@ impl Default for CircuitBreakerConfig {
             failure_threshold: default_failure_threshold(),
             recovery_cooldown_secs: default_recovery_secs(),
             half_open_max_requests: default_half_open_max(),
+            failure_rate_threshold: None,
+            min_sample_size: None,
         }
     }
 }
@@ -65,6 +79,10 @@ struct UpstreamHealth {
     /// Number of requests allowed through in the current half-open window.
     /// Reset when the circuit closes (mark_healthy) or re-opens (mark_failed).
     half_open_attempts: u32,
+    /// Rolling window for rate-based circuit breaking.
+    /// Stores recent request outcomes: true = success, false = failure.
+    /// Bounded to max(min_sample_size, 100) entries.
+    outcome_window: std::collections::VecDeque<bool>,
 }
 
 /// In-memory loadbalancer with circuit-breaker health tracking.
@@ -76,15 +94,39 @@ pub struct LoadBalancer {
     counters: DashMap<String, Arc<AtomicU64>>,
     /// In-flight request count per upstream URL (for least-busy routing)
     in_flight: DashMap<String, AtomicU64>,
+    /// Optional Redis connection for distributed circuit-breaker state.
+    /// When set, failure counts are shared across all gateway instances.
+    redis: Option<ConnectionManager>,
 }
 
 impl LoadBalancer {
+    /// Create a new LoadBalancer without Redis (local-only circuit breaking).
+    /// Used in tests and single-instance deployments.
     pub fn new() -> Self {
         Self {
             health: DashMap::new(),
             counters: DashMap::new(),
             in_flight: DashMap::new(),
+            redis: None,
         }
+    }
+
+    /// Create a new LoadBalancer with Redis-backed distributed circuit breaking.
+    pub fn new_with_redis(redis: ConnectionManager) -> Self {
+        Self {
+            health: DashMap::new(),
+            counters: DashMap::new(),
+            in_flight: DashMap::new(),
+            redis: Some(redis),
+        }
+    }
+
+    /// Compute a short, stable Redis key for a (token, upstream_url) pair.
+    fn cb_redis_key(token_id: &str, url: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(url.as_bytes());
+        let url_hash = &hex::encode(hasher.finalize())[..12];
+        format!("cb:{}:{}:failures", token_id, url_hash)
     }
 
     /// Select the best upstream target using weighted round-robin within priority tiers.
@@ -179,17 +221,50 @@ impl LoadBalancer {
 
     /// Mark an upstream as failed. Opens the circuit once `config.failure_threshold` failures accumulate.
     /// No-op when CB is disabled (`config.enabled == false`).
+    ///
+    /// When Redis is configured, fires an async INCR on a shared failure counter
+    /// so all gateway instances share the same failure count.
     pub fn mark_failed(&self, token_id: &str, url: &str, config: &CircuitBreakerConfig) {
         if !config.enabled {
             return;
         }
+
+        // ── Local state update (L1 cache) ──
         if let Some(mut healths) = self.health.get_mut(token_id) {
             if let Some(h) = healths.iter_mut().find(|h| h.url == url) {
                 h.failure_count += 1;
                 h.last_failure = Some(Instant::now());
-                if h.failure_count >= config.failure_threshold {
+
+                // Push failure to rolling window
+                let window_cap = config.min_sample_size.unwrap_or(100).max(10) as usize;
+                while h.outcome_window.len() >= window_cap {
+                    h.outcome_window.pop_front();
+                }
+                h.outcome_window.push_back(false); // false = failure
+
+                // Rate-based tripping (takes precedence when configured)
+                if let Some(rate_threshold) = config.failure_rate_threshold {
+                    let min_samples = config.min_sample_size.unwrap_or(10) as usize;
+                    if h.outcome_window.len() >= min_samples {
+                        let failures = h.outcome_window.iter().filter(|&&ok| !ok).count();
+                        let rate = failures as f64 / h.outcome_window.len() as f64;
+                        if rate >= rate_threshold && h.is_healthy {
+                            h.is_healthy = false;
+                            h.half_open_attempts = 0;
+                            tracing::warn!(
+                                token_id = token_id,
+                                url = url,
+                                failure_rate = %format!("{:.1}%", rate * 100.0),
+                                threshold = %format!("{:.1}%", rate_threshold * 100.0),
+                                window_size = h.outcome_window.len(),
+                                "circuit breaker OPENED (rate-based): failure rate exceeded threshold"
+                            );
+                        }
+                    }
+                } else if h.failure_count >= config.failure_threshold {
+                    // Count-based tripping (original logic)
                     h.is_healthy = false;
-                    h.half_open_attempts = 0; // Reset for next half-open window
+                    h.half_open_attempts = 0;
                     tracing::warn!(
                         token_id = token_id,
                         url = url,
@@ -200,9 +275,81 @@ impl LoadBalancer {
                 }
             }
         }
+
+        // ── Redis distributed state (fire-and-forget) ──
+        if let Some(redis) = &self.redis {
+            let mut conn = redis.clone();
+            let key = Self::cb_redis_key(token_id, url);
+            let ttl = config.recovery_cooldown_secs.max(1) * 3;
+            let threshold = config.failure_threshold;
+            let token_id_owned = token_id.to_string();
+            let url_owned = url.to_string();
+
+            tokio::spawn(async move {
+                // Atomic INCR + conditional EXPIRE
+                let result: Result<u64, _> = redis::cmd("INCR")
+                    .arg(&key)
+                    .query_async(&mut conn)
+                    .await;
+
+                match result {
+                    Ok(count) => {
+                        // Set TTL on first increment or refresh it
+                        let _: Result<(), _> = conn.expire(&key, ttl as i64).await;
+
+                        if count >= threshold as u64 {
+                            tracing::warn!(
+                                token_id = %token_id_owned,
+                                url = %url_owned,
+                                distributed_failures = count,
+                                threshold = threshold,
+                                "circuit breaker OPENED (distributed): Redis failure count reached threshold"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "CB Redis INCR failed — falling back to local-only circuit breaking"
+                        );
+                    }
+                }
+            });
+        }
+    }
+
+    /// Query Redis for the distributed failure count.
+    /// Returns the Redis count if available, or the local count as fallback.
+    pub async fn get_distributed_failure_count(
+        &self,
+        token_id: &str,
+        url: &str,
+    ) -> u32 {
+        if let Some(redis) = &self.redis {
+            let mut conn = redis.clone();
+            let key = Self::cb_redis_key(token_id, url);
+            match conn.get::<_, Option<u64>>(&key).await {
+                Ok(Some(count)) => return count as u32,
+                Ok(None) => return 0,
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "CB Redis GET failed — using local failure count"
+                    );
+                }
+            }
+        }
+        // Fallback: local count
+        self.health
+            .get(token_id)
+            .and_then(|healths| {
+                healths.iter().find(|h| h.url == url).map(|h| h.failure_count)
+            })
+            .unwrap_or(0)
     }
 
     /// Mark an upstream as healthy. Resets the circuit breaker.
+    /// Also clears the distributed Redis failure counter if present.
     pub fn mark_healthy(&self, token_id: &str, url: &str) {
         if let Some(mut healths) = self.health.get_mut(token_id) {
             if let Some(h) = healths.iter_mut().find(|h| h.url == url) {
@@ -217,6 +364,33 @@ impl LoadBalancer {
                 h.failure_count = 0;
                 h.last_failure = None;
                 h.half_open_attempts = 0;
+                h.outcome_window.clear();
+            }
+        }
+
+        // Clear distributed failure counter on recovery
+        if let Some(redis) = &self.redis {
+            let mut conn = redis.clone();
+            let key = Self::cb_redis_key(token_id, url);
+            tokio::spawn(async move {
+                let _: Result<(), _> = conn.del(&key).await;
+            });
+        }
+    }
+
+    /// Record a successful request outcome (for rate-based circuit breaking).
+    /// Call this after a successful upstream response to populate the rolling window.
+    pub fn record_success(&self, token_id: &str, url: &str, config: &CircuitBreakerConfig) {
+        if !config.enabled || config.failure_rate_threshold.is_none() {
+            return; // Only track when rate-based mode is active
+        }
+        if let Some(mut healths) = self.health.get_mut(token_id) {
+            if let Some(h) = healths.iter_mut().find(|h| h.url == url) {
+                let window_cap = config.min_sample_size.unwrap_or(100).max(10) as usize;
+                while h.outcome_window.len() >= window_cap {
+                    h.outcome_window.pop_front();
+                }
+                h.outcome_window.push_back(true); // true = success
             }
         }
     }
@@ -233,6 +407,7 @@ impl LoadBalancer {
                     failure_count: 0,
                     last_failure: None,
                     half_open_attempts: 0,
+                    outcome_window: std::collections::VecDeque::new(),
                 })
                 .collect()
         });
@@ -700,9 +875,10 @@ mod tests {
         let lb = LoadBalancer::new();
         let config = CircuitBreakerConfig {
             enabled: true,
-            failure_threshold: 5,  // Higher than default 3
+            failure_threshold: 5,
             recovery_cooldown_secs: 30,
             half_open_max_requests: 1,
+            ..Default::default()
         };
         let upstreams = vec![
             UpstreamTarget { url: "https://primary.com".into(), credential_id: None, weight: 100, priority: 1 },
@@ -785,6 +961,7 @@ mod tests {
             failure_threshold: 10,
             recovery_cooldown_secs: 120,
             half_open_max_requests: 3,
+            ..Default::default()
         };
         let json = serde_json::to_value(&config).unwrap();
         let deserialized: CircuitBreakerConfig = serde_json::from_value(json).unwrap();
@@ -814,6 +991,7 @@ mod tests {
             failure_threshold: 3,
             recovery_cooldown_secs: 60,
             half_open_max_requests: 1,
+            ..Default::default()
         };
         let upstreams = vec![
             UpstreamTarget { url: "https://api.openai.com".into(), credential_id: None, weight: 100, priority: 1 },
@@ -844,6 +1022,7 @@ mod tests {
             failure_threshold: 2,
             recovery_cooldown_secs: 3600,
             half_open_max_requests: 1,
+            ..Default::default()
         };
         let upstreams = vec![
             UpstreamTarget { url: "https://a.com".into(), credential_id: None, weight: 100, priority: 1 },
@@ -867,6 +1046,7 @@ mod tests {
             failure_threshold: 1,
             recovery_cooldown_secs: 0,
             half_open_max_requests: 1,
+            ..Default::default()
         };
         let upstreams = vec![
             UpstreamTarget { url: "https://primary.com".into(), credential_id: None, weight: 100, priority: 1 },
@@ -927,6 +1107,50 @@ mod tests {
         assert_eq!(lb.get_in_flight("https://api.openai.com"), 2);
         assert_eq!(lb.get_in_flight("https://api.anthropic.com"), 1);
         assert_eq!(lb.get_in_flight("https://unknown.com"), 0);
+    }
+
+    // ── Issue 3: Redis Circuit Breaker ──
+
+    #[test]
+    fn test_cb_redis_key_deterministic() {
+        let key1 = LoadBalancer::cb_redis_key("tok_abc", "https://api.openai.com/v1");
+        let key2 = LoadBalancer::cb_redis_key("tok_abc", "https://api.openai.com/v1");
+        assert_eq!(key1, key2, "same inputs must produce same key");
+        assert!(key1.starts_with("cb:tok_abc:"), "key must include token_id");
+        assert!(key1.ends_with(":failures"), "key must end with :failures");
+    }
+
+    #[test]
+    fn test_cb_redis_key_different_urls() {
+        let key1 = LoadBalancer::cb_redis_key("tok_abc", "https://api.openai.com/v1");
+        let key2 = LoadBalancer::cb_redis_key("tok_abc", "https://api.anthropic.com/v1");
+        assert_ne!(key1, key2, "different URLs must produce different keys");
+    }
+
+    #[test]
+    fn test_cb_redis_key_different_tokens() {
+        let key1 = LoadBalancer::cb_redis_key("tok_a", "https://api.openai.com/v1");
+        let key2 = LoadBalancer::cb_redis_key("tok_b", "https://api.openai.com/v1");
+        assert_ne!(key1, key2, "different tokens must produce different keys");
+    }
+
+    #[test]
+    fn test_local_only_lb_mark_failed_works() {
+        // LoadBalancer::new() creates local-only (no Redis) — must not panic
+        let lb = LoadBalancer::new();
+        let upstreams = make_upstreams(1);
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 2,
+            recovery_cooldown_secs: 30,
+            half_open_max_requests: 1,
+            ..Default::default()
+        };
+        lb.ensure_health("tok", &upstreams);
+        // Should not panic even without Redis
+        lb.mark_failed("tok", &upstreams[0].url, &config);
+        lb.mark_failed("tok", &upstreams[0].url, &config);
+        lb.mark_healthy("tok", &upstreams[0].url);
     }
 }
 

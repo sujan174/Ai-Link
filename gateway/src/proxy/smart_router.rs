@@ -223,16 +223,12 @@ fn select_weighted_random(candidates: Vec<&RouteTarget>) -> Option<RouteDecision
         });
     }
 
-    // Default weight for RouteTarget = 100 if not specified in pool config.
-    // Since RouteTarget doesn't have a weight field, we use equal weights
-    // and add randomness via a simple hash-based approach.
-    let total = candidates.len() as u64;
-    // Use a fast pseudo-random (timestamp-based) rather than pulling in rand crate
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    let idx = (seed % total) as usize;
+    // FIX 4F-1: Use rand::thread_rng() instead of SystemTime::now().as_nanos().
+    // The nanosecond approach was biased (modular bias) and predictable
+    // (concurrent requests got the same selection).
+    use rand::Rng;
+    let total = candidates.len();
+    let idx = rand::thread_rng().gen_range(0..total);
     let target = candidates[idx];
 
     Some(RouteDecision {

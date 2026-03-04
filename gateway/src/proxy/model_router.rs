@@ -655,20 +655,23 @@ fn openai_to_gemini_request(body: &Value) -> Value {
     // Messages → contents (with full multimodal support)
     if let Some(messages) = body.get("messages").and_then(|m| m.as_array()) {
         let mut contents = Vec::new();
-        let mut system_instruction = None;
+        // FIX 4D-1: Collect ALL system messages instead of keeping only the last.
+        // Previously `system_instruction = Some(...)` overwrote on each system message,
+        // silently dropping earlier ones (e.g. security guardrails in the first message).
+        let mut system_texts: Vec<String> = Vec::new();
 
         for msg in messages {
             let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
 
             match role {
                 "system" => {
-                    // Gemini system instruction — always text
+                    // Gemini system instruction — always text; collect all
                     let text = msg.get("content")
                         .and_then(|c| c.as_str())
                         .unwrap_or("");
-                    system_instruction = Some(json!({
-                        "parts": [{"text": text}]
-                    }));
+                    if !text.is_empty() {
+                        system_texts.push(text.to_string());
+                    }
                 }
                 "user" => {
                     let parts = translate_content_to_gemini_parts(msg.get("content"));
@@ -715,8 +718,11 @@ fn openai_to_gemini_request(body: &Value) -> Value {
         }
 
         result.insert("contents".into(), json!(contents));
-        if let Some(si) = system_instruction {
-            result.insert("systemInstruction".into(), si);
+        if !system_texts.is_empty() {
+            let joined = system_texts.join("\n");
+            result.insert("systemInstruction".into(), json!({
+                "parts": [{"text": joined}]
+            }));
         }
     }
 
@@ -953,6 +959,11 @@ pub fn translate_anthropic_sse_to_openai(body: &[u8], model: &str) -> Vec<u8> {
     let mut output = String::new();
     let mut sent_role = false;
 
+    // FIX #3: Track usage tokens from Anthropic streaming events.
+    // Anthropic sends input_tokens in message_start and output_tokens in message_delta.
+    let mut input_tokens: Option<u64> = None;
+    let mut output_tokens: Option<u64> = None;
+
     // Anthropic SSE has two relevant line types:
     // `event: <type>` followed by `data: <json>`
     // We track current event type and process data lines.
@@ -1007,6 +1018,13 @@ pub fn translate_anthropic_sse_to_openai(body: &[u8], model: &str) -> Vec<u8> {
                     ));
                     sent_role = true;
                 }
+                // FIX #3: Extract input_tokens from message_start.
+                // Anthropic format: {"type":"message_start","message":{"usage":{"input_tokens":N}}}
+                if let Some(usage) = json.get("message").and_then(|m| m.get("usage")) {
+                    if let Some(inp) = usage.get("input_tokens").and_then(|t| t.as_u64()) {
+                        input_tokens = Some(inp);
+                    }
+                }
             }
             "content_block_delta" => {
                 if let Some(delta) = json.get("delta") {
@@ -1050,6 +1068,14 @@ pub fn translate_anthropic_sse_to_openai(body: &[u8], model: &str) -> Vec<u8> {
                 }
             }
             "message_delta" => {
+                // FIX #3: Extract output_tokens from message_delta.
+                // Anthropic format: {"type":"message_delta","usage":{"output_tokens":N}}
+                if let Some(usage) = json.get("usage") {
+                    if let Some(out) = usage.get("output_tokens").and_then(|t| t.as_u64()) {
+                        output_tokens = Some(out);
+                    }
+                }
+
                 // Map stop_reason → finish_reason
                 let stop = json.get("delta")
                     .and_then(|d| d.get("stop_reason"))
@@ -1062,11 +1088,27 @@ pub fn translate_anthropic_sse_to_openai(body: &[u8], model: &str) -> Vec<u8> {
                     _ => None,
                 };
                 if let Some(fr) = finish {
-                    output.push_str(&openai_sse_chunk(
-                        &chunk_id, model,
-                        json!({}),
-                        Some(fr),
-                    ));
+                    // FIX #3: Emit usage in the final chunk (matches OpenAI stream_options behavior).
+                    // OpenAI includes usage in the last chunk when stream_options.include_usage is set.
+                    let prompt = input_tokens.unwrap_or(0);
+                    let completion = output_tokens.unwrap_or(0);
+                    let chunk = json!({
+                        "id": chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": chrono::Utc::now().timestamp(),
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": fr,
+                        }],
+                        "usage": {
+                            "prompt_tokens": prompt,
+                            "completion_tokens": completion,
+                            "total_tokens": prompt + completion,
+                        }
+                    });
+                    output.push_str(&format!("data: {}\n\n", serde_json::to_string(&chunk).unwrap_or_default()));
                 }
             }
             "message_stop" => {
@@ -1086,6 +1128,11 @@ pub fn translate_gemini_sse_to_openai(body: &[u8], model: &str) -> Vec<u8> {
     let chunk_id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
     let mut output = String::new();
     let mut sent_role = false;
+
+    // Track usage from usageMetadata (Gemini includes this in each chunk;
+    // we keep the latest values and emit them in the final chunk).
+    let mut prompt_tokens: Option<u64> = None;
+    let mut completion_tokens: Option<u64> = None;
 
     for line in body_str.lines() {
         let line = line.trim();
@@ -1119,6 +1166,16 @@ pub fn translate_gemini_sse_to_openai(body: &[u8], model: &str) -> Vec<u8> {
                 None,
             ));
             sent_role = true;
+        }
+
+        // Extract usage from usageMetadata (present in each chunk, use latest)
+        if let Some(usage_meta) = json.get("usageMetadata") {
+            if let Some(pt) = usage_meta.get("promptTokenCount").and_then(|v| v.as_u64()) {
+                prompt_tokens = Some(pt);
+            }
+            if let Some(ct) = usage_meta.get("candidatesTokenCount").and_then(|v| v.as_u64()) {
+                completion_tokens = Some(ct);
+            }
         }
 
         // Extract text from candidates[0].content.parts
@@ -1158,7 +1215,7 @@ pub fn translate_gemini_sse_to_openai(body: &[u8], model: &str) -> Vec<u8> {
                     }
                 }
 
-                // Check finish reason
+                // Check finish reason — emit usage in the final chunk
                 let finish = match candidate.get("finishReason").and_then(|f| f.as_str()) {
                     Some("STOP") => Some("stop"),
                     Some("MAX_TOKENS") => Some("length"),
@@ -1166,11 +1223,25 @@ pub fn translate_gemini_sse_to_openai(body: &[u8], model: &str) -> Vec<u8> {
                     _ => None,
                 };
                 if let Some(fr) = finish {
-                    output.push_str(&openai_sse_chunk(
-                        &chunk_id, model,
-                        json!({}),
-                        Some(fr),
-                    ));
+                    let pt = prompt_tokens.unwrap_or(0);
+                    let ct = completion_tokens.unwrap_or(0);
+                    let chunk = json!({
+                        "id": chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": chrono::Utc::now().timestamp(),
+                        "model": model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": fr,
+                        }],
+                        "usage": {
+                            "prompt_tokens": pt,
+                            "completion_tokens": ct,
+                            "total_tokens": pt + ct,
+                        }
+                    });
+                    output.push_str(&format!("data: {}\n\n", serde_json::to_string(&chunk).unwrap_or_default()));
                 }
             }
         }

@@ -481,12 +481,23 @@ pub fn check_content(body: &Value, action: &Action) -> GuardrailResult {
         }
     }
 
-    // 11. Topic denylist
+    // 11. Topic denylist — word-boundary aware (SEC 3A-4 FIX)
+    // Previously used .contains() which matched subwords (e.g. "sex" matched "context").
+    // Now uses \bterm\b to prevent false positives on common subword occurrences.
     for topic in topic_denylist {
-        let topic_lower = topic.to_lowercase();
-        if text.to_lowercase().contains(&topic_lower) {
-            matched_patterns.push(format!("topic_deny:{}", topic));
-            risk_score = (risk_score + 0.6).min(1.0);
+        // regex::escape prevents denylist entries from acting as regex patterns
+        let pattern = format!(r"(?i)\b{}\b", regex::escape(topic));
+        if let Ok(re) = regex::Regex::new(&pattern) {
+            if re.is_match(&text) {
+                matched_patterns.push(format!("topic_deny:{}", topic));
+                risk_score = (risk_score + 0.6).min(1.0);
+            }
+        } else {
+            // Fallback to contains() if pattern is somehow un-escapeable
+            if text.to_lowercase().contains(&topic.to_lowercase()) {
+                matched_patterns.push(format!("topic_deny:{}", topic));
+                risk_score = (risk_score + 0.6).min(1.0);
+            }
         }
     }
 
@@ -503,15 +514,43 @@ pub fn check_content(body: &Value, action: &Action) -> GuardrailResult {
     }
 
     // 13. Custom patterns
-    // SEC: compile with size limit to prevent ReDoS from policy-authored patterns
-    for (i, pattern) in custom_patterns.iter().enumerate() {
-        let compiled = regex::RegexBuilder::new(pattern)
-            .size_limit(1_000_000)
-            .build();
-        if let Ok(re) = compiled {
-            if re.is_match(&text) {
-                matched_patterns.push(format!("custom_{}", i));
-                risk_score = (risk_score + 0.6).min(1.0);
+    // SEC: compile with size limit to prevent ReDoS from policy-authored patterns.
+    // Cached per-thread to avoid recompilation on every request (same pattern as engine.rs).
+    {
+        use std::cell::RefCell;
+        use std::collections::HashMap;
+
+        thread_local! {
+            /// Thread-local cache: pattern string → compiled Regex (None = invalid/too-complex).
+            /// Bounded at 256 entries to prevent unbounded memory growth from malicious policies.
+            static GUARDRAIL_REGEX_CACHE: RefCell<HashMap<String, Option<regex::Regex>>> =
+                RefCell::new(HashMap::with_capacity(64));
+        }
+
+        fn compile_cached_guardrail(pat: &str) -> Option<regex::Regex> {
+            GUARDRAIL_REGEX_CACHE.with(|cache| {
+                let mut cache = cache.borrow_mut();
+                if let Some(cached) = cache.get(pat) {
+                    return cached.clone();
+                }
+                let compiled = regex::RegexBuilder::new(pat)
+                    .size_limit(1_000_000)
+                    .build()
+                    .ok();
+                if cache.len() >= 256 {
+                    cache.clear();
+                }
+                cache.insert(pat.to_string(), compiled.clone());
+                compiled
+            })
+        }
+
+        for (i, pattern) in custom_patterns.iter().enumerate() {
+            if let Some(re) = compile_cached_guardrail(pattern) {
+                if re.is_match(&text) {
+                    matched_patterns.push(format!("custom_{}", i));
+                    risk_score = (risk_score + 0.6).min(1.0);
+                }
             }
         }
     }

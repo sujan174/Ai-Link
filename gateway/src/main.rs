@@ -125,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
             let upstream_client = proxy::upstream::UpstreamClient::new();
             let notifier = notification::slack::SlackNotifier::new(cfg.slack_webhook_url.clone());
 
+            let lb_redis = cache.redis();
             let state = Arc::new(AppState {
                 db,
                 vault,
@@ -133,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
                 notifier,
                 webhook: notification::webhook::WebhookNotifier::new(),
                 config: cfg,
-                lb: proxy::loadbalancer::LoadBalancer::new(),
+                lb: proxy::loadbalancer::LoadBalancer::new_with_redis(lb_redis),
                 pricing: models::pricing_cache::PricingCache::new(),
                 latency: models::latency_cache::LatencyCache::new(),
                 payload_store: Arc::new(PayloadStore::from_env().unwrap_or(PayloadStore::Postgres)),
@@ -160,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
              let upstream_client = proxy::upstream::UpstreamClient::new();
              let notifier = notification::slack::SlackNotifier::new(cfg.slack_webhook_url.clone());
 
+             let lb_redis = cache.redis();
              let state = Arc::new(AppState {
                  db,
                  vault,
@@ -168,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
                  notifier,
                  webhook: notification::webhook::WebhookNotifier::new(),
                  config: cfg,
-                 lb: proxy::loadbalancer::LoadBalancer::new(),
+                 lb: proxy::loadbalancer::LoadBalancer::new_with_redis(lb_redis),
                  pricing: models::pricing_cache::PricingCache::new(),
                  latency: models::latency_cache::LatencyCache::new(),
                  payload_store: Arc::new(PayloadStore::from_env().unwrap_or(PayloadStore::Postgres)),
@@ -218,6 +220,7 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
             .context("invalid PAYLOAD_STORE_URL")?
     );
 
+    let lb_redis = cache.redis();
     let state = Arc::new(AppState {
         db,
         vault,
@@ -226,7 +229,7 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
         notifier,
         webhook: notification::webhook::WebhookNotifier::new(),
         config: cfg,
-        lb: proxy::loadbalancer::LoadBalancer::new(),
+        lb: proxy::loadbalancer::LoadBalancer::new_with_redis(lb_redis),
         pricing: pricing.clone(),
         latency: latency.clone(),
         payload_store,
@@ -656,7 +659,10 @@ async fn handle_token_command(
             }
         }
         cli::TokenCommands::Revoke { token_id } => {
-            let revoked = state.db.revoke_token(&token_id).await?;
+            // Look up token to get its project_id for the scoped revoke query
+            let token_row = state.db.get_token(&token_id).await?
+                .ok_or_else(|| anyhow::anyhow!("Token not found: {}", token_id))?;
+            let revoked = state.db.revoke_token(&token_id, token_row.project_id).await?;
             if revoked {
                 println!("Token revoked.");
             } else {

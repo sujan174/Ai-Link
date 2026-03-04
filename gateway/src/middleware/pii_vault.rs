@@ -43,7 +43,11 @@ pub fn generate_token(project_id: Uuid, pii_type: &str, plaintext: &str) -> Stri
     hasher.update(pii_type.as_bytes());
     hasher.update(plaintext.as_bytes());
     let hash = hex::encode(hasher.finalize());
-    format!("tok_pii_{}_{}", pii_type, &hash[..16])
+    // SEC 3B-1 FIX: Use 32 hex chars (128-bit) instead of 16 (64-bit) to prevent
+    // birthday collisions. At 64-bit, collision probability is non-negligible at ~300M
+    // tokens/project/type. At 128-bit, the birthday bound is ~10^18 tokens.
+    format!("tok_pii_{}_{}", pii_type, &hash[..32])
+
 }
 
 /// A PII match found during JSON tree walking.
@@ -341,7 +345,8 @@ mod tests {
         let token = generate_token(project_id, "email", "test@example.com");
         assert!(token.starts_with("tok_pii_email_"));
         let suffix = token.strip_prefix("tok_pii_email_").unwrap();
-        assert_eq!(suffix.len(), 16);
+        // 3B-1 FIX: 32 hex chars (128-bit), was 16 (64-bit)
+        assert_eq!(suffix.len(), 32);
         assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
     }
 

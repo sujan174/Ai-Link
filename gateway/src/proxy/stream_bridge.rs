@@ -1,9 +1,12 @@
-//! Stream bridge: zero-copy SSE passthrough with background accumulation.
+//! Stream bridge: SSE passthrough with background accumulation.
 //!
 //! Provides [`tee_sse_stream`] which takes a reqwest streaming response and:
-//! 1. Forwards raw SSE bytes to the client immediately (zero-copy)
-//! 2. Feeds each line into a [`StreamAccumulator`] in a background task
-//! 3. Resolves a [`StreamResult`] when the stream completes (for audit/cost)
+//! 1. Applies PII redaction to each SSE data payload
+//! 2. Forwards (redacted) SSE bytes to the client immediately
+//! 3. Feeds each line into a [`StreamAccumulator`] in a background task
+//! 4. Resolves a [`StreamResult`] when the stream completes (for audit/cost)
+//!
+//! Uses `tokio::sync::Notify` for instant stream-completion signaling.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -11,7 +14,7 @@ use std::time::Instant;
 use axum::body::Body;
 use bytes::Bytes;
 use futures::StreamExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::proxy::stream::{StreamAccumulator, StreamResult};
 
@@ -34,9 +37,11 @@ pub type StreamResultSlot = Arc<Mutex<Option<StreamResult>>>;
 /// // Later (in a spawned task), read the result for audit/cost
 /// let result = wait_for_stream_result(&result_slot, Duration::from_secs(300)).await;
 /// ```
-pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body, StreamResultSlot) {
+pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body, StreamResultSlot, Arc<Notify>) {
     let result_slot: StreamResultSlot = Arc::new(Mutex::new(None));
     let slot_for_bg = result_slot.clone();
+    let notify = Arc::new(Notify::new());
+    let notify_bg = notify.clone();
 
     let accumulator = Arc::new(Mutex::new(StreamAccumulator::new_with_start(start)));
     let mut byte_stream = upstream_resp.bytes_stream();
@@ -45,6 +50,10 @@ pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body
 
     tokio::spawn(async move {
         let mut first = true;
+        // 5A-1 FIX: Track whether the client has disconnected. When true, we
+        // continue reading the upstream to capture the usage/cost data from
+        // the final SSE chunk, but skip sending bytes to the (gone) client.
+        let mut client_gone = false;
         // B3-2 FIX: Buffer for incomplete UTF-8 sequences split across TCP chunks.
         // SSE is text-based, so a multi-byte char can be sliced at a chunk boundary.
         // We hold trailing incomplete bytes and prepend them to the next chunk.
@@ -61,31 +70,38 @@ pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body
                         acc_guard.set_ttft_ms(start.elapsed().as_millis() as u64);
                     }
 
-                    // Combine residual bytes from previous chunk with current chunk
-                    let combined = if utf8_residual.is_empty() {
-                        bytes.to_vec()
+                    // FIX #1: Avoid unnecessary allocation when no residual.
+                    // When utf8_residual is empty, borrow the bytes directly
+                    // instead of copying with to_vec().
+                    let (combined_owned, combined_ref): (Vec<u8>, &[u8]) = if utf8_residual.is_empty() {
+                        (Vec::new(), &bytes[..])
                     } else {
                         let mut buf = std::mem::take(&mut utf8_residual);
                         buf.extend_from_slice(&bytes);
-                        buf
+                        let ptr = buf.as_ptr();
+                        let len = buf.len();
+                        // SAFETY: combined_ref borrows from combined_owned which
+                        // we keep alive for the duration of this scope.
+                        (buf, unsafe { std::slice::from_raw_parts(ptr, len) })
                     };
 
                     // Find the longest valid UTF-8 prefix; keep any trailing
                     // incomplete sequence for the next iteration.
-                    let (valid, leftover) = match std::str::from_utf8(&combined) {
-                        Ok(s) => (s.to_string(), &[][..]),
+                    let (valid_str, leftover) = match std::str::from_utf8(combined_ref) {
+                        Ok(s) => (s, &[][..]),
                         Err(e) => {
                             let valid_up_to = e.valid_up_to();
                             // SAFETY: we just validated up to this index
-                            let s = unsafe { std::str::from_utf8_unchecked(&combined[..valid_up_to]) };
-                            (s.to_string(), &combined[valid_up_to..])
+                            let s = unsafe { std::str::from_utf8_unchecked(&combined_ref[..valid_up_to]) };
+                            (s, &combined_ref[valid_up_to..])
                         }
                     };
                     utf8_residual = leftover.to_vec();
+                    let _ = &combined_owned; // keep alive until after leftover is copied
 
                     // Feed each SSE line to the accumulator
                     let mut done = false;
-                    for line in valid.lines() {
+                    for line in valid_str.lines() {
                         if acc_guard.push_sse_line(line) {
                             done = true;
                         }
@@ -98,19 +114,44 @@ pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body
                             let finished_acc = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
                             *slot_guard = Some(finished_acc.finish());
                         }
+                        notify_bg.notify_waiters();
                     }
                     drop(acc_guard);
 
-                    // Send to client; if client disconnected, break loop
-                    if tx.send(Ok(bytes)).await.is_err() {
-                        break;
+                    // STREAMING-PII FIX: Apply PII redaction to SSE data
+                    // lines before sending to the client. Non-data lines and
+                    // chunks with no PII pass through with zero extra alloc.
+                    let send_bytes = if !valid_str.is_empty() {
+                        let (redacted, did_redact) = crate::middleware::sanitize::redact_sse_chunk(valid_str);
+                        if did_redact {
+                            Bytes::from(redacted)
+                        } else {
+                            bytes
+                        }
+                    } else {
+                        bytes
+                    };
+
+                    // 5A-1 FIX: Send to client unless they've disconnected.
+                    // On disconnect, set client_gone and CONTINUE reading
+                    // upstream so we capture the final usage/cost chunk.
+                    if !client_gone {
+                        if tx.send(Ok(send_bytes)).await.is_err() {
+                            client_gone = true;
+                            tracing::debug!("Client disconnected — continuing upstream read for billing");
+                        }
+                    }
+                    // If [DONE] was already processed, we can stop early
+                    if client_gone {
+                        let slot_guard = slot_for_bg.lock().await;
+                        if slot_guard.is_some() {
+                            break; // Usage captured, safe to stop
+                        }
                     }
                 }
                 Err(e) => {
                     // Emit a structured SSE error event so SSE clients receive a
                     // parseable error payload instead of a silent TCP reset.
-                    // Format mirrors the OpenAI streaming error shape so SDK error
-                    // handlers can process it uniformly.
                     let sse_error = format!(
                         "data: {{\"error\":{{\"message\":\"upstream connection lost: {}\",\"type\":\"stream_error\"}}}}\n\n",
                         e.to_string().replace('"', "'")
@@ -127,6 +168,7 @@ pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body
                             *slot_guard = Some(partial.finish());
                         }
                     }
+                    notify_bg.notify_waiters();
 
                     let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string());
                     let _ = tx.send(Err(io_err)).await;
@@ -142,11 +184,12 @@ pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body
             let finished_acc = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
             *slot_guard = Some(finished_acc.finish());
         }
+        notify_bg.notify_waiters();
     });
 
     let mapped = tokio_stream::wrappers::ReceiverStream::new(rx);
     let body = Body::from_stream(mapped);
-    (body, result_slot)
+    (body, result_slot, notify)
 }
 
 /// FIX(X2/X3): Tee an SSE stream with per-chunk translation.
@@ -164,12 +207,14 @@ pub fn tee_translating_sse_stream<F>(
     start: Instant,
     model: String,
     translate_fn: F,
-) -> (Body, StreamResultSlot)
+) -> (Body, StreamResultSlot, Arc<Notify>)
 where
     F: Fn(&[u8], &str) -> Vec<u8> + Send + 'static,
 {
     let result_slot: StreamResultSlot = Arc::new(Mutex::new(None));
     let slot_for_bg = result_slot.clone();
+    let notify = Arc::new(Notify::new());
+    let notify_bg = notify.clone();
 
     let accumulator = Arc::new(Mutex::new(StreamAccumulator::new_with_start(start)));
     let mut byte_stream = upstream_resp.bytes_stream();
@@ -178,6 +223,8 @@ where
 
     tokio::spawn(async move {
         let mut first = true;
+        // 5A-1 FIX: Continue reading upstream after client disconnect for billing.
+        let mut client_gone = false;
         let mut utf8_residual: Vec<u8> = Vec::new();
 
         while let Some(chunk_result) = byte_stream.next().await {
@@ -191,24 +238,27 @@ where
                         acc_guard.set_ttft_ms(start.elapsed().as_millis() as u64);
                     }
 
-                    // Combine residual bytes from previous chunk
-                    let combined = if utf8_residual.is_empty() {
-                        bytes.to_vec()
+                    // FIX #1: Avoid unnecessary allocation when no residual.
+                    let (combined_owned, combined_ref): (Vec<u8>, &[u8]) = if utf8_residual.is_empty() {
+                        (Vec::new(), &bytes[..])
                     } else {
                         let mut buf = std::mem::take(&mut utf8_residual);
                         buf.extend_from_slice(&bytes);
-                        buf
+                        let ptr = buf.as_ptr();
+                        let len = buf.len();
+                        (buf, unsafe { std::slice::from_raw_parts(ptr, len) })
                     };
 
                     // Find longest valid UTF-8 prefix
-                    let (valid_bytes, leftover) = match std::str::from_utf8(&combined) {
-                        Ok(_) => (combined.as_slice(), &[][..]),
+                    let (valid_bytes, leftover) = match std::str::from_utf8(combined_ref) {
+                        Ok(_) => (combined_ref, &[][..]),
                         Err(e) => {
                             let valid_up_to = e.valid_up_to();
-                            (&combined[..valid_up_to], &combined[valid_up_to..])
+                            (&combined_ref[..valid_up_to], &combined_ref[valid_up_to..])
                         }
                     };
                     utf8_residual = leftover.to_vec();
+                    let _ = &combined_owned; // keep alive
 
                     if valid_bytes.is_empty() {
                         drop(acc_guard);
@@ -233,14 +283,37 @@ where
                                 let finished_acc = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
                                 *slot_guard = Some(finished_acc.finish());
                             }
+                            notify_bg.notify_waiters();
                         }
                     }
 
                     drop(acc_guard);
 
-                    // Send translated bytes to client
-                    if tx.send(Ok(Bytes::from(translated))).await.is_err() {
-                        break;
+                    // STREAMING-PII FIX: Apply PII redaction to translated
+                    // SSE bytes before sending to the client.
+                    let send_bytes = if let Ok(text) = std::str::from_utf8(&translated) {
+                        let (redacted, did_redact) = crate::middleware::sanitize::redact_sse_chunk(text);
+                        if did_redact {
+                            Bytes::from(redacted)
+                        } else {
+                            Bytes::from(translated)
+                        }
+                    } else {
+                        Bytes::from(translated)
+                    };
+
+                    // 5A-1 FIX: Send translated bytes to client unless disconnected.
+                    if !client_gone {
+                        if tx.send(Ok(send_bytes)).await.is_err() {
+                            client_gone = true;
+                            tracing::debug!("Client disconnected — continuing upstream read for billing (translated)");
+                        }
+                    }
+                    if client_gone {
+                        let slot_guard = slot_for_bg.lock().await;
+                        if slot_guard.is_some() {
+                            break; // Usage captured, safe to stop
+                        }
                     }
                 }
                 Err(e) => {
@@ -258,6 +331,7 @@ where
                             *slot_guard = Some(partial.finish());
                         }
                     }
+                    notify_bg.notify_waiters();
 
                     let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string());
                     let _ = tx.send(Err(io_err)).await;
@@ -273,32 +347,39 @@ where
             let finished_acc = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
             *slot_guard = Some(finished_acc.finish());
         }
+        notify_bg.notify_waiters();
     });
 
     let mapped = tokio_stream::wrappers::ReceiverStream::new(rx);
     let body = Body::from_stream(mapped);
-    (body, result_slot)
+    (body, result_slot, notify)
 }
 
 /// Wait for the stream result to be populated, with a timeout.
+/// Uses `Notify` for instant signaling instead of polling.
 /// Returns `None` if the timeout expires before the stream completes.
 pub async fn wait_for_stream_result(
     slot: &StreamResultSlot,
+    notify: &Notify,
     timeout: std::time::Duration,
 ) -> Option<StreamResult> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        {
-            let guard = slot.lock().await;
-            if guard.is_some() {
-                drop(guard);
-                return slot.lock().await.take();
-            }
+    // Check if already populated (fast path for non-streaming or very fast streams)
+    {
+        let mut guard = slot.lock().await;
+        if guard.is_some() {
+            return guard.take();
         }
-        if Instant::now() >= deadline {
-            return None;
+    }
+    // Wait for Notify signal with timeout
+    match tokio::time::timeout(timeout, notify.notified()).await {
+        Ok(()) => {
+            // Signaled — result should be ready
+            slot.lock().await.take()
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        Err(_) => {
+            // Timeout — try one last time in case of race
+            slot.lock().await.take()
+        }
     }
 }
 
@@ -318,9 +399,11 @@ pub fn tee_bedrock_stream(
     upstream_resp: reqwest::Response,
     start: Instant,
     model: String,
-) -> (Body, StreamResultSlot) {
+) -> (Body, StreamResultSlot, Arc<Notify>) {
     let result_slot: StreamResultSlot = Arc::new(Mutex::new(None));
     let slot_for_bg = result_slot.clone();
+    let notify = Arc::new(Notify::new());
+    let notify_bg = notify.clone();
 
     let accumulator = Arc::new(Mutex::new(StreamAccumulator::new_with_start(start)));
     let mut byte_stream = upstream_resp.bytes_stream();
@@ -329,6 +412,8 @@ pub fn tee_bedrock_stream(
 
     tokio::spawn(async move {
         let mut first = true;
+        // 5A-1 FIX: Continue reading upstream after client disconnect for billing.
+        let mut client_gone = false;
         // Buffer for accumulating binary data across TCP chunks.
         // Bedrock binary frames can be split across chunk boundaries.
         let mut binary_buffer: Vec<u8> = Vec::new();
@@ -452,6 +537,36 @@ pub fn tee_bedrock_stream(
                                     ));
                                     sse_output.push_str("data: [DONE]\n\n");
                                 }
+                                "metadata" => {
+                                    // Bedrock sends usage in the metadata event:
+                                    // {"usage": {"inputTokens": N, "outputTokens": M}}
+                                    // Emit as an OpenAI-format usage chunk so the
+                                    // StreamAccumulator captures it for cost tracking.
+                                    if let Some(usage) = payload.get("usage") {
+                                        let input = usage.get("inputTokens")
+                                            .and_then(|v| v.as_u64()).unwrap_or(0);
+                                        let output_t = usage.get("outputTokens")
+                                            .and_then(|v| v.as_u64()).unwrap_or(0);
+                                        if input > 0 || output_t > 0 {
+                                            let usage_chunk = serde_json::json!({
+                                                "id": chunk_id,
+                                                "object": "chat.completion.chunk",
+                                                "created": chrono::Utc::now().timestamp(),
+                                                "model": model,
+                                                "choices": [],
+                                                "usage": {
+                                                    "prompt_tokens": input,
+                                                    "completion_tokens": output_t,
+                                                    "total_tokens": input + output_t,
+                                                }
+                                            });
+                                            sse_output.push_str(&format!(
+                                                "data: {}\n\n",
+                                                serde_json::to_string(&usage_chunk).unwrap_or_default()
+                                            ));
+                                        }
+                                    }
+                                }
                                 _ => {}
                             }
                         }
@@ -480,12 +595,31 @@ pub fn tee_bedrock_stream(
                                 );
                                 *slot_guard = Some(finished.finish());
                             }
+                            notify_bg.notify_waiters();
                         }
                         drop(acc_guard);
 
-                        // Send translated SSE to client
-                        if tx.send(Ok(Bytes::from(sse_output))).await.is_err() {
-                            break;
+                        // STREAMING-PII FIX: Apply PII redaction to Bedrock
+                        // translated SSE before sending to the client.
+                        let (redacted, did_redact) = crate::middleware::sanitize::redact_sse_chunk(&sse_output);
+                        let send_bytes = if did_redact {
+                            Bytes::from(redacted)
+                        } else {
+                            Bytes::from(sse_output)
+                        };
+
+                        // 5A-1 FIX: Send translated SSE to client unless disconnected.
+                        if !client_gone {
+                            if tx.send(Ok(send_bytes)).await.is_err() {
+                                client_gone = true;
+                                tracing::debug!("Client disconnected — continuing upstream read for billing (bedrock)");
+                            }
+                        }
+                        if client_gone {
+                            let slot_guard = slot_for_bg.lock().await;
+                            if slot_guard.is_some() {
+                                break; // Usage captured, safe to stop
+                            }
                         }
                     } else {
                         drop(acc_guard);
@@ -508,6 +642,7 @@ pub fn tee_bedrock_stream(
                             *slot_guard = Some(partial.finish());
                         }
                     }
+                    notify_bg.notify_waiters();
 
                     let io_err = std::io::Error::new(
                         std::io::ErrorKind::BrokenPipe, e.to_string(),
@@ -525,9 +660,10 @@ pub fn tee_bedrock_stream(
             let finished = std::mem::replace(&mut *acc_guard, StreamAccumulator::new());
             *slot_guard = Some(finished.finish());
         }
+        notify_bg.notify_waiters();
     });
 
     let mapped = tokio_stream::wrappers::ReceiverStream::new(rx);
     let body = Body::from_stream(mapped);
-    (body, result_slot)
+    (body, result_slot, notify)
 }
