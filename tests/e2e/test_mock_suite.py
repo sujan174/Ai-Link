@@ -1437,20 +1437,20 @@ def t14_cache_bypass_high_temp():
 
 
 def t14_cache_opt_out():
-    """x-trueflow-no-cache: true header MUST bypass caching."""
+    """Cache-Control: no-cache header MUST bypass caching."""
     payload = {
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": f"no-cache-{RUN_ID}"}],
         "temperature": 0,
     }
-    headers = {"x-trueflow-no-cache": "true"}
+    headers = {"Cache-Control": "no-cache"}
     r1 = gw("POST", "/v1/chat/completions", token=_openai_tok, json=payload, headers=headers)
     time.sleep(0.2)
     r2 = gw("POST", "/v1/chat/completions", token=_openai_tok, json=payload, headers=headers)
     assert r1.status_code == 200 and r2.status_code == 200
     id1, id2 = r1.json().get("id"), r2.json().get("id")
     assert id1 != id2, (
-        f"x-trueflow-no-cache header MUST bypass cache. Both returned id={id1}"
+        f"Cache-Control: no-cache header MUST bypass cache. Both returned id={id1}"
     )
     return f"No-cache opt-out: different IDs ✓"
 
@@ -2915,6 +2915,68 @@ test("Spend status API: returns all required fields",
      t22_spend_status_api)
 test("No cap: requests pass without budget rejection",
      t22_no_cap_no_rejection)
+
+
+def t22_postflight_denied_still_billed():
+    """Post-flight denial: spend must be recorded even when ValidateSchema blocks the response."""
+    # Create a ValidateSchema policy with not=true and phase="post"
+    # This makes it response-phase only. The "not" mode means: reject if
+    # validation PASSES (i.e., if the response IS a valid string → deny it).
+    # Since LLM responses are always strings, this blocks every response.
+    p = admin.policies.create(
+        name=f"pf-spend-schema-{RUN_ID}",
+        phase="post",
+        rules=[{"when": {"always": True}, "then": {
+            "action": "validate_schema",
+            "schema": {"type": "string"},
+            "not": True,
+            "message": "Post-flight deny for spend test",
+        }}],
+    )
+    _cleanup_policies.append(p.id)
+
+    # Create a fresh token with the policy attached
+    t = admin.tokens.create(
+        name=f"mock-postflight-spend-{RUN_ID}",
+        upstream_url=MOCK_GATEWAY,
+        credential_id=_mock_cred_id,
+        policy_ids=[p.id],
+    )
+    _cleanup_tokens.append(t.token_id)
+    pf_tok = t.token_id
+
+    # Get baseline spend (should be 0 for a brand new token)
+    r0 = httpx.get(
+        f"{GATEWAY_URL}/api/v1/tokens/{t.token_id}/spend",
+        headers={"x-admin-key": ADMIN_KEY}, timeout=10
+    )
+    baseline = 0.0
+    if r0.status_code == 200:
+        baseline = r0.json().get("current_daily_usd", 0.0)
+
+    # Send a request — upstream will be called (200), then ValidateSchema
+    # post-flight will BLOCK the response (403).
+    r1 = chat(pf_tok, "Hello world", model="gpt-4o")
+    assert r1.status_code == 403, \
+        f"Expected 403 from post-flight ValidateSchema, got {r1.status_code}: {r1.text[:200]}"
+    time.sleep(1.5)  # Wait for cost tracking
+
+    # Check spend — it should now be > 0 because the upstream was called
+    r2 = httpx.get(
+        f"{GATEWAY_URL}/api/v1/tokens/{t.token_id}/spend",
+        headers={"x-admin-key": ADMIN_KEY}, timeout=10
+    )
+    assert r2.status_code == 200, f"Spend status: HTTP {r2.status_code}"
+    new_daily = r2.json().get("current_daily_usd", 0.0)
+    assert new_daily > baseline, \
+        f"Post-flight denial did NOT bill: daily unchanged ({baseline} → {new_daily}). " \
+        f"Upstream was called but spend was not recorded."
+
+    return f"Post-flight spend recorded: response=403, daily ${baseline:.6f}→${new_daily:.6f} ✓"
+
+
+test("Post-flight ContentFilter denial still bills for upstream tokens",
+     t22_postflight_denied_still_billed)
 
 # ═══════════════════════════════════════════════════════════════
 #  Phase 23 — HITL (Human-in-the-Loop) Approval Flow

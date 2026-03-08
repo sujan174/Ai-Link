@@ -373,6 +373,11 @@ pub fn apply_header_mutations(headers: &mut hyper::HeaderMap, mutations: &Header
         }
     }
     for (name, value) in &mutations.inserts {
+        // SEC: Block header injection via newlines/carriage returns
+        if value.contains('\r') || value.contains('\n') {
+            tracing::warn!(header = %name, "transform: blocked header value with injection characters");
+            continue;
+        }
         if let (Ok(key), Ok(val)) = (
             hyper::header::HeaderName::from_bytes(name.as_bytes()),
             hyper::header::HeaderValue::from_str(value),

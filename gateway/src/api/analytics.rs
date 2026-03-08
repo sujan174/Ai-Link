@@ -1,7 +1,8 @@
-use crate::api::handlers::PaginationParams;
+use crate::api::handlers::{PaginationParams, verify_project_ownership};
+use crate::api::AuthContext;
 use crate::AppState;
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::StatusCode,
     Json,
 };
@@ -16,9 +17,12 @@ fn default_project_id() -> Uuid {
 /// GET /api/v1/analytics/volume — 24h request volume bucketed by hour
 pub async fn get_request_volume(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Vec<crate::models::analytics::VolumeStat>>, StatusCode> {
+    auth.require_scope("analytics:read").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = params.project_id.unwrap_or_else(default_project_id);
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     let stats = state
         .db
@@ -35,9 +39,12 @@ pub async fn get_request_volume(
 /// GET /api/v1/analytics/status — 24h status code distribution
 pub async fn get_status_distribution(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<Vec<crate::models::analytics::StatusStat>>, StatusCode> {
+    auth.require_scope("analytics:read").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = params.project_id.unwrap_or_else(default_project_id);
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     let stats = state
         .db
@@ -54,9 +61,12 @@ pub async fn get_status_distribution(
 /// GET /api/v1/analytics/latency — 24h latency percentiles (P50, P90, P99)
 pub async fn get_latency_percentiles(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<crate::models::analytics::LatencyStat>, StatusCode> {
+    auth.require_scope("analytics:read").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = params.project_id.unwrap_or_else(default_project_id);
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
 
     let stats = state
         .db

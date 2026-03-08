@@ -153,9 +153,10 @@ impl super::SecretStore for BuiltinStore {
         ))
     }
 
-    async fn delete(&self, id: &str) -> anyhow::Result<()> {
-        sqlx::query("UPDATE credentials SET is_active = false WHERE id = $1")
+    async fn delete(&self, id: &str, project_id: uuid::Uuid) -> anyhow::Result<()> {
+        sqlx::query("UPDATE credentials SET is_active = false WHERE id = $1 AND project_id = $2")
             .bind(uuid::Uuid::parse_str(id)?)
+            .bind(project_id)
             .execute(&self.pool)
             .await?;
         Ok(())

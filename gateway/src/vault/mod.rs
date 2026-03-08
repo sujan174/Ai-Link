@@ -1,6 +1,7 @@
 pub mod builtin;
 
 use async_trait::async_trait;
+use uuid::Uuid;
 
 /// Abstraction over secret storage backends.
 /// Implementation: BuiltinStore (AES-256-GCM in PG).
@@ -15,7 +16,7 @@ pub trait SecretStore: Send + Sync {
     /// Returns (plaintext_secret, provider, injection_mode, injection_header).
     async fn retrieve(&self, id: &str) -> anyhow::Result<(String, String, String, String)>;
 
-    /// Delete a stored secret.
+    /// Delete a stored secret. Requires project_id for authorization.
     #[allow(dead_code)]
-    async fn delete(&self, id: &str) -> anyhow::Result<()>;
+    async fn delete(&self, id: &str, project_id: Uuid) -> anyhow::Result<()>;
 }

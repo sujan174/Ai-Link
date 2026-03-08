@@ -11,11 +11,20 @@ use tokio::time;
 /// Spawn the background cleanup task. Call this once at startup.
 pub fn spawn(pool: PgPool) {
     tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(3600)); // every hour
         loop {
-            interval.tick().await;
-            if let Err(e) = expire_debug_logs(&pool).await {
-                tracing::error!("cleanup job failed: {}", e);
+            let pool = pool.clone();
+            let result = tokio::spawn(async move {
+                let mut interval = time::interval(Duration::from_secs(3600)); // every hour
+                loop {
+                    interval.tick().await;
+                    if let Err(e) = expire_debug_logs(&pool).await {
+                        tracing::error!("cleanup job failed: {}", e);
+                    }
+                }
+            }).await;
+            if let Err(e) = result {
+                tracing::error!("Cleanup job panicked: {:?}", e);
+                time::sleep(Duration::from_secs(5)).await;
             }
         }
     });

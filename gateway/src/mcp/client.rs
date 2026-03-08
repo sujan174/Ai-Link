@@ -72,7 +72,10 @@ impl McpClient {
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(5))
             .build()
-            .expect("failed to build HTTP client");
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to init MCP HTTP client: {:?}", e);
+                std::process::exit(1);
+            });
 
         Self {
             endpoint: endpoint.into(),

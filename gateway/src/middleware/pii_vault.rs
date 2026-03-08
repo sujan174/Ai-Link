@@ -296,10 +296,10 @@ pub async fn rehydrate_tokens(
             }
             Ok(None) => {
                 // Token not found or expired — skip
-                tracing::debug!(token = %token, "PII token not found or expired");
+                tracing::debug!("PII token not found or expired");
             }
             Err(e) => {
-                tracing::error!(token = %token, "PII token rehydration failed: {}", e);
+                tracing::error!("PII token rehydration failed: {}", e);
             }
         }
     }

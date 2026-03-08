@@ -101,6 +101,7 @@ pub async fn register_mcp_server(
             name: req.name,
             client_id: req.client_id,
             client_secret: req.client_secret,
+            project_id: auth.default_project_id(),
         };
 
         match state.mcp_registry.register_with_discovery(discover_req).await {
@@ -157,6 +158,7 @@ pub async fn register_mcp_server(
 
         let config = McpServerConfig {
             id: Uuid::new_v4(),
+            project_id: auth.default_project_id(),
             name: name.clone(),
             endpoint: req.endpoint,
             api_key: req.api_key,

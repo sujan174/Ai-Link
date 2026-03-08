@@ -134,50 +134,128 @@ pub async fn check_and_increment_spend(
     let mut conn = cache.redis();
     let now = Utc::now();
 
-    // ATOMICITY FIX: Check-then-increment Lua script.
-    // The OLD script incremented first and checked after, causing phantom spend
-    // drift on denied requests. The NEW script reads the current value, checks
-    // if adding the cost would exceed the limit, and ONLY increments if under cap.
-    // Since Redis Lua scripts execute atomically (single-threaded), there is no
-    // TOCTOU window between the GET and INCRBYFLOAT.
+    // FIX: Cross-cap atomic check-and-increment
+    // Check ALL caps first in a single atomic Lua script, then increment ALL or NONE.
+    // This prevents partial increments (e.g., daily incremented but monthly denied).
     //
-    // Returns: new total (positive) if allowed, or '-1' if cap would be exceeded.
-    // On deny, the counter is NOT modified — no phantom spend.
+    // KEYS[1] = daily key (or empty string if no daily cap)
+    // KEYS[2] = monthly key (or empty string if no monthly cap)
+    // KEYS[3] = lifetime key (or empty string if no lifetime cap)
+    // ARGV[1] = daily limit (or -1 if no cap)
+    // ARGV[2] = monthly limit (or -1 if no cap)
+    // ARGV[3] = lifetime limit (or -1 if no cap)
+    // ARGV[4] = cost to add
+    // ARGV[5] = daily TTL
+    // ARGV[6] = monthly TTL
+    // ARGV[7] = lifetime TTL
     //
-    // KEYS[1] = spend key, ARGV[1] = limit, ARGV[2] = cost, ARGV[3] = TTL
-    let lua_script = r#"
-        local current = tonumber(redis.call('GET', KEYS[1]) or '0')
-        local cost = tonumber(ARGV[2])
-        local limit = tonumber(ARGV[1])
-        if current + cost > limit then
-            return '-1'
+    // Returns: "OK" if allowed, "DAILY" if daily cap exceeded, "MONTHLY" if monthly exceeded, "LIFETIME" if lifetime exceeded
+    let atomic_lua = r#"
+        local cost = tonumber(ARGV[4])
+
+        local daily_key = KEYS[1]
+        local monthly_key = KEYS[2]
+        local lifetime_key = KEYS[3]
+        local daily_limit = tonumber(ARGV[1])
+        local monthly_limit = tonumber(ARGV[2])
+        local lifetime_limit = tonumber(ARGV[3])
+
+        -- Phase 1: Increment ALL counters first (so counters always reflect actual spend)
+        local daily_new = 0
+        local monthly_new = 0
+        local lifetime_new = 0
+
+        if daily_limit >= 0 and daily_key ~= "" then
+            daily_new = tonumber(redis.call('INCRBYFLOAT', daily_key, cost))
+            redis.call('EXPIRE', daily_key, ARGV[5])
         end
-        local new_val = redis.call('INCRBYFLOAT', KEYS[1], cost)
-        local ttl = tonumber(ARGV[3])
-        redis.call('EXPIRE', KEYS[1], ttl)
-        return new_val
+
+        if monthly_limit >= 0 and monthly_key ~= "" then
+            monthly_new = tonumber(redis.call('INCRBYFLOAT', monthly_key, cost))
+            redis.call('EXPIRE', monthly_key, ARGV[6])
+        end
+
+        if lifetime_limit >= 0 and lifetime_key ~= "" then
+            lifetime_new = tonumber(redis.call('INCRBYFLOAT', lifetime_key, cost))
+            redis.call('EXPIRE', lifetime_key, ARGV[7])
+        end
+
+        -- Phase 2: Check if any cap was breached AFTER incrementing
+        -- Counters are already updated so pre-flight checks will see the real values.
+        if daily_limit >= 0 and daily_new > daily_limit then
+            return "DAILY"
+        end
+
+        if monthly_limit >= 0 and monthly_new > monthly_limit then
+            return "MONTHLY"
+        end
+
+        if lifetime_limit >= 0 and lifetime_new > lifetime_limit then
+            return "LIFETIME"
+        end
+
+        return "OK"
     "#;
 
-    // Check daily cap
-    if let Some(daily_limit) = caps.daily_limit_usd {
-        let key = format!("spend:{}:daily:{}", token_id, now.format("%Y-%m-%d"));
-        let reset_ttl = 86400 + 3600; // TTL in seconds
-        let result: f64 = redis::cmd("EVAL")
-            .arg(lua_script)
-            .arg(1i32) // number of KEYS
-            .arg(&key)
-            .arg(daily_limit)
-            .arg(cost_usd)
-            .arg(reset_ttl) // TTL in seconds
-            .query_async(&mut conn)
-            .await
-            .context("failed to execute daily spend lua script")?;
-
-        if result < 0.0 {
-            anyhow::bail!("daily spend cap exceeded during increment");
-        }
+    // Build keys - use empty string for caps that don't exist
+    let daily_key = if caps.daily_limit_usd.is_some() {
+        format!("spend:{}:daily:{}", token_id, now.format("%Y-%m-%d"))
     } else {
-        // No daily cap — just increment
+        String::new()
+    };
+    let monthly_key = if caps.monthly_limit_usd.is_some() {
+        format!("spend:{}:monthly:{}", token_id, now.format("%Y-%m"))
+    } else {
+        String::new()
+    };
+    let lifetime_key = if caps.lifetime_limit_usd.is_some() {
+        format!("spend:{}:lifetime", token_id)
+    } else {
+        String::new()
+    };
+
+    // Use -1 to indicate "no cap" (Lua can distinguish from 0)
+    let daily_limit_val = caps.daily_limit_usd.unwrap_or(-1.0);
+    let monthly_limit_val = caps.monthly_limit_usd.unwrap_or(-1.0);
+    let lifetime_limit_val = caps.lifetime_limit_usd.unwrap_or(-1.0);
+
+    let daily_ttl = 86400i64 + 3600;
+    let monthly_ttl = 86400i64 * 32;
+    let lifetime_ttl = 86400i64 * 365 * 10;
+
+    let result: String = redis::cmd("EVAL")
+        .arg(atomic_lua)
+        .arg(3i32) // number of KEYS
+        .arg(&daily_key)
+        .arg(&monthly_key)
+        .arg(&lifetime_key)
+        .arg(daily_limit_val)
+        .arg(monthly_limit_val)
+        .arg(lifetime_limit_val)
+        .arg(cost_usd)
+        .arg(daily_ttl)
+        .arg(monthly_ttl)
+        .arg(lifetime_ttl)
+        .query_async(&mut conn)
+        .await
+        .context("failed to execute atomic cross-cap spend lua script")?;
+
+    match result.as_str() {
+        "OK" => {
+            // All caps passed and counters incremented
+        }
+        "DAILY" => anyhow::bail!("daily spend cap exceeded during increment"),
+        "MONTHLY" => anyhow::bail!("monthly spend cap exceeded during increment"),
+        "LIFETIME" => anyhow::bail!("lifetime spend cap exceeded during increment"),
+        other => anyhow::bail!("unexpected spend check result: {}", other),
+    }
+
+    // FIX: Always increment tracking counters for periods without caps
+    // (capped periods were already incremented atomically by the Lua script above).
+    // This ensures the spend status API reports accurate daily/monthly values
+    // even for tokens without configured caps.
+
+    if caps.daily_limit_usd.is_none() {
         let key = format!("spend:{}:daily:{}", token_id, now.format("%Y-%m-%d"));
         let _: f64 = redis::cmd("INCRBYFLOAT")
             .arg(&key)
@@ -185,27 +263,10 @@ pub async fn check_and_increment_spend(
             .query_async(&mut conn)
             .await
             .unwrap_or(cost_usd);
-        let _: () = conn.expire(&key, 86400 + 3600).await.unwrap_or(());
+        let _: () = conn.expire(&key, 86400i64 + 3600).await.unwrap_or(());
     }
 
-    // Check monthly cap
-    if let Some(monthly_limit) = caps.monthly_limit_usd {
-        let key = format!("spend:{}:monthly:{}", token_id, now.format("%Y-%m"));
-        let result: f64 = redis::cmd("EVAL")
-            .arg(lua_script)
-            .arg(1i32)
-            .arg(&key)
-            .arg(monthly_limit)
-            .arg(cost_usd)
-            .arg(86400 * 32)
-            .query_async(&mut conn)
-            .await
-            .context("failed to execute monthly spend lua script")?;
-        
-        if result < 0.0 {
-            anyhow::bail!("monthly spend cap exceeded during increment");
-        }
-    } else {
+    if caps.monthly_limit_usd.is_none() {
         let key = format!("spend:{}:monthly:{}", token_id, now.format("%Y-%m"));
         let _: f64 = redis::cmd("INCRBYFLOAT")
             .arg(&key)
@@ -216,26 +277,7 @@ pub async fn check_and_increment_spend(
         let _: () = conn.expire(&key, 86400i64 * 32).await.unwrap_or(());
     }
 
-    // Check / increment lifetime cap (no TTL — persists indefinitely)
-    if let Some(lifetime_limit) = caps.lifetime_limit_usd {
-        let key = format!("spend:{}:lifetime", token_id);
-        // Use a TTL of 10 years so Redis won't evict it under memory pressure
-        let result: f64 = redis::cmd("EVAL")
-            .arg(lua_script)
-            .arg(1i32)
-            .arg(&key)
-            .arg(lifetime_limit)
-            .arg(cost_usd)
-            .arg(86400i64 * 365 * 10) // 10 year TTL
-            .query_async(&mut conn)
-            .await
-            .context("failed to execute lifetime spend lua script")?;
-        
-        if result < 0.0 {
-            anyhow::bail!("lifetime spend cap exceeded during increment");
-        }
-    } else {
-        // No lifetime cap — just keep a running total (useful for dashboard)
+    if caps.lifetime_limit_usd.is_none() {
         let key = format!("spend:{}:lifetime", token_id);
         let _: f64 = redis::cmd("INCRBYFLOAT")
             .arg(&key)

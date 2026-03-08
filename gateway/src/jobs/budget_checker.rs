@@ -204,8 +204,8 @@ pub async fn is_project_over_hard_cap(pool: &PgPool, project_id: uuid::Uuid) -> 
         }
         Ok(None) => false,
         Err(e) => {
-            tracing::error!(project_id = %project_id, error = %e, "budget cap check DB error");
-            false // fail open
+            tracing::error!(project_id = %project_id, error = %e, "budget cap check DB error - treating as over budget");
+            true // fail closed - treat DB error as over budget to prevent overspending
         }
     }
 }

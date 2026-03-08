@@ -286,17 +286,24 @@ impl LoadBalancer {
             let url_owned = url.to_string();
 
             tokio::spawn(async move {
-                // Atomic INCR + conditional EXPIRE
-                let result: Result<u64, _> = redis::cmd("INCR")
-                    .arg(&key)
-                    .query_async(&mut conn)
+                // Atomic INCR + EXPIRE using Lua script
+                let script = redis::Script::new(
+                    r#"
+                    local count = redis.call("INCR", KEYS[1])
+                    if count == 1 then
+                        redis.call("EXPIRE", KEYS[1], ARGV[1])
+                    end
+                    return count
+                "#,
+                );
+                let result: Result<u64, _> = script
+                    .key(&key)
+                    .arg(ttl as i32)
+                    .invoke_async(&mut conn)
                     .await;
 
                 match result {
                     Ok(count) => {
-                        // Set TTL on first increment or refresh it
-                        let _: Result<(), _> = conn.expire(&key, ttl as i64).await;
-
                         if count >= threshold as u64 {
                             tracing::warn!(
                                 token_id = %token_id_owned,

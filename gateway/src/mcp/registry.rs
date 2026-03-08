@@ -21,6 +21,7 @@ use super::types::*;
 #[derive(Debug, Clone)]
 pub struct McpServerConfig {
     pub id: Uuid,
+    pub project_id: Uuid,
     pub name: String,
     pub endpoint: String,
     pub api_key: Option<String>,
@@ -33,6 +34,7 @@ pub struct DiscoverRequest {
     pub name: Option<String>,
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+    pub project_id: Uuid,
 }
 
 /// Result of a discovery probe (dry-run).
@@ -216,6 +218,7 @@ impl McpRegistry {
 
         let config = McpServerConfig {
             id,
+            project_id: req.project_id,
             name: server_name.clone(),
             endpoint: req.endpoint,
             api_key: None, // OAuth-managed servers don't use static keys
@@ -413,11 +416,16 @@ impl McpRegistry {
     }
 
     /// Execute a tool call routed by server name.
+    ///
+    /// # Security
+    /// The caller MUST provide the `project_id` to enforce project isolation.
+    /// Returns an error if the server belongs to a different project.
     pub async fn execute_tool(
         &self,
         server_name: &str,
         tool_name: &str,
         arguments: Option<Value>,
+        project_id: Uuid,
     ) -> Result<CallToolResult, String> {
         let server_id = {
             let index = self.name_index.read().await;
@@ -431,6 +439,17 @@ impl McpRegistry {
         let state = servers
             .get(&server_id)
             .ok_or_else(|| format!("MCP server '{}' not found in registry", server_name))?;
+
+        // Project isolation: prevent cross-project access
+        if state.config.project_id != project_id {
+            tracing::warn!(
+                server_name = %server_name,
+                server_project_id = %state.config.project_id,
+                request_project_id = %project_id,
+                "MCP server project isolation violation blocked"
+            );
+            return Err(format!("MCP server '{}' not found", server_name));
+        }
 
         if state.status != McpServerStatus::Connected {
             return Err(format!(
@@ -541,7 +560,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_tool_unknown_server() {
         let registry = McpRegistry::new();
-        let result = registry.execute_tool("nope", "tool", None).await;
+        let result = registry.execute_tool("nope", "tool", None, Uuid::nil()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
     }

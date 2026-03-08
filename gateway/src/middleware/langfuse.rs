@@ -113,7 +113,7 @@ impl LangfuseExporter {
             .parse()
             .unwrap_or(5000);
 
-        tokio::spawn(async move {
+        let _flush_handle = tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_millis(flush_interval_ms));
             loop {
@@ -121,6 +121,7 @@ impl LangfuseExporter {
                 let events: Vec<LangfuseIngestionEvent> = {
                     let mut buf = buffer.lock().await;
                     if buf.is_empty() {
+                        drop(buf);
                         continue;
                     }
                     buf.drain(..).collect()
@@ -219,22 +220,27 @@ impl LangfuseExporter {
         let client = self.client.clone();
 
         tokio::spawn(async move {
-            let should_flush = {
-                let mut buf = buffer.lock().await;
-                buf.push(trace_event);
-                buf.push(gen_event);
-                buf.len() >= max_batch
-            };
-
-            // Flush immediately if buffer is full
-            if should_flush {
-                let events: Vec<LangfuseIngestionEvent> = {
+            let result = std::panic::AssertUnwindSafe(async {
+                let should_flush = {
                     let mut buf = buffer.lock().await;
-                    buf.drain(..).collect()
+                    buf.push(trace_event);
+                    buf.push(gen_event);
+                    buf.len() >= max_batch
                 };
-                if let Err(e) = Self::flush_batch(&client, &host, &pk, &sk, events).await {
-                    tracing::warn!("Langfuse flush failed: {}", e);
+
+                // Flush immediately if buffer is full
+                if should_flush {
+                    let events: Vec<LangfuseIngestionEvent> = {
+                        let mut buf = buffer.lock().await;
+                        buf.drain(..).collect()
+                    };
+                    if let Err(e) = Self::flush_batch(&client, &host, &pk, &sk, events).await {
+                        tracing::warn!("Langfuse flush failed: {}", e);
+                    }
                 }
+            });
+            if let Err(e) = futures::FutureExt::catch_unwind(result).await {
+                tracing::error!("Langfuse export_async task panicked: {:?}", e);
             }
         });
     }

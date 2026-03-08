@@ -129,6 +129,7 @@ pub async fn create_prompt(
     Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreatePromptRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), StatusCode> {
+    auth.require_scope("prompts:write")?;
     let project_id = auth.default_project_id();
     let slug = payload.slug.unwrap_or_else(|| slugify(&payload.name));
 
@@ -171,6 +172,7 @@ pub async fn list_prompts(
     Extension(auth): Extension<AuthContext>,
     Query(q): Query<ListPromptsQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
+    auth.require_scope("prompts:read")?;
     let project_id = auth.default_project_id();
     let prompts = state
         .db
@@ -211,6 +213,7 @@ pub async fn get_prompt(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("prompts:read")?;
     let project_id = auth.default_project_id();
     let prompt = state
         .db
@@ -239,6 +242,7 @@ pub async fn update_prompt(
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdatePromptRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("prompts:write")?;
     let project_id = auth.default_project_id();
     let updated = state
         .db
@@ -266,6 +270,7 @@ pub async fn delete_prompt(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("prompts:write")?;
     let project_id = auth.default_project_id();
     let deleted = state
         .db
@@ -287,6 +292,7 @@ pub async fn create_version(
     Path(id): Path<Uuid>,
     Json(payload): Json<CreateVersionRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), StatusCode> {
+    auth.require_scope("prompts:write")?;
     let project_id = auth.default_project_id();
 
     // Verify prompt exists
@@ -335,6 +341,7 @@ pub async fn list_versions(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
+    auth.require_scope("prompts:read")?;
     let project_id = auth.default_project_id();
 
     // Verify prompt exists
@@ -380,6 +387,7 @@ pub async fn get_version(
     Extension(auth): Extension<AuthContext>,
     Path((id, version)): Path<(Uuid, i32)>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("prompts:read")?;
     let project_id = auth.default_project_id();
 
     state
@@ -406,6 +414,7 @@ pub async fn deploy_version(
     Path(id): Path<Uuid>,
     Json(payload): Json<DeployRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("prompts:write")?;
     let project_id = auth.default_project_id();
 
     state
@@ -448,6 +457,7 @@ pub async fn render_prompt_get(
     Path(slug): Path<String>,
     Query(q): Query<RenderQuery>,
 ) -> Result<Json<RenderResponse>, StatusCode> {
+    auth.require_scope("prompts:read")?;
     let project_id = auth.default_project_id();
     let empty_vars = serde_json::Map::new();
     render_prompt_inner(&state, project_id, &slug, q.label.as_deref(), q.version, &empty_vars).await
@@ -460,6 +470,7 @@ pub async fn render_prompt_post(
     Path(slug): Path<String>,
     Json(body): Json<RenderBody>,
 ) -> Result<Json<RenderResponse>, StatusCode> {
+    auth.require_scope("prompts:read")?;
     let project_id = auth.default_project_id();
     let variables = body.variables.unwrap_or_default();
     render_prompt_inner(&state, project_id, &slug, body.label.as_deref(), body.version, &variables).await
@@ -518,6 +529,7 @@ pub async fn list_folders(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<String>>, StatusCode> {
+    auth.require_scope("prompts:read")?;
     let project_id = auth.default_project_id();
     let folders = state
         .db

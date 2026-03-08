@@ -63,7 +63,10 @@ fn sha256_hex(data: &[u8]) -> String {
 /// HMAC-SHA256 signing.
 fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
     let mut mac = HmacSha256::new_from_slice(key)
-        .expect("HMAC can take key of any size");
+        .unwrap_or_else(|_| {
+            tracing::error!("HMAC init failed: invalid key");
+            std::process::exit(1);
+        });
     mac.update(msg);
     mac.finalize().into_bytes().to_vec()
 }

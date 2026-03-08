@@ -16,6 +16,10 @@ pub struct Config {
     /// Window in seconds for the default rate limit.
     /// Set via TRUEFLOW_DEFAULT_RPM_WINDOW env var. Default: 60.
     pub default_rate_limit_window: u64,
+    /// Comma-separated list of trusted proxy CIDRs for X-Forwarded-For validation.
+    /// If empty (default), X-Forwarded-For headers are ignored for security.
+    /// Example: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    pub trusted_proxy_cidrs: Vec<String>,
 }
 
 impl Config {
@@ -71,5 +75,12 @@ pub fn load() -> anyhow::Result<Config> {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(60),
+        trusted_proxy_cidrs: std::env::var("TRUSTED_PROXY_CIDRS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect(),
     })
 }

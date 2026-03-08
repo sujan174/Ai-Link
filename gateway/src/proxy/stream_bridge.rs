@@ -18,6 +18,19 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::proxy::stream::{StreamAccumulator, StreamResult};
 
+/// Spawn a fire-and-forget task with panic logging.
+/// Panics are logged instead of silently swallowed.
+macro_rules! spawn_logged {
+    ($task:expr) => {{
+        let handle = tokio::spawn($task);
+        tokio::spawn(async move {
+            if let Err(e) = handle.await {
+                tracing::error!("Spawned task failed: {:?}", e);
+            }
+        });
+    }};
+}
+
 /// A shared slot that will be populated with the stream result once the
 /// SSE stream completes. The background task writes to this; the caller
 /// can await it after the response has been sent to the client.
@@ -48,7 +61,7 @@ pub fn tee_sse_stream(upstream_resp: reqwest::Response, start: Instant) -> (Body
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1024);
 
-    tokio::spawn(async move {
+    spawn_logged!(async move {
         let mut first = true;
         // 5A-1 FIX: Track whether the client has disconnected. When true, we
         // continue reading the upstream to capture the usage/cost data from
@@ -221,7 +234,7 @@ where
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1024);
 
-    tokio::spawn(async move {
+    spawn_logged!(async move {
         let mut first = true;
         // 5A-1 FIX: Continue reading upstream after client disconnect for billing.
         let mut client_gone = false;
@@ -410,7 +423,7 @@ pub fn tee_bedrock_stream(
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1024);
 
-    tokio::spawn(async move {
+    spawn_logged!(async move {
         let mut first = true;
         // 5A-1 FIX: Continue reading upstream after client disconnect for billing.
         let mut client_gone = false;

@@ -6,9 +6,11 @@
 
 use serde_json::Value;
 use std::sync::Arc;
+use uuid::Uuid;
 
 use crate::mcp::registry::McpRegistry;
 use crate::mcp::types;
+use crate::models::policy::Action;
 
 /// Maximum number of tool execution loop iterations to prevent infinite loops.
 pub const MAX_TOOL_LOOP_ITERATIONS: usize = 10;
@@ -301,17 +303,22 @@ pub fn has_mcp_tool_calls(response_body: &Value) -> bool {
 
 /// Post-LLM: Execute MCP tool calls and build the continuation messages.
 ///
-/// For each MCP tool call in the response, executes the tool via the registry,
+/// Executes only the permitted MCP tool calls provided (after filtering by policy),
 /// and returns the tool result messages to append to the conversation.
+///
+/// # Security
+/// - `project_id` is required for project isolation in the registry.
+/// - Tool responses are scanned for harmful content before being injected into LLM context.
 ///
 /// Returns `Some(Vec<messages>)` with the assistant message + tool results if
 /// MCP calls were executed, or `None` if no MCP calls were found.
 pub async fn execute_mcp_tool_calls(
     registry: &Arc<McpRegistry>,
+    permitted_calls: Vec<PendingMcpCall>,
     response_body: &Value,
+    project_id: Uuid,
 ) -> Option<Vec<Value>> {
-    let mcp_calls = extract_mcp_tool_calls(response_body);
-    if mcp_calls.is_empty() {
+    if permitted_calls.is_empty() {
         return None;
     }
 
@@ -329,8 +336,29 @@ pub async fn execute_mcp_tool_calls(
         result_messages.push(msg);
     }
 
-    // Execute each MCP tool call
-    for call in &mcp_calls {
+    // Default guardrail action for MCP tool responses
+    // Blocks harmful content and jailbreak patterns to prevent tool-based prompt injection
+    let guardrail_action = Action::ContentFilter {
+        block_jailbreak: true,
+        block_harmful: true,
+        block_code_injection: true,
+        block_profanity: false,
+        block_bias: false,
+        block_competitor_mention: false,
+        block_sensitive_topics: false,
+        block_gibberish: false,
+        block_contact_info: false,
+        block_ip_leakage: false,
+        competitor_names: vec![],
+        topic_allowlist: vec![],
+        topic_denylist: vec![],
+        custom_patterns: vec![],
+        risk_threshold: 0.5,
+        max_content_length: 0,
+    };
+
+    // Execute each permitted MCP tool call
+    for call in &permitted_calls {
         tracing::info!(
             server = %call.server_name,
             tool = %call.tool_name,
@@ -338,7 +366,7 @@ pub async fn execute_mcp_tool_calls(
         );
 
         let result = registry
-            .execute_tool(&call.server_name, &call.tool_name, call.arguments.clone())
+            .execute_tool(&call.server_name, &call.tool_name, call.arguments.clone(), project_id)
             .await;
 
         let content = match result {
@@ -354,16 +382,37 @@ pub async fn execute_mcp_tool_calls(
             }
         };
 
+        // SECURITY: Apply guardrails to tool response before injecting into LLM context
+        // This prevents tool-based prompt injection attacks
+        let content_json = serde_json::json!({
+            "messages": [{"role": "tool", "content": content}]
+        });
+        let guardrail_result = crate::middleware::guardrail::check_content(&content_json, &guardrail_action);
+
+        let final_content = if guardrail_result.blocked {
+            tracing::warn!(
+                server = %call.server_name,
+                tool = %call.tool_name,
+                patterns = ?guardrail_result.matched_patterns,
+                risk_score = %guardrail_result.risk_score,
+                "MCP tool response blocked by guardrails"
+            );
+            format!("[BLOCKED] Tool response contained unsafe content: {}",
+                guardrail_result.reason.unwrap_or_else(|| "Content policy violation".to_string()))
+        } else {
+            content
+        };
+
         // Build OpenAI tool result message
         result_messages.push(serde_json::json!({
             "role": "tool",
             "tool_call_id": call.tool_call_id,
-            "content": content,
+            "content": final_content,
         }));
     }
 
     tracing::info!(
-        mcp_calls_executed = mcp_calls.len(),
+        mcp_calls_executed = permitted_calls.len(),
         "MCP tool execution complete"
     );
 

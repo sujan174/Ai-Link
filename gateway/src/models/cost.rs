@@ -31,11 +31,20 @@ pub fn extract_usage(_upstream_url: &str, body: &[u8]) -> anyhow::Result<Option<
     // Gemini: usageMetadata
     if let Some(meta) = json.get("usageMetadata") {
         let input = meta.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let cached = meta.get("cachedContentTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let output = meta.get("candidatesTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        if input > 0 || output > 0 {
-            return Ok(Some((input, output)));
+        // Combine uncached prompt tokens with cached tokens for billing
+        let total_input = input.saturating_add(cached);
+        if total_input > 0 || output > 0 {
+            return Ok(Some((total_input, output)));
         }
     }
+
+    // No usage object found - log warning with response shape for debugging
+    tracing::warn!(
+        response_keys = ?json.as_object().map(|o| o.keys().collect::<Vec<_>>()),
+        "extract_usage: No usage or usageMetadata field found in response"
+    );
 
     Ok(None)
 }
@@ -117,6 +126,18 @@ pub fn get_model_pricing_fallback(provider: &str, model: &str) -> ModelPricing {
         },
 
         // ── Anthropic ─────────────────────────────────────────────
+        ("anthropic", m) if m.contains("claude-haiku-4") => ModelPricing {
+            input_cost_per_m: d("0.25"),
+            output_cost_per_m: d("1.25"),
+        },
+        ("anthropic", m) if m.contains("claude-sonnet-4") => ModelPricing {
+            input_cost_per_m: d("3.00"),
+            output_cost_per_m: d("15.00"),
+        },
+        ("anthropic", m) if m.contains("claude-opus-4") => ModelPricing {
+            input_cost_per_m: d("15.00"),
+            output_cost_per_m: d("75.00"),
+        },
         ("anthropic", m) if m.contains("claude-3-5-haiku") => ModelPricing {
             input_cost_per_m: d("0.80"),
             output_cost_per_m: d("4.00"),
