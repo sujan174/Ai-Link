@@ -1105,11 +1105,13 @@ pub async fn proxy_handler(
         }
 
         // Create approval request
+        // Use DynamicRoute-selected upstream if available, otherwise fall back to token default
+        let effective_upstream = dynamic_upstream_override.as_ref().unwrap_or(&token.upstream_url);
         let summary = serde_json::json!({
             "method": method.to_string(),
             "path": path,
             "agent": agent_name,
-            "upstream": token.upstream_url,
+            "upstream": effective_upstream,
             "body_preview": parsed_body.as_ref().map(|b| {
                 // SEC: use char-based truncation to avoid panicking on multi-byte UTF-8 boundaries.
                 // Limit raised to 2000 chars so HITL reviewers see enough context.
