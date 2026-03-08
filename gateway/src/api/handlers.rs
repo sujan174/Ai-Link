@@ -150,7 +150,7 @@ fn default_project_id() -> Uuid {
 /// Verify that `project_id` belongs to `org_id`.
 /// Returns `Err(FORBIDDEN)` if the project doesn't belong to the org,
 /// or `Err(INTERNAL_SERVER_ERROR)` on DB failure.
-async fn verify_project_ownership(
+pub async fn verify_project_ownership(
     state: &crate::AppState,
     org_id: Uuid,
     project_id: Uuid,
@@ -354,7 +354,10 @@ pub async fn list_tokens(
     let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
     verify_project_ownership(&state, auth.org_id, project_id).await?;
 
-    let tokens = state.db.list_tokens(project_id).await.map_err(|e| {
+    let limit = params.limit.unwrap_or(100).min(1000).max(1);
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    let tokens = state.db.list_tokens(project_id, limit, offset).await.map_err(|e| {
         tracing::error!("list_tokens failed: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -871,7 +874,10 @@ pub async fn list_policies(
     let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
     verify_project_ownership(&state, auth.org_id, project_id).await?;
 
-    let policies = state.db.list_policies(project_id).await.map_err(|e| {
+    let limit = params.limit.unwrap_or(100).min(1000).max(1);
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    let policies = state.db.list_policies(project_id, limit, offset).await.map_err(|e| {
         tracing::error!("list_policies failed: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -987,6 +993,7 @@ pub async fn update_policy(
             payload.rules,
             payload.retry,
             payload.name.as_deref(),
+            None, // No optimistic locking for this API endpoint
         )
         .await
         .map_err(|e| {
@@ -994,8 +1001,10 @@ pub async fn update_policy(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    if !updated {
-        return Err(StatusCode::NOT_FOUND);
+    match updated {
+        Ok(true) => {}
+        Ok(false) => return Err(StatusCode::NOT_FOUND),
+        Err(()) => return Err(StatusCode::CONFLICT), // Version mismatch
     }
 
     Ok(Json(PolicyResponse {
@@ -1353,9 +1362,13 @@ pub async fn list_services(
     auth.require_scope("services:read").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
     verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    let limit = params.limit.unwrap_or(100).min(1000).max(1);
+    let offset = params.offset.unwrap_or(0).max(0);
+
     let services = state
         .db
-        .list_services(project_id)
+        .list_services(project_id, limit, offset)
         .await
         .map_err(|e| {
             tracing::error!("list_services failed: {}", e);
@@ -1761,6 +1774,7 @@ pub async fn get_circuit_breaker(
     Path(token_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     auth.require_scope("tokens:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    verify_token_ownership(&state, &token_id, &auth).await?;
     let token = state.db.get_token(&token_id).await
         .map_err(|e| {
             tracing::error!("get_circuit_breaker: db error: {}", e);
@@ -1789,6 +1803,9 @@ pub async fn update_circuit_breaker(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     auth.require_scope("tokens:write").map_err(|_| {
         (StatusCode::FORBIDDEN, Json(json!({ "error": { "code": "forbidden", "message": "tokens:write scope required" } })))
+    })?;
+    verify_token_ownership(&state, &token_id, &auth).await.map_err(|status| {
+        (status, Json(json!({ "error": { "code": "not_found", "message": "Token not found" } })))
     })?;
     // P1.6: Validate the payload before deserializing to catch missing fields
     let cb_config: crate::proxy::loadbalancer::CircuitBreakerConfig =

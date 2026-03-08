@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    extract::{Query, State},
+    extract::{Query, State, Extension},
     http::{header, StatusCode},
     response::Response,
     Json,
@@ -21,6 +21,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::api::handlers::verify_project_ownership;
+use crate::api::AuthContext;
 use crate::AppState;
 
 // Default project ID used when no project_id is specified in the query.
@@ -96,10 +98,13 @@ fn default_format() -> String {
 /// Export the complete config (policies + tokens) as YAML or JSON.
 pub async fn export_config(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<ExportQuery>,
 ) -> Result<Response, StatusCode> {
+    auth.require_scope("config:read").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = params.project_id
-        .unwrap_or_else(|| Uuid::parse_str(DEFAULT_PROJECT).unwrap());
+        .unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
     let doc = build_config_document(&state, project_id).await?;
     serialize_and_respond(doc, &params.format)
 }
@@ -108,10 +113,13 @@ pub async fn export_config(
 /// Export policies only.
 pub async fn export_policies(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<ExportQuery>,
 ) -> Result<Response, StatusCode> {
+    auth.require_scope("config:read").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = params.project_id
-        .unwrap_or_else(|| Uuid::parse_str(DEFAULT_PROJECT).unwrap());
+        .unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
     let policies = fetch_policies(&state, project_id)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -127,10 +135,13 @@ pub async fn export_policies(
 /// Export tokens only (policy names resolved, no credentials).
 pub async fn export_tokens(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     Query(params): Query<ExportQuery>,
 ) -> Result<Response, StatusCode> {
+    auth.require_scope("config:read").map_err(|_| StatusCode::FORBIDDEN)?;
     let project_id = params.project_id
-        .unwrap_or_else(|| Uuid::parse_str(DEFAULT_PROJECT).unwrap());
+        .unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
     let (tokens, _policies) =
         tokio::try_join!(fetch_tokens(&state, project_id), fetch_policies(&state, project_id))
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -151,8 +162,13 @@ pub async fn export_tokens(
 ///   - anything else                      → try YAML first, then JSON
 pub async fn import_config(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
     req: axum::http::Request<Body>,
 ) -> Result<Json<ImportResult>, StatusCode> {
+    auth.require_scope("config:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = auth.default_project_id();
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
     let content_type = req
         .headers()
         .get(header::CONTENT_TYPE)
@@ -182,7 +198,6 @@ pub async fn import_config(
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
-    let project_id = Uuid::parse_str(DEFAULT_PROJECT).unwrap();
     import_document(&state, project_id, doc).await
 }
 
@@ -209,7 +224,8 @@ async fn fetch_policies(
     state: &AppState,
     project_id: Uuid,
 ) -> anyhow::Result<Vec<PolicyExport>> {
-    let rows = state.db.list_policies(project_id).await?;
+    // Use large defaults for internal export - we want all policies
+    let rows = state.db.list_policies(project_id, 1000, 0).await?;
     let exports = rows
         .into_iter()
         .filter(|r| r.is_active)
@@ -228,11 +244,11 @@ async fn fetch_tokens(
     state: &AppState,
     project_id: Uuid,
 ) -> anyhow::Result<Vec<TokenExport>> {
-    // Fetch tokens
-    let token_rows = state.db.list_tokens(project_id).await?;
+    // Fetch tokens - use large defaults for internal export
+    let token_rows = state.db.list_tokens(project_id, 1000, 0).await?;
 
     // Fetch all policies in the project to build an id→name map
-    let policy_rows = state.db.list_policies(project_id).await?;
+    let policy_rows = state.db.list_policies(project_id, 1000, 0).await?;
     let policy_name_map: std::collections::HashMap<Uuid, String> = policy_rows
         .into_iter()
         .map(|r| (r.id, r.name))
@@ -276,7 +292,7 @@ async fn import_document(
     // Build a map of name→id for resolving token→policy references later.
     let existing_policies = state
         .db
-        .list_policies(project_id)
+        .list_policies(project_id, 1000, 0)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let mut policy_id_map: std::collections::HashMap<String, Uuid> = existing_policies
@@ -288,7 +304,7 @@ async fn import_document(
         let rules_val = policy.rules.clone();
 
         if let Some(&existing_id) = policy_id_map.get(&policy.name) {
-            // Update existing policy
+            // Update existing policy (no optimistic locking for bulk import)
             let updated = state
                 .db
                 .update_policy(
@@ -299,14 +315,17 @@ async fn import_document(
                     Some(rules_val),
                     policy.retry.clone(),
                     Some(&policy.name),
+                    None, // No optimistic locking for bulk import
                 )
                 .await
                 .map_err(|e| {
                     tracing::error!("config import: update policy '{}': {}", policy.name, e);
                     StatusCode::INTERNAL_SERVER_ERROR
                 })?;
-            if updated {
-                result.policies_updated += 1;
+            match updated {
+                Ok(true) => result.policies_updated += 1,
+                Ok(false) => {} // Not found, skip
+                Err(()) => {} // Version conflict, skip (shouldn't happen without version)
             }
         } else {
             // Insert new policy
@@ -333,7 +352,7 @@ async fn import_document(
     // ── 2. Upsert tokens ───────────────────────────────────────
     let existing_tokens = state
         .db
-        .list_tokens(project_id)
+        .list_tokens(project_id, 1000, 0)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let existing_token_map: std::collections::HashMap<String, _> = existing_tokens

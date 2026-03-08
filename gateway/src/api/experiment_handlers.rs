@@ -62,6 +62,7 @@ pub async fn create_experiment(
     Extension(auth): Extension<AuthContext>,
     Json(payload): Json<CreateExperimentRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), StatusCode> {
+    auth.require_scope("experiments:write")?;
     let project_id = auth.default_project_id();
 
     if payload.variants.len() < 2 {
@@ -129,9 +130,10 @@ pub async fn list_experiments(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
+    auth.require_scope("experiments:read")?;
     let project_id = auth.default_project_id();
 
-    let policies = state.db.list_policies(project_id).await.map_err(|e| {
+    let policies = state.db.list_policies(project_id, 1000, 0).await.map_err(|e| {
         tracing::error!("list_experiments failed: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -160,10 +162,11 @@ pub async fn get_experiment(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("experiments:read")?;
     let project_id = auth.default_project_id();
 
     // Find the policy
-    let policies = state.db.list_policies(project_id).await.map_err(|e| {
+    let policies = state.db.list_policies(project_id, 1000, 0).await.map_err(|e| {
         tracing::error!("get_experiment failed: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -215,10 +218,11 @@ pub async fn get_experiment_results(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("experiments:read")?;
     let project_id = auth.default_project_id();
 
     // Find the policy to get the experiment name
-    let policies = state.db.list_policies(project_id).await.map_err(|e| {
+    let policies = state.db.list_policies(project_id, 1000, 0).await.map_err(|e| {
         tracing::error!("get_experiment_results failed: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -278,6 +282,7 @@ pub async fn stop_experiment(
     Extension(auth): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("experiments:write")?;
     let project_id = auth.default_project_id();
 
     let deleted = state
@@ -306,6 +311,7 @@ pub async fn update_experiment(
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateExperimentRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    auth.require_scope("experiments:write")?;
     let project_id = auth.default_project_id();
 
     if payload.variants.len() < 2 {
@@ -313,7 +319,7 @@ pub async fn update_experiment(
     }
 
     // Find the existing policy to get the experiment name
-    let policies = state.db.list_policies(project_id).await.map_err(|e| {
+    let policies = state.db.list_policies(project_id, 1000, 0).await.map_err(|e| {
         tracing::error!("update_experiment failed: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -356,15 +362,17 @@ pub async fn update_experiment(
 
     let updated = state
         .db
-        .update_policy(id, project_id, None, None, Some(rules), None, None)
+        .update_policy(id, project_id, None, None, Some(rules), None, None, None)
         .await
         .map_err(|e| {
             tracing::error!("update_experiment failed: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    if !updated {
-        return Err(StatusCode::NOT_FOUND);
+    match updated {
+        Ok(true) => {}
+        Ok(false) => return Err(StatusCode::NOT_FOUND),
+        Err(()) => return Err(StatusCode::CONFLICT),
     }
 
     Ok(Json(serde_json::json!({

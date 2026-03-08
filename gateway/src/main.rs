@@ -202,6 +202,10 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
     let vault = BuiltinStore::new(&cfg.master_key, db.pool().clone())?;
 
     tracing::info!("Connecting to Redis...");
+    // Redis is required for rate limiting, caching, and spend cap enforcement.
+    // If Redis is unavailable, the readiness probe returns 503 and the load balancer
+    // stops routing traffic to this instance.
+    // Degraded-mode operation without Redis is not supported for MVP.
     let redis_client = redis::Client::open(cfg.redis_url.as_str())?;
     // Use tokio::spawn to create connection manager properly in async context if needed,
     // but ConnectionManager::new is async.
@@ -288,7 +292,7 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
     let app = axum::Router::new()
         // Health endpoints (no auth)
         .route("/healthz", axum::routing::get(|| async { "ok" }))
-        .route("/readyz", axum::routing::get(readiness_check))
+        .route("/readyz", axum::routing::get(readiness_check_layer))
         // Prometheus metrics (no auth — standard for /metrics)
         .route("/metrics", axum::routing::get(prometheus_metrics_handler))
         // Realtime WebSocket proxy — must come before the catch-all fallback
@@ -345,6 +349,14 @@ async fn run_server(cfg: config::Config, port: u16) -> anyhow::Result<()> {
     // Phase 4: Start background cleanup job for Level 2 log expiry
     jobs::cleanup::spawn(state.db.pool().clone());
     tracing::info!("Background cleanup job started (Level 2 log expiry every 1h)");
+
+    // Phase 5: Start approval expiry job (every 60 seconds)
+    jobs::approval_expiry::spawn(state.db.pool().clone());
+    tracing::info!("Approval expiry job started (every 60s)");
+
+    // Phase 5.1: Start session cleanup job (every 15 minutes)
+    jobs::session_cleanup::spawn(state.db.pool().clone());
+    tracing::info!("Session cleanup job started (orphaned session expiry every 15min)");
 
     // Phase 2.3: Start budget check job (every 15 minutes)
     {
@@ -418,8 +430,37 @@ async fn request_id_middleware(
     resp
 }
 
-async fn readiness_check() -> &'static str {
-    "ok"
+/// Middleware layer that extracts state for readiness check.
+async fn readiness_check_layer(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    readiness_check(&state).await
+}
+
+/// Readiness probe: checks database and Redis connectivity.
+/// Returns 200 if both are healthy, 503 otherwise.
+async fn readiness_check(state: &AppState) -> (axum::http::StatusCode, &'static str) {
+    // Check database connectivity
+    let db_ok = sqlx::query("SELECT 1")
+        .fetch_one(state.db.pool())
+        .await
+        .is_ok();
+
+    // Check Redis connectivity
+    let redis_ok = state.cache.ping().await;
+
+    if db_ok && redis_ok {
+        (axum::http::StatusCode::OK, "ok")
+    } else {
+        let reason = match (db_ok, redis_ok) {
+            (false, false) => "database and redis unavailable",
+            (false, true) => "database unavailable",
+            (true, false) => "redis unavailable",
+            (true, true) => unreachable!(),
+        };
+        tracing::warn!(db_ok, redis_ok, "readiness check failed: {}", reason);
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, reason)
+    }
 }
 
 /// GET /metrics — Prometheus text exposition format.
@@ -547,7 +588,7 @@ async fn handle_policy_command(
         }
         cli::PolicyCommands::List { project_id } => {
             let pid = uuid::Uuid::parse_str(&project_id).context("Invalid project_id")?;
-            let policies = state.db.list_policies(pid).await?;
+            let policies = state.db.list_policies(pid, 1000, 0).await?;
             if policies.is_empty() {
                 println!("No policies found.");
             } else {
@@ -603,11 +644,12 @@ async fn handle_token_command(
                 // Lookup by name
                 // We don't have a get_credential_by_name yet, so we list and find
                 let creds = state.db.list_credentials(pid).await?;
-                creds
+                let cred_id = creds
                     .into_iter()
                     .find(|c| c.name == credential)
                     .map(|c| c.id)
-                    .ok_or_else(|| anyhow::anyhow!("Credential not found: {}", credential))?
+                    .ok_or_else(|| anyhow::anyhow!("Credential not found: {}", credential))?;
+                cred_id
             };
 
             // Parse policy IDs
@@ -648,7 +690,7 @@ async fn handle_token_command(
         }
         cli::TokenCommands::List { project_id } => {
             let pid = uuid::Uuid::parse_str(&project_id).context("Invalid project_id")?;
-            let tokens = state.db.list_tokens(pid).await?;
+            let tokens = state.db.list_tokens(pid, 1000, 0).await?;
             if tokens.is_empty() {
                 println!("No tokens found.");
             } else {
@@ -766,7 +808,7 @@ async fn handle_approval_command(db: &PgStore, cmd: cli::ApprovalCommands) -> an
     match cmd {
         cli::ApprovalCommands::List { project_id } => {
             let project = parse_project_id(project_id)?;
-            let approvals = db.list_pending_approvals(project).await?;
+            let approvals = db.list_pending_approvals(project, 1000, 0).await?;
 
             if approvals.is_empty() {
                 println!("No pending approvals.");

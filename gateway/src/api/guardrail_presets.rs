@@ -510,7 +510,7 @@ pub async fn enable_guardrails(
     };
 
     // ── Check for existing guardrails (idempotent upsert) ─────
-    let all_policies = state.db.list_policies(project_id).await.map_err(|e| {
+    let all_policies = state.db.list_policies(project_id, 1000, 0).await.map_err(|e| {
         tracing::error!(error = %e, "guardrails/enable: failed to list policies");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -536,14 +536,14 @@ pub async fn enable_guardrails(
         let policy_name = format!("guardrails:{}:{}", source, payload.token_id);
         let rules_value = serde_json::Value::Array(input_rules);
 
-        if let Some(existing_policy) = existing_input {
+        if let Some(existing_policy) = existing_input{
             state.db.update_policy(
                 existing_policy.id, project_id,
-                None, None, Some(rules_value), None, Some(&policy_name),
+                None, None, Some(rules_value), None, Some(&policy_name), None,
             ).await.map_err(|e| {
                 tracing::error!(error = %e, "guardrails/enable: failed to update input policy");
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            })?.map(|_| true).unwrap_or(false);
             Some(existing_policy.id)
         } else {
             let id = state.db.insert_policy(
@@ -567,11 +567,11 @@ pub async fn enable_guardrails(
         if let Some(existing_policy) = existing_output {
             state.db.update_policy(
                 existing_policy.id, project_id,
-                None, None, Some(out_rules_value), None, Some(&out_policy_name),
+                None, None, Some(out_rules_value), None, Some(&out_policy_name), None,
             ).await.map_err(|e| {
                 tracing::error!(error = %e, "guardrails/enable: failed to update output policy");
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            })?.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             Some(existing_policy.id)
         } else {
             let id = state.db.insert_policy(
@@ -656,7 +656,7 @@ pub async fn disable_guardrails(
     let token_suffix = format!(":{}", payload.token_id);
 
     // List all policies for this project and find guardrail-auto ones
-    let all_policies = state.db.list_policies(project_id).await.map_err(|e| {
+    let all_policies = state.db.list_policies(project_id, 1000, 0).await.map_err(|e| {
         tracing::error!(error = %e, "guardrails/disable: failed to list policies");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -733,7 +733,7 @@ pub async fn guardrails_status(
     let token_id = params.get("token_id").ok_or(StatusCode::BAD_REQUEST)?;
     let project_id = auth.default_project_id();
 
-    let all_policies = state.db.list_policies(project_id).await.map_err(|e| {
+    let all_policies = state.db.list_policies(project_id, 1000, 0).await.map_err(|e| {
         tracing::error!(error = %e, "guardrails/status: failed to list policies");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;

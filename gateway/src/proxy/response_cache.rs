@@ -5,13 +5,32 @@ use crate::cache::TieredCache;
 
 /// Fields from the request body that form the cache key.
 /// We normalize and hash these so identical prompts always hit cache.
-/// FIX 4C-1: Added top_p, response_format, seed, frequency_penalty, presence_penalty.
-/// Missing any of these meant different requests could get the same cached response.
+///
+/// COMPLETE LIST of parameters that affect LLM response (must all be in cache key):
+/// - Core: model, messages, temperature, max_tokens
+/// - Sampling: top_p, frequency_penalty, presence_penalty, seed
+/// - Tools: tools, tool_choice
+/// - Stopping: stop (stop sequences)
+/// - Biasing: logit_bias
+/// - Anthropic-specific: system (separate from messages in Anthropic API)
+/// - Output format: response_format
+///
+/// Any parameter NOT in this list is assumed NOT to affect the response content.
 const CACHE_KEY_FIELDS: &[&str] = &[
+    // Core parameters
     "model", "messages", "temperature", "max_tokens",
+    // Tool/function calling
     "tools", "tool_choice",
-    "top_p", "response_format", "seed",
-    "frequency_penalty", "presence_penalty",
+    // Sampling parameters
+    "top_p", "frequency_penalty", "presence_penalty", "seed",
+    // Stopping conditions
+    "stop",
+    // Token probability manipulation
+    "logit_bias",
+    // Provider-specific: Anthropic system prompt (separate from messages)
+    "system",
+    // Output format constraints
+    "response_format",
 ];
 
 /// Default cache TTL: 5 minutes.

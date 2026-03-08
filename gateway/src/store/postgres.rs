@@ -228,11 +228,14 @@ impl PgStore {
         Ok(row)
     }
 
-    pub async fn list_tokens(&self, project_id: Uuid) -> anyhow::Result<Vec<TokenRow>> {
+    pub async fn list_tokens(&self, project_id: Uuid, limit: i64, offset: i64) -> anyhow::Result<Vec<TokenRow>> {
+        let limit = limit.min(1000).max(1); // Cap at 1000, minimum 1
         let rows = sqlx::query_as::<_, TokenRow>(
-            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams, circuit_breaker, allowed_models, allowed_model_group_ids, team_id, tags, mcp_allowed_tools, mcp_blocked_tools FROM tokens WHERE project_id = $1 AND is_active = true ORDER BY created_at DESC"
+            "SELECT id, project_id, name, credential_id, upstream_url, scopes, policy_ids, is_active, expires_at, created_at, COALESCE(log_level, 1::SMALLINT) as log_level, upstreams, circuit_breaker, allowed_models, allowed_model_group_ids, team_id, tags, mcp_allowed_tools, mcp_blocked_tools FROM tokens WHERE project_id = $1 AND is_active = true ORDER BY created_at DESC LIMIT $2 OFFSET $3"
         )
         .bind(project_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
@@ -346,6 +349,7 @@ impl PgStore {
 
     pub async fn get_policies_for_token(
         &self,
+        project_id: Uuid,
         policy_ids: &[Uuid],
     ) -> anyhow::Result<Vec<crate::models::policy::Policy>> {
         if policy_ids.is_empty() {
@@ -353,9 +357,10 @@ impl PgStore {
         }
 
         let rows = sqlx::query_as::<_, PolicyRow>(
-            "SELECT id, project_id, name, mode, phase, rules, retry, is_active, created_at FROM policies WHERE id = ANY($1) AND is_active = true"
+            "SELECT id, project_id, name, mode, phase, rules, retry, is_active, created_at FROM policies WHERE id = ANY($1) AND project_id = $2 AND is_active = true"
         )
         .bind(policy_ids)
+        .bind(project_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -394,11 +399,14 @@ impl PgStore {
         Ok(policies)
     }
 
-    pub async fn list_policies(&self, project_id: Uuid) -> anyhow::Result<Vec<PolicyRow>> {
+    pub async fn list_policies(&self, project_id: Uuid, limit: i64, offset: i64) -> anyhow::Result<Vec<PolicyRow>> {
+        let limit = limit.min(1000).max(1); // Cap at 1000, minimum 1
         let rows = sqlx::query_as::<_, PolicyRow>(
-            "SELECT id, project_id, name, mode, phase, rules, retry, is_active, created_at FROM policies WHERE project_id = $1 ORDER BY created_at DESC"
+            "SELECT id, project_id, name, mode, phase, rules, retry, is_active, created_at FROM policies WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
         )
         .bind(project_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -439,7 +447,8 @@ impl PgStore {
         rules: Option<serde_json::Value>,
         retry: Option<serde_json::Value>,
         name: Option<&str>,
-    ) -> anyhow::Result<bool> {
+        expected_version: Option<i32>,
+    ) -> anyhow::Result<Result<bool, ()>> {
         // Snapshot current state into policy_versions before updating
         sqlx::query(
             r#"INSERT INTO policy_versions (policy_id, version, name, mode, phase, rules, retry)
@@ -452,27 +461,57 @@ impl PgStore {
         .execute(&self.pool)
         .await?;
 
-        // Build dynamic update — at least one field must change
-        let result = sqlx::query(
-            r#"UPDATE policies
-               SET mode = COALESCE($1, mode),
-                   phase = COALESCE($2, phase),
-                   rules = COALESCE($3, rules),
-                   retry = COALESCE($4, retry),
-                   name = COALESCE($5, name),
-                   version = version + 1
-               WHERE id = $6 AND project_id = $7 AND is_active = true"#,
-        )
-        .bind(mode)
-        .bind(phase)
-        .bind(rules)
-        .bind(retry)
-        .bind(name)
-        .bind(id)
-        .bind(project_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
+        // Build dynamic update with optional optimistic locking
+        // If expected_version is provided, only update if the current version matches
+        let result = if let Some(ver) = expected_version {
+            sqlx::query(
+                r#"UPDATE policies
+                   SET mode = COALESCE($1, mode),
+                       phase = COALESCE($2, phase),
+                       rules = COALESCE($3, rules),
+                       retry = COALESCE($4, retry),
+                       name = COALESCE($5, name),
+                       version = version + 1
+                   WHERE id = $6 AND project_id = $7 AND is_active = true AND version = $8"#,
+            )
+            .bind(mode)
+            .bind(phase)
+            .bind(rules)
+            .bind(retry)
+            .bind(name)
+            .bind(id)
+            .bind(project_id)
+            .bind(ver)
+            .execute(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"UPDATE policies
+                   SET mode = COALESCE($1, mode),
+                       phase = COALESCE($2, phase),
+                       rules = COALESCE($3, rules),
+                       retry = COALESCE($4, retry),
+                       name = COALESCE($5, name),
+                       version = version + 1
+                   WHERE id = $6 AND project_id = $7 AND is_active = true"#,
+            )
+            .bind(mode)
+            .bind(phase)
+            .bind(rules)
+            .bind(retry)
+            .bind(name)
+            .bind(id)
+            .bind(project_id)
+            .execute(&self.pool)
+            .await?
+        };
+
+        if result.rows_affected() == 0 && expected_version.is_some() {
+            // Version mismatch - concurrent modification detected
+            return Ok(Err(()));
+        }
+
+        Ok(Ok(result.rows_affected() > 0))
     }
 
     pub async fn delete_policy(&self, id: Uuid, project_id: Uuid) -> anyhow::Result<bool> {
@@ -546,10 +585,11 @@ impl PgStore {
         }
     }
 
-    pub async fn get_approval_status(&self, request_id: Uuid) -> anyhow::Result<String> {
+    pub async fn get_approval_status(&self, request_id: Uuid, project_id: Uuid) -> anyhow::Result<String> {
         let status: Option<String> =
-            sqlx::query_scalar("SELECT status FROM approval_requests WHERE id = $1")
+            sqlx::query_scalar("SELECT status FROM approval_requests WHERE id = $1 AND project_id = $2")
                 .bind(request_id)
+                .bind(project_id)
                 .fetch_optional(&self.pool)
                 .await?;
         Ok(status.unwrap_or_else(|| "expired".to_string()))
@@ -558,11 +598,16 @@ impl PgStore {
     pub async fn list_pending_approvals(
         &self,
         project_id: Uuid,
+        limit: i64,
+        offset: i64,
     ) -> anyhow::Result<Vec<crate::models::approval::ApprovalRequest>> {
+        let limit = limit.min(1000).max(1); // Cap at 1000, minimum 1
         let rows = sqlx::query_as::<_, crate::models::approval::ApprovalRequest>(
-            "SELECT * FROM approval_requests WHERE project_id = $1 AND status = 'pending' ORDER BY created_at ASC"
+            "SELECT * FROM approval_requests WHERE project_id = $1 AND status = 'pending' ORDER BY created_at ASC LIMIT $2 OFFSET $3"
         )
         .bind(project_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -573,11 +618,13 @@ impl PgStore {
     pub async fn count_pending_approvals_for_token(
         &self,
         token_id: &str,
+        project_id: Uuid,
     ) -> anyhow::Result<i64> {
         let count: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM approval_requests WHERE token_id = $1 AND status = 'pending'"
+            "SELECT COUNT(*) FROM approval_requests WHERE token_id = $1 AND project_id = $2 AND status = 'pending'"
         )
         .bind(token_id)
+        .bind(project_id)
         .fetch_one(&self.pool)
         .await?;
         Ok(count.0)
@@ -616,7 +663,7 @@ impl PgStore {
                       cache_hit
                FROM audit_logs
                WHERE project_id = $1
-               ORDER BY created_at DESC
+               ORDER BY created_at DESC, id DESC
                LIMIT $2 OFFSET $3"#,
         )
         .bind(project_id)
@@ -760,7 +807,7 @@ impl PgStore {
             FROM audit_logs
             WHERE project_id = $1 AND session_id IS NOT NULL
             GROUP BY session_id
-            ORDER BY MAX(created_at) DESC
+            ORDER BY MAX(created_at) DESC, session_id
             LIMIT $2 OFFSET $3
             "#,
         )
@@ -1008,11 +1055,14 @@ impl PgStore {
         Ok(row)
     }
 
-    pub async fn list_services(&self, project_id: Uuid) -> anyhow::Result<Vec<crate::models::service::Service>> {
+    pub async fn list_services(&self, project_id: Uuid, limit: i64, offset: i64) -> anyhow::Result<Vec<crate::models::service::Service>> {
+        let limit = limit.min(1000).max(1); // Cap at 1000, minimum 1
         let rows = sqlx::query_as::<_, crate::models::service::Service>(
-            "SELECT id, project_id, name, description, base_url, service_type, credential_id, is_active, created_at, updated_at FROM services WHERE project_id = $1 ORDER BY created_at DESC"
+            "SELECT id, project_id, name, description, base_url, service_type, credential_id, is_active, created_at, updated_at FROM services WHERE project_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
         )
         .bind(project_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
@@ -1512,12 +1562,51 @@ impl PgStore {
     }
 
     /// Update session status (active → paused → active → completed).
+    /// Valid transitions:
+    ///   - "active" → "paused", "completed", "expired"
+    ///   - "paused" → "active", "expired"
+    ///   - Any other transition returns None (invalid)
     pub async fn update_session_status(
         &self,
         session_id: &str,
         project_id: Uuid,
         new_status: &str,
     ) -> anyhow::Result<Option<SessionEntity>> {
+        // Get current status first
+        let current = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT status FROM sessions WHERE session_id = $1 AND project_id = $2"
+        )
+        .bind(session_id)
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let current_status = match current {
+            Some(Some(s)) => s,
+            Some(None) => return Ok(None), // Session not found
+            None => return Ok(None), // Query failed
+        };
+
+        // Validate transition
+        let valid = match (current_status.as_str(), new_status) {
+            ("active", "paused") => true,
+            ("active", "completed") => true,
+            ("active", "expired") => true,
+            ("paused", "active") => true,
+            ("paused", "expired") => true,
+            _ => false,
+        };
+
+        if !valid {
+            tracing::warn!(
+                session_id = %session_id,
+                current_status = %current_status,
+                new_status = %new_status,
+                "Invalid session state transition"
+            );
+            return Ok(None);
+        }
+
         let completed_at = if new_status == "completed" {
             Some(chrono::Utc::now())
         } else {
@@ -1803,6 +1892,7 @@ pub struct ApiKeyRow {
     pub last_used_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub team_id: Option<Uuid>,
 }
 
 #[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
@@ -1879,11 +1969,10 @@ impl PgStore {
     }
 
     pub async fn get_api_key_by_hash(&self, key_hash: &str) -> anyhow::Result<Option<ApiKeyRow>> {
-        let key = sqlx::query_as!(
-            ApiKeyRow,
+        let key = sqlx::query_as::<_, ApiKeyRow>(
             "SELECT * FROM api_keys WHERE key_hash = $1 AND is_active = true",
-            key_hash
         )
+        .bind(key_hash)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -1891,11 +1980,10 @@ impl PgStore {
     }
 
     pub async fn list_api_keys(&self, org_id: Uuid) -> anyhow::Result<Vec<ApiKeyRow>> {
-        let keys = sqlx::query_as!(
-            ApiKeyRow,
+        let keys = sqlx::query_as::<_, ApiKeyRow>(
             "SELECT * FROM api_keys WHERE org_id = $1 ORDER BY created_at DESC",
-            org_id
         )
+        .bind(org_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2383,23 +2471,21 @@ impl PgStore {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Create a new immutable version. Auto-increments version number.
+    /// Create a new immutable version. Auto-increments version number atomically.
     pub async fn insert_prompt_version(&self, v: &NewPromptVersion) -> anyhow::Result<PromptVersionRow> {
-        let next_version: i32 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(version), 0) + 1 FROM prompt_versions WHERE prompt_id = $1",
-        )
-        .bind(v.prompt_id)
-        .fetch_one(&self.pool)
-        .await?;
-
+        // Use ON CONFLICT DO UPDATE with subquery to atomically get next version
+        // This prevents race conditions when multiple versions are created concurrently
         let row = sqlx::query_as::<_, PromptVersionRow>(
             r#"INSERT INTO prompt_versions
                (prompt_id, version, model, messages, temperature, max_tokens, top_p, tools, commit_message, created_by)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               VALUES (
+                   $1,
+                   (SELECT COALESCE(MAX(version), 0) + 1 FROM prompt_versions WHERE prompt_id = $1),
+                   $2, $3, $4, $5, $6, $7, $8, $9
+               )
                RETURNING *"#,
         )
         .bind(v.prompt_id)
-        .bind(next_version)
         .bind(&v.model)
         .bind(&v.messages)
         .bind(v.temperature)
@@ -2444,6 +2530,8 @@ impl PgStore {
     /// Deploy: atomically move a label to a specific version.
     /// Removes the label from all other versions of the same prompt, then adds to the target.
     pub async fn deploy_prompt_version(&self, prompt_id: Uuid, version: i32, label: &str) -> anyhow::Result<bool> {
+        let mut tx = self.pool.begin().await?;
+
         // Remove label from all versions of this prompt
         sqlx::query(
             r#"UPDATE prompt_versions
@@ -2452,7 +2540,7 @@ impl PgStore {
         )
         .bind(label)
         .bind(prompt_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
         // Add label to the target version
@@ -2467,8 +2555,10 @@ impl PgStore {
         .bind(label)
         .bind(prompt_id)
         .bind(version)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
