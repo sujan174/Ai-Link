@@ -1,0 +1,121 @@
+use std::sync::Arc;
+use std::convert::Infallible;
+
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::sse::{Event, KeepAlive, Sse},
+    Extension,
+    Json,
+};
+use futures::stream::{self, Stream};
+use uuid::Uuid;
+
+use crate::api::AuthContext;
+use crate::store::postgres::{AuditLogDetailRow, AuditLogRow};
+use crate::AppState;
+use super::dtos::PaginationParams;
+use super::helpers::verify_project_ownership;
+
+pub async fn list_audit_logs(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Vec<AuditLogRow>>, StatusCode> {
+    // Audit logs require explicit scope or read-all
+    auth.require_scope("audit:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+    let limit = params.limit.unwrap_or(50).clamp(1, 200); // 1 <= limit <= 200
+    let offset = params.offset.unwrap_or(0).max(0); // non-negative
+
+    let logs = state
+        .db
+        .list_audit_logs(project_id, limit, offset)
+        .await
+        .map_err(|e| {
+            tracing::error!("list_audit_logs failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(logs))
+}
+
+/// GET /api/v1/audit/:id — single audit log detail with bodies
+pub async fn get_audit_log(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<AuditLogDetailRow>, StatusCode> {
+    auth.require_scope("audit:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+    let log_id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let log = state
+        .db
+        .get_audit_log_detail(log_id, project_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("get_audit_log_detail failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(log))
+}
+
+pub async fn stream_audit_logs(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<PaginationParams>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    // SEC: scope check (SSE handler can't return Result, so we filter silently on auth failure)
+    let has_scope = auth.require_scope("audit:read").is_ok();
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    let project_ok = verify_project_ownership(&state, auth.org_id, project_id).await.is_ok();
+    let authorized = has_scope && project_ok;
+
+    let stream = stream::unfold(
+        (state, project_id, None::<chrono::DateTime<chrono::Utc>>, authorized),
+        |(state, project_id, last_seen, authorized)| async move {
+            // Poll every 2 seconds
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            // If not authorized, just send heartbeats (no data)
+            if !authorized {
+                return Some((Ok(Event::default().comment("heartbeat")), (state, project_id, last_seen, authorized)));
+            }
+
+            let rows = state
+                .db
+                .list_audit_logs(project_id, 20, 0)
+                .await
+                .unwrap_or_default();
+
+            // Filter to only new entries since last_seen
+            let new_rows: Vec<&AuditLogRow> = if let Some(last) = last_seen {
+                rows.iter().filter(|r| r.created_at > last).collect()
+            } else {
+                // First poll: send nothing, just record the cursor
+                vec![]
+            };
+
+            let next_cursor = rows.first().map(|r| r.created_at).or(last_seen);
+
+            if new_rows.is_empty() {
+                // Send a heartbeat comment to keep connection alive
+                Some((Ok(Event::default().comment("heartbeat")), (state, project_id, next_cursor, authorized)))
+            } else {
+                let data = serde_json::to_string(&new_rows).unwrap_or_default();
+                Some((
+                    Ok(Event::default().data(data).event("audit")),
+                    (state, project_id, next_cursor, authorized),
+                ))
+            }
+        },
+    );
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}

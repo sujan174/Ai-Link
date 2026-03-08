@@ -1,0 +1,202 @@
+use std::sync::Arc;
+
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Extension,
+    Json,
+};
+use serde_json::json;
+use uuid::Uuid;
+
+use crate::api::AuthContext;
+use crate::store::postgres::PolicyRow;
+use crate::AppState;
+use super::dtos::{CreatePolicyRequest, UpdatePolicyRequest, PolicyResponse, DeleteResponse, PaginationParams};
+use super::helpers::verify_project_ownership;
+
+pub async fn list_policies(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Query(params): Query<PaginationParams>,
+) -> Result<Json<Vec<PolicyRow>>, StatusCode> {
+    auth.require_scope("policies:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let project_id = params.project_id.unwrap_or_else(|| auth.default_project_id());
+    verify_project_ownership(&state, auth.org_id, project_id).await?;
+
+    let limit = params.limit.unwrap_or(100).min(1000).max(1);
+    let offset = params.offset.unwrap_or(0).max(0);
+
+    let policies = state.db.list_policies(project_id, limit, offset).await.map_err(|e| {
+        tracing::error!("list_policies failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(policies))
+}
+
+/// POST /api/v1/policies — create a new policy
+pub async fn create_policy(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(payload): Json<CreatePolicyRequest>,
+) -> impl IntoResponse {
+    if auth.require_role("admin").is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if auth.require_scope("policies:write").is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let project_id = payload.project_id.unwrap_or_else(|| auth.default_project_id());
+    // SEC: verify project isolation
+    if let Err(status) = verify_project_ownership(&state, auth.org_id, project_id).await {
+        return status.into_response();
+    }
+    let mode = payload.mode.unwrap_or_else(|| "enforce".to_string());
+    let phase = payload.phase.unwrap_or_else(|| "pre".to_string());
+
+    // Validate mode
+    if mode != "enforce" && mode != "shadow" {
+        tracing::warn!("create_policy: invalid mode: {}", mode);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("invalid mode: {}", mode) })),
+        ).into_response();
+    }
+
+    // Validate phase
+    if phase != "pre" && phase != "post" {
+        tracing::warn!("create_policy: invalid phase: {}", phase);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("invalid phase: {}", phase) })),
+        ).into_response();
+    }
+
+    // SEC: enforce max size on rules JSON to prevent oversized payloads clogging DB+memory
+    const MAX_RULES_BYTES: usize = 64 * 1024; // 64KB
+    let rules_str = payload.rules.to_string();
+    if rules_str.len() > MAX_RULES_BYTES {
+        tracing::warn!("create_policy: rules JSON too large: {} bytes", rules_str.len());
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": format!("rules JSON exceeds maximum size of {}KB", MAX_RULES_BYTES / 1024) })),
+        ).into_response();
+    }
+
+    match state
+        .db
+        .insert_policy(project_id, &payload.name, &mode, &phase, payload.rules, payload.retry)
+        .await
+    {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(json!(PolicyResponse {
+                id,
+                name: payload.name,
+                message: "Policy created".to_string(),
+            })),
+        ).into_response(),
+        Err(e) => {
+            tracing::error!("create_policy failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal server error" })),
+            ).into_response()
+        }
+    }
+}
+
+/// PUT /api/v1/policies/:id — update a policy
+pub async fn update_policy(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+    Json(payload): Json<UpdatePolicyRequest>,
+) -> Result<Json<PolicyResponse>, StatusCode> {
+    auth.require_role("admin")?;
+    auth.require_scope("policies:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let project_id = auth.default_project_id();
+
+    // Validate mode if provided
+    if let Some(ref mode) = payload.mode {
+        if mode != "enforce" && mode != "shadow" {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
+    // Validate phase if provided
+    if let Some(ref phase) = payload.phase {
+        if phase != "pre" && phase != "post" {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
+    let updated = state
+        .db
+        .update_policy(
+            id,
+            project_id,
+            payload.mode.as_deref(),
+            payload.phase.as_deref(),
+            payload.rules,
+            payload.retry,
+            payload.name.as_deref(),
+            None, // No optimistic locking for this API endpoint
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!("update_policy failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    match updated {
+        Ok(true) => {}
+        Ok(false) => return Err(StatusCode::NOT_FOUND),
+        Err(()) => return Err(StatusCode::CONFLICT), // Version mismatch
+    }
+
+    Ok(Json(PolicyResponse {
+        id,
+        name: payload.name.unwrap_or_default(),
+        message: "Policy updated".to_string(),
+    }))
+}
+
+/// DELETE /api/v1/policies/:id — soft-delete a policy
+pub async fn delete_policy(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+) -> Result<Json<DeleteResponse>, StatusCode> {
+    auth.require_role("admin")?;
+    auth.require_scope("policies:write").map_err(|_| StatusCode::FORBIDDEN)?;
+    let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let project_id = auth.default_project_id();
+
+    let deleted = state.db.delete_policy(id, project_id).await.map_err(|e| {
+        tracing::error!("delete_policy failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(DeleteResponse { id, deleted }))
+}
+
+/// GET /api/v1/policies/:id/versions — list policy version history
+pub async fn list_policy_versions(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Path(id_str): Path<String>,
+) -> Result<Json<Vec<crate::store::postgres::PolicyVersionRow>>, StatusCode> {
+    auth.require_scope("policies:read").map_err(|_| StatusCode::FORBIDDEN)?;
+    let id = Uuid::parse_str(&id_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let versions = state.db.list_policy_versions(id).await.map_err(|e| {
+        tracing::error!("list_policy_versions failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(versions))
+}
