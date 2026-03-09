@@ -34,6 +34,9 @@ cargo test --test integration         # Integration tests only
 cargo test --test adversarial_unit   # Unit tests only
 cargo test --test full_path          # End-to-end path tests
 
+# Run load tests (requires k6, mock upstream on 9000, and gateway on 8082)
+cd gateway/tests/loadtest && ./run_all.sh
+
 # Linting and formatting
 cargo clippy                         # Check for common issues
 cargo fmt                            # Format code
@@ -227,6 +230,7 @@ See `gateway/DEPENDENCIES.md` for accepted security advisories:
 - `DASHBOARD_ORIGIN`: Allowed CORS origin for dashboard
 - `DASHBOARD_SECRET`: Shared secret for dashboard proxy
 - `TRUEFLOW_ENABLE_TEST_HOOKS`: Set to "1" in development only
+- **DO NOT run tests on or kill processes on port 8080. A proxy runs on this port.** Instead, run the gateway locally on an alternative port (e.g. 8081).
 
 ### Optional Variables
 - `RUST_LOG`: Logging level (info, debug, trace)
