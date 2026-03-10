@@ -73,19 +73,40 @@ Open **[http://localhost:3000](http://localhost:3000)**
 
 ## Configuration
 
+The default `docker-compose.yml` provides a standard configuration. You can customize TrueFlow by setting these environment variables.
+
+### Core Configuration
+
 | Variable | What It Does | Default |
 |----------|-------------|---------|
 | `TRUEFLOW_MASTER_KEY` | 32-byte hex key for vault encryption. **Change for production** | dev key |
 | `TRUEFLOW_ADMIN_KEY` | Root admin API key | `trueflow-admin-test` |
-| `DATABASE_URL` | PostgreSQL connection string | `postgres://postgres:password@localhost:5432/trueflow` |
-| `REDIS_URL` | Redis connection string | `redis://localhost:6379` |
+| `DATABASE_URL` | PostgreSQL connection string | `postgres://localhost/trueflow` |
+| `REDIS_URL` | Redis connection string | `redis://127.0.0.1:6379` |
 | `DASHBOARD_SECRET` | Dashboard ↔ gateway auth secret | `trueflow-dashboard-dev-secret` |
 | `DASHBOARD_ORIGIN` | CORS origin for dashboard | `http://localhost:3000` |
 | `TRUEFLOW_ENV` | Set to `production` for secure startup checks | `development` |
 | `RUST_LOG` | Log level: `info`, `debug`, `trace` | `info` |
 | `TRUEFLOW_PORT` | Gateway bind port | `8443` |
-| `TRUEFLOW_SLACK_WEBHOOK_URL` | Slack webhook for HITL notifications | — |
-| `TRUEFLOW_ENABLE_TEST_HOOKS` | Enable test headers. **Never in production** | `0` |
+
+### Advanced Configuration
+
+TrueFlow supports advanced features that are disabled by default. Enable them using these environment variables.
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `TRUEFLOW_VAULT_BACKEND` | string | `builtin` | KEK backend for envelope encryption. Options: `builtin` (local AES-256-GCM), `aws-kms`, `hashicorp` |
+| `TRUEFLOW_DEFAULT_RPM` | number | `600` | Default rate limit (requests per window) applied to all tokens if not explicitly configured |
+| `TRUEFLOW_DEFAULT_RPM_WINDOW`| number | `60` | Time window in seconds for the default rate limit |
+| `TRUSTED_PROXY_CIDRS` | string | `(empty)` | Comma-separated list of CIDRs (e.g., `10.0.0.0/8,172.16.0.0/12`) to trust for `X-Forwarded-For` IP validation. Empty means headers are ignored |
+| `TRUEFLOW_WEBHOOK_URLS` | string | `(empty)` | Comma-separated list of URLs to POST payload events to |
+| `TRUEFLOW_SLACK_WEBHOOK_URL` | string | `(empty)` | Slack webhook URL for Human-in-the-loop (HITL) approval notifications |
+| `TRUEFLOW_ENABLE_TEST_HOOKS` | number | `0` | Set to `1` to enable test headers. **NEVER use in production!** |
+
+> **Note on Upstream Provider Configs**: Some advanced policies require specific provider configurations.
+> - **HashiCorp Vault**: Requires `VAULT_ADDR`, `VAULT_TOKEN`, and `TRUEFLOW_VAULT_KEY_NAME`
+> - **AWS KMS**: Requires `TRUEFLOW_KMS_KEY_ARN` and AWS credentials available via standard chain
+> - **OpenTelemetry**: Configure tracing by setting standard OTel vars like `OTEL_EXPORTER_OTLP_ENDPOINT`
 
 ---
 

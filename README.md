@@ -34,8 +34,19 @@ Most teams hardcode them in `.env` files with **zero governance**.
 
 **TrueFlow changes that.** Instead of handing agents real keys (`sk_live_...`), you issue **virtual tokens** (`tf_v1_...`). The gateway enforces your policies, injects the real key server-side, and the agent never sees it.
 
+### Before TrueFlow (Hardcoded Keys)
+```bash
+curl https://api.openai.com/v1/chat/completions \
+  -H "Authorization: Bearer sk_live_YOUR_REAL_KEY" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
-Agent (virtual token) ──▶ TrueFlow Gateway (policy + inject) ──▶ Provider (real key)
+
+### After TrueFlow (Governed Virtual Tokens)
+```bash
+# Drop-in replacement: just change the URL and the key!
+curl http://localhost:8443/v1/chat/completions \
+  -H "Authorization: Bearer tf_v1_YOUR_VIRTUAL_TOKEN" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 > **"You manage the Intelligence. We manage the Access."**
