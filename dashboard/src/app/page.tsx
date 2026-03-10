@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import useSWR from "swr";
 import { swrFetcher, AuditLog, Token, ApprovalRequest, AnalyticsTimeseriesPoint, AnomalyResponse } from "@/lib/api";
 import {
@@ -10,16 +10,40 @@ import {
     TrendingDown,
     AlertTriangle,
     Loader2,
+    Zap,
+    Shield,
+    Clock,
+    DollarSign,
+    ChevronRight,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from "recharts";
-import { CustomTooltip, CHART_AXIS_PROPS } from "@/components/ui/chart-utils";
 import { CountUp } from "@/components/ui/count-up";
 
 type Credential = { id: string };
+
+// ── Custom tooltip for charts ──────────────────────────────────────────────
+function MissionTooltip({ active, payload, label, valueFormatter }: {
+    active?: boolean;
+    payload?: Array<{ value: number; name: string }>;
+    label?: string;
+    valueFormatter?: (v: number) => string;
+}) {
+    if (!active || !payload?.length) return null;
+    const val = payload[0]?.value;
+    return (
+        <div className="mission-tooltip">
+            <div className="mission-tooltip-label">{label}</div>
+            {val !== undefined && (
+                <div className="mission-tooltip-value">
+                    {valueFormatter ? valueFormatter(val) : val}
+                </div>
+            )}
+        </div>
+    );
+}
 
 export default function OverviewPage() {
     const { data: logs = [], isLoading: logsLoading } = useSWR<AuditLog[]>("/audit?limit=100", swrFetcher, { refreshInterval: 5000 });
@@ -54,6 +78,11 @@ export default function OverviewPage() {
         }
     }
 
+    // Health state: nominal | degraded | critical
+    const healthState = recent5xxErrors > 0 ? "critical"
+        : successRate < 98 && logs.length > 10 ? "degraded"
+        : "nominal";
+
     const formatDate = (dateStr: string | number) => {
         const date = new Date(dateStr);
         return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
@@ -63,105 +92,127 @@ export default function OverviewPage() {
     const anomalousCount = anomalyData?.events?.filter(e => e.is_anomalous).length ?? 0;
 
     return (
-        <div className="space-y-8 max-w-[1440px] mx-auto pb-12">
-            {/* Page header */}
-            <div className="flex items-center justify-between animate-fade-in">
-                <div>
-                    <h1 className="text-2xl font-semibold tracking-tight text-white">Dashboard</h1>
-                    <p className="text-sm text-zinc-400 mt-1">Real-time gateway overview</p>
-                </div>
-                {!loading && (
-                    <div className="flex items-center gap-2 text-[11px] text-zinc-500 font-mono tracking-widest uppercase bg-white/5 px-2.5 py-1 rounded-full border border-white/5 shadow-inner">
-                        <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-                        Live
+        <div className="overview-root">
+            {/* ── Horizon Health Bar ── */}
+            <HorizonBar state={healthState} loading={loading} />
+
+            {/* ── Page Header ── */}
+            <div className="overview-header">
+                <div className="overview-header-left">
+                    <div className="overview-header-eyebrow">
+                        <span className="eyebrow-tick" />
+                        GATEWAY OVERVIEW
                     </div>
-                )}
+                    <h1 className="overview-title">Mission Control</h1>
+                </div>
+                <div className="overview-header-right">
+                    {!loading && (
+                        <div className={cn("live-badge", healthState)}>
+                            <span className="live-dot" />
+                            <span className="live-label">
+                                {healthState === "nominal" ? "NOMINAL" : healthState === "degraded" ? "DEGRADED" : "CRITICAL"}
+                            </span>
+                        </div>
+                    )}
+                    {loading && (
+                        <div className="live-badge loading">
+                            <Loader2 className="live-loader" />
+                            <span className="live-label">SYNCING</span>
+                        </div>
+                    )}
+                </div>
             </div>
 
-            {/* ── KPI Strip ── */}
-            <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-                <MetricCard
-                    label="Requests"
+            {/* ── Alert Banner ── */}
+            {!loading && alertMessage && (
+                <div className="alert-banner">
+                    <AlertTriangle className="alert-icon" />
+                    <span className="alert-text">{alertMessage}</span>
+                    <div className="alert-pulse" />
+                </div>
+            )}
+
+            {/* ── KPI Grid ── */}
+            <div className="kpi-grid">
+                <KpiCard
+                    label="TOTAL REQUESTS"
                     value={totalRequests}
                     sub="this month"
+                    icon={<Zap className="kpi-icon-svg" />}
                     loading={loading}
-                    delay="stagger-1"
+                    delay={0}
+                    accent="cyan"
                 />
-                <MetricCard
-                    label="Active Tokens"
+                <KpiCard
+                    label="ACTIVE TOKENS"
                     value={activeTokens}
                     sub={`${tokens.length} total`}
+                    icon={<Shield className="kpi-icon-svg" />}
                     loading={loading}
-                    delay="stagger-2"
+                    delay={1}
+                    accent="emerald"
                 />
-                <MetricCard
-                    label="Avg Latency"
+                <KpiCard
+                    label="AVG LATENCY"
                     value={avgLatency}
                     suffix="ms"
                     sub={avgLatency < 200 ? "excellent" : avgLatency < 500 ? "good" : "high"}
+                    icon={<Clock className="kpi-icon-svg" />}
                     loading={loading}
+                    delay={2}
+                    accent={avgLatency > 500 ? "amber" : "cyan"}
                     trend={avgLatency > 0 ? (avgLatency < 300 ? "up" : "down") : undefined}
-                    delay="stagger-3"
                 />
-                <MetricCard
-                    label="Spend"
+                <KpiCard
+                    label="TOTAL SPEND"
                     value={totalSpend}
                     prefix="$"
                     decimals={4}
                     sub="this month"
+                    icon={<DollarSign className="kpi-icon-svg" />}
                     loading={loading}
-                    delay="stagger-4"
+                    delay={3}
+                    accent="amber"
                 />
             </div>
 
-            {/* ── Status Strip ── */}
-            <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
-                {/* Anomalies — lead with problems */}
-                <div className="bg-black border border-white/[0.08] rounded-lg px-5 py-4 flex items-center gap-4 group animate-slide-up stagger-2 card-hover">
-                    <div className="flex-1">
-                        <p className="text-[11px] text-zinc-500 uppercase tracking-widest font-medium mb-1">Anomalies</p>
-                        <p className={cn(
-                            "text-2xl font-mono tracking-tighter",
-                            anomalousCount > 0 ? "text-rose-400" : "text-white"
-                        )}>
-                            <CountUp value={anomalousCount} duration={800} />
-                        </p>
+            {/* ── Status Row ── */}
+            <div className="status-row">
+                {/* Anomalies */}
+                <div className={cn("status-card", anomalousCount > 0 && "status-card--alert")}>
+                    <div className="status-card-label">ANOMALIES</div>
+                    <div className={cn("status-card-value", anomalousCount > 0 ? "text-rose-400" : "text-emerald-400")}>
+                        {loading ? <span className="status-skeleton" /> : <CountUp value={anomalousCount} duration={800} />}
                     </div>
-                    {anomalousCount > 0 && (
-                        <div className="h-2 w-2 rounded-full bg-rose-500 animate-pulse shadow-[0_0_8px_rgba(244,63,94,0.5)]" />
-                    )}
+                    {anomalousCount > 0 && <div className="status-pulse status-pulse--rose" />}
                 </div>
 
                 {/* Pending Approvals */}
-                <Link href="/approvals" className="bg-black border border-white/[0.08] rounded-lg px-5 py-4 flex items-center gap-4 hover:border-white/[0.15] hover:bg-white/[0.02] transition-all duration-200 group animate-slide-up stagger-3">
-                    <div className="flex-1">
-                        <p className="text-[11px] text-zinc-500 uppercase tracking-widest font-medium mb-1">Pending Approvals</p>
-                        <p className="text-2xl font-mono tracking-tighter text-white">
-                            {loading ? "—" : <CountUp value={pendingApprovals} duration={800} />}
-                        </p>
+                <Link href="/approvals" className="status-card status-card--link">
+                    <div className="status-card-label">PENDING APPROVALS</div>
+                    <div className={cn("status-card-value", pendingApprovals > 0 ? "text-amber-400" : "text-white")}>
+                        {loading ? <span className="status-skeleton" /> : <CountUp value={pendingApprovals} duration={800} />}
                     </div>
                     {pendingApprovals > 0 && (
-                        <span className="text-[11px] text-amber-400 flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity uppercase tracking-widest">
-                            Review <ArrowUpRight className="h-3 w-3" />
-                        </span>
+                        <div className="status-card-cta">
+                            Review <ChevronRight className="h-3 w-3" />
+                        </div>
                     )}
                 </Link>
 
                 {/* Success Rate */}
-                <div className="bg-black border border-white/[0.08] rounded-lg px-5 py-4 flex items-center gap-4 animate-slide-up stagger-4 card-hover">
-                    <div className="flex-1">
-                        <p className="text-[11px] text-zinc-500 uppercase tracking-widest font-medium mb-1">Success Rate</p>
-                        <p className={cn(
-                            "text-2xl font-mono tracking-tighter",
-                            successRate >= 95 ? "text-emerald-400" : successRate >= 80 ? "text-amber-400" : "text-rose-400"
-                        )}>
-                            {loading ? "—" : <CountUp value={successRate} suffix="%" duration={1200} />}
-                        </p>
+                <div className="status-card">
+                    <div className="status-card-label">SUCCESS RATE</div>
+                    <div className={cn(
+                        "status-card-value",
+                        successRate >= 95 ? "text-emerald-400" : successRate >= 80 ? "text-amber-400" : "text-rose-400"
+                    )}>
+                        {loading ? <span className="status-skeleton" /> : <CountUp value={successRate} suffix="%" duration={1200} />}
                     </div>
-                    <div className="h-1 flex-1 rounded-full bg-white/5 overflow-hidden shadow-inner">
+                    <div className="success-bar-track">
                         <div
-                            className={cn("h-full rounded-full transition-all duration-1000 ease-out",
-                                successRate >= 95 ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : successRate >= 80 ? "bg-amber-500" : "bg-rose-500"
+                            className={cn("success-bar-fill",
+                                successRate >= 95 ? "success-bar-fill--green" : successRate >= 80 ? "success-bar-fill--amber" : "success-bar-fill--red"
                             )}
                             style={{ width: `${successRate}%` }}
                         />
@@ -169,181 +220,201 @@ export default function OverviewPage() {
                 </div>
             </div>
 
-            {/* ── Alert Banner ── */}
-            {!loading && alertMessage && (
-                <div className="rounded-lg border border-rose-500/20 bg-rose-500/10 px-5 py-4 animate-fade-in flex items-center gap-4 text-sm backdrop-blur-md">
-                    <AlertTriangle className="h-5 w-5 text-rose-400 shrink-0" />
-                    <span className="text-rose-300 font-medium">{alertMessage}</span>
-                </div>
-            )}
-
-            {/* ── Latency Chart (full width) ── */}
-            <div className="bg-black border border-white/[0.08] rounded-lg overflow-hidden animate-slide-up stagger-4 card-hover">
-                <div className="px-5 py-4 border-b border-white/[0.06] flex flex-row items-center justify-between">
-                    <h3 className="text-[11px] font-medium text-zinc-500 uppercase tracking-widest">
-                        Latency Trend
-                    </h3>
-                    <span className="text-[10px] text-zinc-500 font-mono tracking-widest uppercase">7 days</span>
-                </div>
-                <div className="p-5 min-h-[260px]">
-                    {loading ? (
-                        <div className="h-[220px] w-full flex items-center justify-center">
-                            <Loader2 className="h-6 w-6 animate-spin text-zinc-600" />
-                        </div>
-                    ) : latencySeries.length > 0 ? (
-                        <div className="h-[200px] md:h-[240px] w-full">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <AreaChart data={latencySeries} margin={{ top: 8, right: 8, left: -24, bottom: 0 }}>
+            {/* ── Charts Row ── */}
+            <div className="charts-row">
+                {/* Latency Chart */}
+                <div className="chart-panel chart-panel--wide">
+                    <div className="chart-header">
+                        <div className="chart-title">LATENCY TREND</div>
+                        <div className="chart-range">7 days · 1h buckets</div>
+                    </div>
+                    <div className="chart-body">
+                        {loading ? (
+                            <div className="chart-empty">
+                                <Loader2 className="chart-loader" />
+                            </div>
+                        ) : latencySeries.length > 0 ? (
+                            <ResponsiveContainer width="100%" height={220}>
+                                <AreaChart data={latencySeries} margin={{ top: 10, right: 4, left: -28, bottom: 0 }}>
                                     <defs>
-                                        <linearGradient id="colorLatency" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="0%" stopColor="#ffffff" stopOpacity={0.2} />
-                                            <stop offset="100%" stopColor="#ffffff" stopOpacity={0} />
+                                        <linearGradient id="latencyGrad" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.3} />
+                                            <stop offset="100%" stopColor="#22d3ee" stopOpacity={0} />
                                         </linearGradient>
                                     </defs>
-                                    <CartesianGrid stroke="rgba(255,255,255,0.05)" strokeDasharray="4 4" vertical={false} />
+                                    <CartesianGrid stroke="rgba(34,211,238,0.06)" strokeDasharray="4 6" vertical={false} />
                                     <XAxis
                                         dataKey="bucket"
                                         tickFormatter={formatDate}
-                                        {...CHART_AXIS_PROPS}
-                                        stroke="rgba(255,255,255,0.2)"
-                                        tick={{fill: 'rgba(255,255,255,0.4)', fontSize: 11}}
-                                        minTickGap={40}
+                                        stroke="rgba(34,211,238,0.15)"
+                                        tick={{ fill: 'rgba(100,200,220,0.5)', fontSize: 10, fontFamily: 'var(--font-mono)' }}
+                                        minTickGap={48}
+                                        axisLine={false}
+                                        tickLine={false}
                                     />
                                     <YAxis
                                         domain={[0, 'auto']}
-                                        tickFormatter={(val: number) => `${val}ms`}
-                                        {...CHART_AXIS_PROPS}
-                                        stroke="rgba(255,255,255,0.2)"
-                                        tick={{fill: 'rgba(255,255,255,0.4)', fontSize: 11}}
+                                        tickFormatter={(val: number) => `${val}`}
+                                        stroke="rgba(34,211,238,0.15)"
+                                        tick={{ fill: 'rgba(100,200,220,0.5)', fontSize: 10, fontFamily: 'var(--font-mono)' }}
+                                        axisLine={false}
+                                        tickLine={false}
                                     />
                                     <Tooltip
-                                        content={<CustomTooltip
-                                            labelFormatter={formatDate}
-                                            valueFormatter={(val: number | string) => `${val}ms`}
-                                        />}
-                                        cursor={{ stroke: 'rgba(255,255,255,0.15)', strokeWidth: 1, strokeDasharray: '4 4' }}
+                                        content={<MissionTooltip valueFormatter={(v) => `${v}ms`} />}
+                                        cursor={{ stroke: 'rgba(34,211,238,0.2)', strokeWidth: 1, strokeDasharray: '4 4' }}
                                     />
                                     <Area
                                         type="monotone"
                                         dataKey="avg_latency_ms"
                                         name="Latency"
-                                        stroke="#ffffff"
+                                        stroke="#22d3ee"
                                         strokeWidth={1.5}
                                         fillOpacity={1}
-                                        fill="url(#colorLatency)"
+                                        fill="url(#latencyGrad)"
                                         isAnimationActive={true}
-                                        animationDuration={1200}
+                                        animationDuration={1400}
                                         animationEasing="ease-out"
-                                        activeDot={{ r: 4, strokeWidth: 0, fill: '#ffffff', filter: 'drop-shadow(0 0 6px rgba(255,255,255,0.6))' }}
+                                        activeDot={{ r: 4, strokeWidth: 0, fill: '#22d3ee', filter: 'drop-shadow(0 0 8px rgba(34,211,238,0.8))' }}
                                     />
                                 </AreaChart>
                             </ResponsiveContainer>
-                        </div>
-                    ) : (
-                        <div className="h-[220px] w-full flex items-center justify-center text-[13px] text-zinc-500">
-                            <div className="flex flex-col items-center gap-3">
-                                <Activity className="h-6 w-6 opacity-20" />
+                        ) : (
+                            <div className="chart-empty">
+                                <Activity className="chart-empty-icon" />
                                 <span>No latency data yet</span>
                             </div>
-                        </div>
-                    )}
+                        )}
+                    </div>
+                </div>
+
+                {/* Volume Mini-Chart */}
+                <div className="chart-panel chart-panel--narrow">
+                    <div className="chart-header">
+                        <div className="chart-title">REQUEST VOLUME</div>
+                        <div className="chart-range">7 days</div>
+                    </div>
+                    <div className="chart-body">
+                        {loading ? (
+                            <div className="chart-empty">
+                                <Loader2 className="chart-loader" />
+                            </div>
+                        ) : latencySeries.length > 0 ? (
+                            <ResponsiveContainer width="100%" height={220}>
+                                <AreaChart data={latencySeries} margin={{ top: 10, right: 4, left: -28, bottom: 0 }}>
+                                    <defs>
+                                        <linearGradient id="volumeGrad" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.35} />
+                                            <stop offset="100%" stopColor="#a78bfa" stopOpacity={0} />
+                                        </linearGradient>
+                                    </defs>
+                                    <CartesianGrid stroke="rgba(167,139,250,0.06)" strokeDasharray="4 6" vertical={false} />
+                                    <XAxis
+                                        dataKey="bucket"
+                                        tickFormatter={formatDate}
+                                        stroke="rgba(167,139,250,0.15)"
+                                        tick={{ fill: 'rgba(167,139,250,0.5)', fontSize: 10, fontFamily: 'var(--font-mono)' }}
+                                        minTickGap={48}
+                                        axisLine={false}
+                                        tickLine={false}
+                                    />
+                                    <YAxis
+                                        stroke="rgba(167,139,250,0.15)"
+                                        tick={{ fill: 'rgba(167,139,250,0.5)', fontSize: 10, fontFamily: 'var(--font-mono)' }}
+                                        axisLine={false}
+                                        tickLine={false}
+                                    />
+                                    <Tooltip
+                                        content={<MissionTooltip valueFormatter={(v) => `${v} req`} />}
+                                        cursor={{ stroke: 'rgba(167,139,250,0.2)', strokeWidth: 1, strokeDasharray: '4 4' }}
+                                    />
+                                    <Area
+                                        type="monotone"
+                                        dataKey="request_count"
+                                        name="Requests"
+                                        stroke="#a78bfa"
+                                        strokeWidth={1.5}
+                                        fillOpacity={1}
+                                        fill="url(#volumeGrad)"
+                                        isAnimationActive={true}
+                                        animationDuration={1400}
+                                        animationEasing="ease-out"
+                                        activeDot={{ r: 4, strokeWidth: 0, fill: '#a78bfa', filter: 'drop-shadow(0 0 8px rgba(167,139,250,0.8))' }}
+                                    />
+                                </AreaChart>
+                            </ResponsiveContainer>
+                        ) : (
+                            <div className="chart-empty">
+                                <Activity className="chart-empty-icon" />
+                                <span>No volume data yet</span>
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
 
-            {/* ── Recent Activity ── */}
-            <div className="bg-black border border-white/[0.08] rounded-lg overflow-hidden animate-slide-up stagger-5 card-hover">
-                <div className="px-5 py-3 border-b border-white/[0.06] flex flex-row items-center justify-between">
-                    <h3 className="text-[11px] font-medium text-zinc-400 uppercase tracking-widest">
-                        Recent Traces
-                    </h3>
+            {/* ── Recent Traces ── */}
+            <div className="traces-panel">
+                <div className="traces-header">
+                    <div className="chart-title">RECENT TRACES</div>
                     <Link href="/audit">
-                        <Button variant="ghost" size="sm" className="h-7 text-[11px] uppercase tracking-widest text-zinc-400 hover:text-white gap-1.5">
+                        <Button variant="ghost" size="sm" className="traces-view-all">
                             View all <ArrowUpRight className="h-3 w-3" />
                         </Button>
                     </Link>
                 </div>
-                <div className="max-h-[360px] overflow-y-auto scrollbar-none">
+                <div className="traces-body">
                     {loading ? (
-                        <div className="divide-y divide-white/5">
+                        <>
                             {Array.from({ length: 5 }).map((_, i) => (
-                                <div key={i} className="flex items-center gap-4 px-5 py-4">
-                                    <div className="h-1.5 w-1.5 rounded-full bg-white/5 shimmer" />
-                                    <div className="flex-1 space-y-1">
-                                        <div className="h-3 w-40 bg-white/5 rounded shimmer" />
-                                    </div>
-                                    <div className="h-3 w-12 bg-white/5 rounded shimmer" />
+                                <div key={i} className="trace-row trace-row--skeleton">
+                                    <div className="trace-dot-skeleton" />
+                                    <div className="trace-path-skeleton" />
+                                    <div className="trace-meta-skeleton" />
                                 </div>
                             ))}
-                        </div>
+                        </>
                     ) : recentLogs.length === 0 ? (
-                        <div className="text-center py-12 text-zinc-500 flex flex-col items-center">
-                            <Activity className="h-6 w-6 mb-3 opacity-20" />
-                            <p className="text-[13px]">No activity yet. Send a request to see it here.</p>
+                        <div className="traces-empty">
+                            <Activity className="traces-empty-icon" />
+                            <p>No activity yet. Send a request to see it here.</p>
                         </div>
                     ) : (
-                        <div className="divide-y divide-white/5">
-                            {recentLogs.map((log) => (
-                                <div
-                                    key={log.id}
-                                    className="flex items-center gap-4 px-5 py-3.5 hover:bg-white/[0.025] transition-colors duration-150 group"
-                                >
-                                    <StatusDot status={log.upstream_status} result={log.policy_result} />
+                        recentLogs.map((log, idx) => (
+                            <div key={log.id} className="trace-row" style={{ animationDelay: `${idx * 40}ms` }}>
+                                <StatusDot status={log.upstream_status} result={log.policy_result} />
 
-                                    {/* Desktop: single-row grid */}
-                                    <div className="hidden md:grid flex-1 min-w-0 grid-cols-4 gap-4 items-center">
-                                        <div className="col-span-2 font-mono text-[13px] truncate text-white/80">
-                                            <span className="font-semibold text-zinc-500 mr-2">{log.method}</span>
-                                            {log.path}
-                                        </div>
-                                        <div className="col-span-1 text-[13px] text-zinc-500 truncate group-hover:text-zinc-300 transition-colors">
-                                            {log.agent_name || "—"}
-                                        </div>
-                                        <div className="col-span-1 text-right font-mono text-[13px] text-zinc-400 tabular-nums">
-                                            {log.response_latency_ms}ms
-                                        </div>
+                                {/* Desktop layout */}
+                                <div className="trace-content">
+                                    <div className="trace-method-path">
+                                        <span className="trace-method">{log.method}</span>
+                                        <span className="trace-path">{log.path}</span>
                                     </div>
-
-                                    <div className="hidden md:flex items-center gap-4 min-w-[120px] justify-end">
+                                    <div className="trace-agent">{log.agent_name || "—"}</div>
+                                    <div className="trace-metrics">
+                                        <span className="trace-latency">{log.response_latency_ms}ms</span>
                                         {log.estimated_cost_usd && parseFloat(log.estimated_cost_usd) > 0 && (
-                                            <span className="text-[11px] font-mono text-zinc-500">
-                                                ${parseFloat(log.estimated_cost_usd).toFixed(5)}
-                                            </span>
+                                            <span className="trace-cost">${parseFloat(log.estimated_cost_usd).toFixed(5)}</span>
                                         )}
-                                        <span className="text-[11px] text-zinc-600 w-14 text-right tabular-nums font-mono">
-                                            {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                        </span>
                                     </div>
-
-                                    {/* Mobile: two-line layout */}
-                                    <div className="flex-1 min-w-0 md:hidden">
-                                        <div className="flex items-center justify-between gap-2">
-                                            <span className="font-mono text-[13px] truncate text-white/80">
-                                                <span className="font-semibold text-zinc-500 mr-1.5">{log.method}</span>
-                                                {log.path}
-                                            </span>
-                                            <span className="text-[11px] text-zinc-600 tabular-nums font-mono shrink-0">
-                                                {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                            </span>
-                                        </div>
-                                        <div className="flex items-center justify-between gap-2 mt-1">
-                                            <span className="text-[12px] text-zinc-500 truncate">
-                                                {log.agent_name || "—"}
-                                            </span>
-                                            <div className="flex items-center gap-3 shrink-0">
-                                                <span className="text-[12px] font-mono text-zinc-400 tabular-nums">
-                                                    {log.response_latency_ms}ms
-                                                </span>
-                                                {log.estimated_cost_usd && parseFloat(log.estimated_cost_usd) > 0 && (
-                                                    <span className="text-[11px] font-mono text-zinc-500">
-                                                        ${parseFloat(log.estimated_cost_usd).toFixed(5)}
-                                                    </span>
-                                                )}
-                                            </div>
-                                        </div>
+                                    <div className="trace-time">
+                                        {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                                     </div>
                                 </div>
-                            ))}
-                        </div>
+
+                                {/* Mobile layout */}
+                                <div className="trace-mobile">
+                                    <div className="trace-mobile-row">
+                                        <span className="trace-method">{log.method}</span>
+                                        <span className="trace-path">{log.path}</span>
+                                    </div>
+                                    <div className="trace-mobile-row trace-mobile-row--sub">
+                                        <span className="trace-agent">{log.agent_name || "—"}</span>
+                                        <span className="trace-latency">{log.response_latency_ms}ms</span>
+                                    </div>
+                                </div>
+                            </div>
+                        ))
                     )}
                 </div>
             </div>
@@ -351,73 +422,68 @@ export default function OverviewPage() {
     );
 }
 
-// ── Sub-components ──────────────────────────────
-
-function MetricCard({
-    label,
-    value,
-    sub,
-    prefix,
-    suffix,
-    decimals = 0,
-    loading,
-    trend,
-    delay = "",
-}: {
-    label: string;
-    value: number;
-    sub: string;
-    prefix?: string;
-    suffix?: string;
-    decimals?: number;
-    loading?: boolean;
-    trend?: "up" | "down";
-    delay?: string;
-}) {
+// ── Horizon Bar ──────────────────────────────────────────────────────────────
+function HorizonBar({ state, loading }: { state: "nominal" | "degraded" | "critical"; loading: boolean }) {
     return (
-        <div className={cn("bg-black border border-white/[0.08] rounded-lg p-5 animate-slide-up hover:border-white/[0.15] transition-all duration-200 group relative overflow-hidden card-hover", delay)}>
-            {/* Subtle corner gradient for depth */}
-            <div className="absolute top-0 right-0 w-32 h-32 bg-white/[0.015] rounded-full blur-3xl -translate-y-1/2 translate-x-1/2 group-hover:bg-white/[0.03] transition-all duration-500" />
-
-            <p className="text-[11px] text-zinc-500 uppercase tracking-widest font-medium relative z-10">
-                {label}
-            </p>
-            {loading ? (
-                <div className="h-9 w-24 bg-white/5 rounded shimmer mt-2 relative z-10" />
-            ) : (
-                <div className="flex items-baseline gap-2 mt-2 relative z-10">
-                    <div className="text-[32px] leading-none text-white tracking-tighter">
-                        <CountUp
-                            value={value}
-                            duration={1200}
-                            decimals={decimals}
-                            prefix={prefix}
-                            suffix={suffix}
-                        />
-                    </div>
-                    {trend && (
-                        <span className={cn("flex items-center gap-0.5 text-[10px] font-medium tracking-widest uppercase",
-                            trend === "up" ? "text-emerald-400" : "text-rose-400"
-                        )}>
-                            {trend === "up" ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-                        </span>
-                    )}
-                </div>
-            )}
-            <p className="text-[11px] text-zinc-600 mt-2 relative z-10 font-medium">{sub}</p>
+        <div className={cn("horizon-bar", `horizon-bar--${state}`, loading && "horizon-bar--loading")}>
+            <div className="horizon-fill" />
+            <div className="horizon-glow" />
         </div>
     );
 }
 
+// ── KPI Card ─────────────────────────────────────────────────────────────────
+function KpiCard({
+    label, value, sub, prefix, suffix, decimals = 0,
+    loading, trend, delay = 0, icon, accent = "cyan"
+}: {
+    label: string; value: number; sub: string; prefix?: string; suffix?: string;
+    decimals?: number; loading?: boolean; trend?: "up" | "down";
+    delay?: number; icon: React.ReactNode; accent?: "cyan" | "emerald" | "amber";
+}) {
+    return (
+        <div className={cn("kpi-card", `kpi-card--${accent}`)} style={{ animationDelay: `${delay * 80}ms` }}>
+            <div className="kpi-card-inner">
+                <div className="kpi-top">
+                    <span className="kpi-label">{label}</span>
+                    <div className={cn("kpi-icon", `kpi-icon--${accent}`)}>
+                        {icon}
+                    </div>
+                </div>
+                <div className="kpi-value-row">
+                    {loading ? (
+                        <div className="kpi-skeleton" />
+                    ) : (
+                        <>
+                            <div className="kpi-value">
+                                <CountUp value={value} duration={1000} decimals={decimals} prefix={prefix} suffix={suffix} />
+                            </div>
+                            {trend && (
+                                <span className={cn("kpi-trend", trend === "up" ? "kpi-trend--up" : "kpi-trend--down")}>
+                                    {trend === "up" ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+                                </span>
+                            )}
+                        </>
+                    )}
+                </div>
+                <p className="kpi-sub">{sub}</p>
+            </div>
+            <div className="kpi-corner-light" />
+            <div className="kpi-border-accent" />
+        </div>
+    );
+}
+
+// ── Status Dot ───────────────────────────────────────────────────────────────
 function StatusDot({ status, result }: { status: number | null; result: string }) {
     if (result === "blocked") {
-        return <div className="h-1.5 w-1.5 rounded-full bg-rose-500 shrink-0 shadow-[0_0_8px_rgba(244,63,94,0.4)]" />;
+        return <div className="trace-status trace-status--blocked" />;
     }
     if (result === "shadow_violation") {
-        return <div className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0 shadow-[0_0_8px_rgba(245,158,11,0.4)]" />;
+        return <div className="trace-status trace-status--shadow" />;
     }
     if (status && status >= 200 && status < 400) {
-        return <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0 shadow-[0_0_8px_rgba(16,185,129,0.3)]" />;
+        return <div className="trace-status trace-status--ok" />;
     }
-    return <div className="h-1.5 w-1.5 rounded-full bg-zinc-600 shrink-0" />;
+    return <div className="trace-status trace-status--unknown" />;
 }
